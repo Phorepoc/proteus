@@ -392,10 +392,13 @@ void RunExe(CArmCpu& cpu, THle& h, uint32_t maxSteps)
 	for (int m = 0; h.iProcess && m < h.iProcess->iCount; ++m)
 		if (h.iProcess->iMod[m].iEnd > h.iExec.iLowWater) h.iExec.iLowWater = h.iProcess->iMod[m].iEnd;
 	// P2: DLL entry points first (_E32Dll, KModuleEntryReasonProcessAttach = 2: static constructors, toolchain/dll_rt/dll_entry.S and the real
-	// uc_dll.cpp). A DLL's dependencies were loaded after it (higher index), so the reverse order initialises them first.
-	for (int m = h.iProcess ? h.iProcess->iCount - 1 : 0; m >= 1; --m)
+	// uc_dll.cpp), each DLL after the DLLs it imports (InitOrder: load order is not that -- libc loaded before stdnew, which calls it).
+	// The real euser runs them itself (User::InitProcess, after the thread heap exists: EExecStaticCallList); only the HLE needs this.
+	int order[KMaxModules];
+	const int nInit = h.iProcess && !h.iProcess->iRealEuser ? InitOrder(*h.iProcess, 0, 1, order) : 0;
+	for (int k = 0; k < nInit; ++k)
 	{
-		const TLoaded& d = h.iProcess->iMod[m];
+		const TLoaded& d = h.iProcess->iMod[order[k]];
 		// euser is never called (the kernel skips it); KImageNoCallEntryPoint; our device builds of the system DLLs (build_*_device.py) have
 		// entry offset 0 on ordinary code -- an entry at offset 0 is only real when it is our dll_entry.S stub (word 3 = the UID3)
 		if (!strcmp(d.iName, "euser.dll") || (d.iFlags & 2) || (d.iEntry == d.iLoadAddr && cpu.Read32(d.iEntry + 12) != d.iUid3))
@@ -496,5 +499,30 @@ int LoadLibraryModule(CArmCpu& aCpu, TProcess& aProc, const char* aName, TFindDl
 bool CallsEntry(CArmCpu& aCpu, const TLoaded& d)
 {
 	return strcmp(d.iName, "euser.dll") && !(d.iFlags & 2) && !(d.iEntry == d.iLoadAddr && aCpu.Read32(d.iEntry + 12) != d.iUid3);
+}
+
+static void Visit(const TProcess& p, int m, int first, bool* seen, int* order, int& n)
+{
+	seen[m] = true;
+	const TLoaded& d = p.iMod[m];
+	for (int i = 0; i < d.iNumImports && i < KMaxDllRefs; ++i)
+	{
+		const int dep = d.iDllModule[i];
+		if (dep >= first && dep < p.iCount && !seen[dep])
+			Visit(p, dep, first, seen, order, n);
+	}
+	if (m >= first)
+		order[n++] = m;
+}
+
+int InitOrder(const TProcess& aProc, int aRoot, int aFirst, int* aOrder)
+{
+	bool seen[KMaxModules] = {};
+	int n = 0;
+	Visit(aProc, aRoot, aFirst, seen, aOrder, n);
+	for (int m = aFirst; m < aProc.iCount; ++m)		// (a new module nothing reachable imports: still initialised, last)
+		if (!seen[m])
+			Visit(aProc, m, aFirst, seen, aOrder, n);
+	return n;
 }
 }

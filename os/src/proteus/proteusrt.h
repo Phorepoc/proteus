@@ -52,6 +52,9 @@ void FreeProcess(TProcess& aProcess);
 // P2: guest RLibrary::Load (proteusexec.cpp's !Loader): module index or an error; aFirstNew = the first newly loaded module
 int LoadLibraryModule(CArmCpu& aCpu, TProcess& aProc, const char* aName, TFindDllFn aFind, void* aFindCtx, int& aFirstNew);
 bool CallsEntry(CArmCpu& aCpu, const TLoaded& aModule);
+// the order the loader runs entry points in: modules aFirst.. of aProc reachable from aRoot, each after the modules it imports
+// (post-order, as the kernel's DCodeSeg list; a cycle runs in visit order). Returns the count written to aOrder (KMaxModules room).
+int InitOrder(const TProcess& aProc, int aRoot, int aFirst, int* aOrder);
 // describe a guest address: module+offset and the nearest export below it
 void Where(const TProcess& aProcess, CArmCpu& aCpu, uint32_t aAddr, char* aOut, int aMax);
 // loads aFile (an EXE) at aAt plus every non-euser DLL it imports that aFind can supply (transitively), and binds the imports by ordinal

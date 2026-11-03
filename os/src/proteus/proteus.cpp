@@ -289,6 +289,14 @@ static bool BridgeKernel(void* aCtx, const char* aExec, uint32_t* r, proteus::CA
 	if (n == _L8("EFastExecUTCOffset")) { r[0] = (uint32_t)User::UTCOffset().Int(); return true; }
 	if (n == _L8("EFastExecNTickCount")) { r[0] = User::NTickCount(); return true; }
 	if (n == _L8("EExecTickCount")) { r[0] = User::TickCount(); return true; }
+	if (n == _L8("EExecHandleCount"))		// (thread handle, TInt& process handles, TInt& thread handles): this process's, where the guest's live
+		{
+		TInt ph = 0, th = 0;
+		RThread().HandleCount(ph, th);
+		aCpu.Write32(r[1], (TUint32)ph);
+		aCpu.Write32(r[2], (TUint32)th);
+		return true;
+		}
 	if (n == _L8("EFastExecFastCounter")) { r[0] = User::FastCounter(); return true; }
 	if (n == _L8("EExecTimerCreate"))		// a native RTimer; type 6 = ETimer
 		{

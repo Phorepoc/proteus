@@ -219,7 +219,7 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 	else
 	{
 		if (h.iIpc && h.iIpc->iKernel && (!strncmp(name, "EExecProperty", 13) || !strcmp(name, "EExecOpenObject") || !strcmp(name, "EExecObjectNext") || !strcmp(name, "EExecPlatSecDiagnostic") || !strncmp(name, "EExecChunk", 10)
-			|| !strncmp(name, "EExecMutex", 10) || !strncmp(name, "EExecSemaphore", 14) || !strncmp(name, "EExecChangeNotifier", 19) || !strncmp(name, "EExecTimer", 10) || !strncmp(name, "EExecTimeNow", 12) || !strcmp(name, "EExecTickCount") || !strcmp(name, "EExecHandleClose"))
+			|| !strncmp(name, "EExecMutex", 10) || !strncmp(name, "EExecSemaphore", 14) || !strncmp(name, "EExecChangeNotifier", 19) || !strncmp(name, "EExecTimer", 10) || !strncmp(name, "EExecTimeNow", 12) || !strcmp(name, "EExecTickCount") || !strcmp(name, "EExecHandleClose") || !strcmp(name, "EExecHandleCount"))
 			&& h.iIpc->iKernel(h.iIpc->iCtx, name, r, cpu))
 			return true;
 		if (!strcmp(name, "EExecDebugPrint"))
@@ -335,8 +335,12 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 			const int maxEps = (int)cpu.Read32(r[1]);
 			int n = 0;
 			if ((r[0] & 0xFFFF0000u) == KHandleLib0 && h.iProcess && mod < h.iProcess->iCount)
-				for (int m = h.iProcess->iCount - 1; m >= e.iLibFirstNew && n < maxEps; --m)
-					if (CallsEntry(cpu, h.iProcess->iMod[m])) cpu.Write32(r[2] + 4 * n++, h.iProcess->iMod[m].iEntry);
+			{
+				int order[KMaxModules];
+				const int nNew = InitOrder(*h.iProcess, mod, e.iLibFirstNew, order);
+				for (int k = 0; k < nNew && n < maxEps; ++k)
+					if (CallsEntry(cpu, h.iProcess->iMod[order[k]])) cpu.Write32(r[2] + 4 * n++, h.iProcess->iMod[order[k]].iEntry);
+			}
 			e.iLibFirstNew = h.iProcess ? h.iProcess->iCount : 0;
 			cpu.Write32(r[1], (uint32_t)n);
 			r[0] = KErrNone;
@@ -431,7 +435,11 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 			return true;
 		}
 		if (!strcmp(name, "EExecRequestSignal")) { if (ipc) ipc->iSignal(ipc->iCtx, (int)r[0]); return true; }
-		if (!strcmp(name, "EExecMutexCreate") || !strcmp(name, "EExecSemaphoreCreate")) { r[0] = KHandleObj + e.iCalls; return true; }
+		if (!strcmp(name, "EExecMutexCreate") || !strcmp(name, "EExecSemaphoreCreate") || !strcmp(name, "EExecCondVarCreate")) { r[0] = KHandleObj + e.iCalls; return true; }
+		// condition variables in a one-thread guest: nothing else can signal -- a timed wait times out, an untimed one returns at once
+		// (a spurious wake-up, which every RCondVar::Wait caller loops on); signal / broadcast have no waiter
+		if (!strcmp(name, "EExecCondVarWait")) { r[0] = (int)r[2] > 0 ? (uint32_t)-33 : KErrNone; return true; }		// (cv, mutex, timeout us): KErrTimedOut
+		if (!strcmp(name, "EExecCondVarSignal") || !strcmp(name, "EExecCondVarBroadcast")) { r[0] = KErrNone; return true; }
 		if (!strcmp(name, "EExecMutexWait") || !strcmp(name, "EExecMutexSignal") || !strcmp(name, "EExecSemaphoreWait") || !strcmp(name, "EExecSemaphoreSignal1")
 			|| !strcmp(name, "EExecSemaphoreSignalN")) { r[0] = KErrNone; return true; }
 		if (!strcmp(name, "EExecProcessCommandLineLength")) { r[0] = 0; return true; }
@@ -448,6 +456,9 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 		}
 		if (!strcmp(name, "EExecProcessCommandLine")) { return true; }
 		if (!strcmp(name, "EExecThreadId") || !strcmp(name, "EExecProcessId")) { r[0] = 0x100; return true; }
+		// (TThreadId, owner type): the one guest thread (id 0x100) -> KCurrentThreadHandle, which every thread exec here treats as it; any
+		// other id is no thread of this process (other processes' threads are not reachable from the guest)
+		if (!strcmp(name, "EExecThreadOpenById")) { r[0] = r[0] == 0x100 ? 0xFFFF8001u : (uint32_t)-1; return true; }		// KErrNotFound
 		// ---- the process / thread asking about itself (one process, one thread) ----
 		const char* exe = h.iExePath ? h.iExePath : "z:\\sys\\bin\\guest.exe";
 		if (!strcmp(name, "EExecProcessFileName") || !strcmp(name, "EExecHandleFullName") || !strcmp(name, "EExecHandleName"))	// (handle, TDes8&)
@@ -524,6 +535,26 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 				Backtrace(cpu, h);
 			}
 			cpu.Halt(EExited, (int32_t)r[2]);
+			return true;
+		}
+		// (TInt& numEps, TLinAddr* eps): the process's entry points, each DLL after the DLLs it imports, the EXE's last (scodeseg.cpp
+		// ExecHandler::StaticCallList) -- the real euser calls them from User::InitProcess, after the main thread's heap exists
+		if (!strcmp(name, "EExecStaticCallList") && h.iProcess && h.iProcess->iRealEuser)
+		{
+			const int maxEps = (int)cpu.Read32(r[0]);
+			int order[KMaxModules];
+			const int nInit = InitOrder(*h.iProcess, 0, 1, order);
+			int n = 0;
+			for (int k = 0; k < nInit; ++k)
+				if (CallsEntry(cpu, h.iProcess->iMod[order[k]]))
+				{
+					if (n < maxEps) cpu.Write32(r[1] + 4 * n, h.iProcess->iMod[order[k]].iEntry);
+					++n;
+				}
+			if (n < maxEps) cpu.Write32(r[1] + 4 * n, h.iProcess->iMod[0].iEntry);
+			++n;
+			cpu.Write32(r[0], (uint32_t)n);
+			r[0] = n > maxEps ? (uint32_t)-1 : KErrNone;
 			return true;
 		}
 		if (!strcmp(name, "EExecLibraryCallList") || !strcmp(name, "EExecStaticCallList")) { cpu.Write32(r[0], 0); r[0] = KErrNone; return true; }
