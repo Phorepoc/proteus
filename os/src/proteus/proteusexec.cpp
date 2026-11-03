@@ -126,6 +126,473 @@ static void SetDes8(CArmCpu& cpu, uint32_t aDes, const char* aText)
 	cpu.Write32(aDes, (type << 28) | n);
 }
 
+// ---- guest threads (proteusrt.h: TGuestThread) ----
+enum { KErrGeneral = -2, KErrTimedOut = -33, KCurrentThreadHandle = (int)0xFFFF8001, KRequestPending = (int)0x80000001 };
+static const uint32_t KLocalThreadData = 48;		// as proteusrt.cpp's StartThreadStack: TLocalThreadData at the top of the stack
+static const uint32_t KMaxThreadCreateInfo = 256;	// u32std.h
+
+static void SaveThread(CArmCpu& c, TExecState& e, TGuestThread& t)
+{
+	memcpy(t.iR, c.R, sizeof(t.iR));
+	t.iN = c.iN; t.iZ = c.iZ; t.iC = c.iC; t.iV = c.iV; t.iT = c.iT; t.iGE = c.iGE;
+	t.iTpidrurw = c.iTpidrurw; t.iTpidruro = c.iTpidruro; t.iFpscr = c.iFpscr; t.iFpexc = c.iFpexc;
+	memcpy(t.iD, c.iD, sizeof(t.iD));
+	t.iHeap = e.iHeap; t.iTrapHandler = e.iTrapHandler; t.iActiveScheduler = e.iActiveScheduler; t.iTrapFrame = e.iTrapFrame;
+	memcpy(t.iTlsKey, e.iTlsKey, sizeof(t.iTlsKey)); memcpy(t.iTlsVal, e.iTlsVal, sizeof(t.iTlsVal)); t.iTlsCount = e.iTlsCount;
+}
+
+static void LoadThread(CArmCpu& c, TExecState& e, const TGuestThread& t)
+{
+	memcpy(c.R, t.iR, sizeof(c.R));
+	c.iN = t.iN; c.iZ = t.iZ; c.iC = t.iC; c.iV = t.iV; c.iT = t.iT; c.iGE = t.iGE;
+	c.iTpidrurw = t.iTpidrurw; c.iTpidruro = t.iTpidruro; c.iFpscr = t.iFpscr; c.iFpexc = t.iFpexc;
+	memcpy(c.iD, t.iD, sizeof(c.iD));
+	e.iHeap = t.iHeap; e.iTrapHandler = t.iTrapHandler; e.iActiveScheduler = t.iActiveScheduler; e.iTrapFrame = t.iTrapFrame;
+	memcpy(e.iTlsKey, t.iTlsKey, sizeof(e.iTlsKey)); memcpy(e.iTlsVal, t.iTlsVal, sizeof(e.iTlsVal)); e.iTlsCount = t.iTlsCount;
+}
+
+// a thread handle (KCurrentThreadHandle or KHandleThread0 + i) -> thread index, -1 = not a guest thread
+static int ThreadIndex(TExecState& e, uint32_t aHandle)
+{
+	if (aHandle == (uint32_t)KCurrentThreadHandle) return e.iCur;
+	const uint32_t i = aHandle - KHandleThread0;
+	return e.iThread && i < (uint32_t)e.iThreadCount && e.iThread[i].iState != EThreadFree ? (int)i : -1;
+}
+
+static int SyncIndex(TExecState& e, uint32_t aHandle, int aType)
+{
+	const uint32_t i = aHandle - KHandleObj;
+	return e.iSync && i < (uint32_t)e.iSyncCount && e.iSync[i].iType == aType ? (int)i : -1;
+}
+
+// a blocked thread becomes ready; its wait returns aResult (never the running thread: that one is not blocked)
+static void Wake(TExecState& e, int i, int32_t aResult)
+{
+	TGuestThread& t = e.iThread[i];
+	t.iR[0] = (uint32_t)aResult;
+	t.iState = EThreadReady;
+	t.iDeadline = 0;
+}
+
+// DThread::RequestSignal: the thread's request semaphore; a thread blocked in WaitForAnyRequest takes the signal and runs
+static void SignalThread(TExecState& e, int i, int aCount)
+{
+	if (i < 0 || i >= e.iThreadCount || e.iThread[i].iState == EThreadDead || aCount <= 0) return;
+	TGuestThread& t = e.iThread[i];
+	t.iRequests += aCount;
+	if (t.iState == EThreadWaitAny) { --t.iRequests; t.iState = EThreadReady; }
+}
+
+static void CompleteFor(CArmCpu& cpu, TExecState& e, int aThread, uint32_t aStatus, int32_t aValue)
+{
+	if (!aStatus) return;
+	cpu.Write32(aStatus, (uint32_t)aValue);
+	SignalThread(e, aThread, 1);
+}
+
+static bool TakeMutex(TExecState& e, int m, int i)
+{
+	TSyncObj& s = e.iSync[m];
+	if (s.iHolder >= 0 && s.iHolder != i) return false;
+	s.iHolder = i;
+	++s.iCount;
+	return true;
+}
+
+// the oldest thread blocked in state aState on object aObj, -1 = none
+static int OldestWaiter(TExecState& e, int aState, int aObj)
+{
+	int best = -1;
+	for (int i = 0; i < e.iThreadCount; ++i)
+		if (e.iThread[i].iState == aState && e.iThread[i].iWaitObj == aObj && (best < 0 || e.iThread[i].iWaitSeq < e.iThread[best].iWaitSeq)) best = i;
+	return best;
+}
+
+static void Block(TExecState& e, int i, int aState, int aObj, uint64_t aDeadline)
+{
+	TGuestThread& t = e.iThread[i];
+	t.iState = aState;
+	t.iWaitObj = aObj;
+	t.iWaitSeq = ++e.iWaitSeq;
+	t.iDeadline = aDeadline;
+}
+
+// a free mutex goes to its oldest waiter (a plain MutexWait, or a condvar waiter taking its mutex back with its saved hold count)
+static void HandOffMutex(TExecState& e, int m)
+{
+	TSyncObj& s = e.iSync[m];
+	if (s.iHolder >= 0) return;
+	const int w = OldestWaiter(e, EThreadWaitMutex, m);
+	if (w < 0) return;
+	TGuestThread& t = e.iThread[w];
+	s.iHolder = w;
+	s.iCount = t.iCondCount > 0 ? t.iCondCount : 1;
+	const int32_t res = t.iWaitResult;
+	t.iCondCount = 0;
+	t.iWaitResult = KErrNone;
+	Wake(e, w, res);
+}
+
+// a condvar waiter was signalled or timed out: it takes its mutex back before its Wait returns (DCondVar)
+static void CondToMutex(TExecState& e, int i, int32_t aResult)
+{
+	TGuestThread& t = e.iThread[i];
+	const int m = t.iCondMutex;
+	t.iWaitResult = aResult;
+	if (TakeMutex(e, m, i))
+	{
+		e.iSync[m].iCount = t.iCondCount > 0 ? t.iCondCount : 1;
+		t.iCondCount = 0;
+		t.iWaitResult = KErrNone;
+		Wake(e, i, aResult);
+	}
+	else
+		Block(e, i, EThreadWaitMutex, m, 0);
+}
+
+// a timed wait ran out
+static void Expire(TExecState& e, int i)
+{
+	if (e.iThread[i].iState == EThreadWaitCond) CondToMutex(e, i, KErrTimedOut);
+	else Wake(e, i, KErrTimedOut);
+}
+
+static uint64_t NowUs(THle& h) { return h.iIpc && h.iIpc->iNowUs ? h.iIpc->iNowUs(h.iIpc->iCtx) : 0; }
+
+// a wait timeout in microseconds (0 = forever, as ExecHandler::MutexWait) -> a deadline on the iNowUs clock (0 = none)
+static uint64_t Deadline(THle& h, int32_t aTimeout) { return aTimeout > 0 ? NowUs(h) + (uint64_t)aTimeout : 0; }
+
+// a request a guest thread handed to the native side: its completion signal belongs to that thread
+static void NoteRequest(TExecState& e, uint32_t aStatus)
+{
+	if (!aStatus || !e.iThread) return;
+	int free = -1;
+	for (int k = 0; k < KMaxReqs; ++k)
+	{
+		if (e.iReqStatus[k] == aStatus) { e.iReqThread[k] = e.iCur; return; }
+		if (!e.iReqStatus[k] && free < 0) free = k;
+	}
+	if (free < 0)		// full: forget the oldest
+	{
+		memmove(e.iReqStatus, e.iReqStatus + 1, sizeof(e.iReqStatus) - sizeof(e.iReqStatus[0]));
+		memmove(e.iReqThread, e.iReqThread + 1, sizeof(e.iReqThread) - sizeof(e.iReqThread[0]));
+		free = KMaxReqs - 1;
+	}
+	e.iReqStatus[free] = aStatus;
+	e.iReqThread[free] = e.iCur;
+}
+
+// one native request signal arrived: credit the thread whose noted request completed; else the only thread waiting for one; else the main thread
+static void AttributeNative(CArmCpu& cpu, THle& h)
+{
+	TExecState& e = h.iExec;
+	int who = -1;
+	for (int k = 0; k < KMaxReqs && who < 0; ++k)
+	{
+		const uint32_t st = e.iReqStatus[k];
+		if (!st) continue;
+		if (e.iThread[e.iReqThread[k]].iState == EThreadDead || !cpu.Valid(st, 4)) { e.iReqStatus[k] = 0; continue; }
+		const int32_t v = (int32_t)cpu.Read32(st);
+		if (v == KRequestPending) continue;
+		who = e.iReqThread[k];
+		e.iReqStatus[k] = 0;
+		static int errLines = 0;
+		if (v < 0 && h.iLog && errLines < 100)		// trace: a native request of the guest that completed with an error
+		{
+			++errLines;
+			char l[96];
+			snprintf(l, sizeof(l), "[proteus] request %x of thread %d completed %d", st, who, (int)v);
+			h.iLog(l, h.iLogCtx);
+		}
+	}
+	if (who < 0)
+	{
+		int waiting = -1, n = 0;
+		for (int i = 0; i < e.iThreadCount; ++i) if (e.iThread[i].iState == EThreadWaitAny) { if (waiting < 0) waiting = i; ++n; }
+		who = n == 1 ? waiting : (e.iThread[0].iState == EThreadWaitAny || waiting < 0) ? 0 : waiting;
+	}
+	SignalThread(e, who, 1);
+}
+
+// the running thread no longer runs (blocked / dead): run the next ready one, round robin; with none ready, expire timed waits or wait for
+// the native kernel (a server / timer completing a request). All blocked with nothing to wait for = a deadlock: the guest stops.
+static void Reschedule(CArmCpu& cpu, THle& h)
+{
+	TExecState& e = h.iExec;
+	SaveThread(cpu, e, e.iThread[e.iCur]);
+	for (;;)
+	{
+		for (int k = 1; k <= e.iThreadCount; ++k)
+		{
+			const int i = (e.iCur + k) % e.iThreadCount;
+			if (e.iThread[i].iState != EThreadReady) continue;
+			e.iCur = i;
+			LoadThread(cpu, e, e.iThread[i]);
+			return;
+		}
+		const uint64_t now = NowUs(h);
+		uint64_t next = 0;
+		int nextThread = -1;
+		bool expired = false, waitAny = false;
+		for (int i = 0; i < e.iThreadCount; ++i)
+		{
+			TGuestThread& t = e.iThread[i];
+			if (t.iState == EThreadWaitAny) waitAny = true;
+			if (!t.iDeadline || (t.iState != EThreadWaitMutex && t.iState != EThreadWaitSem && t.iState != EThreadWaitCond)) continue;
+			if (now && t.iDeadline <= now) { Expire(e, i); expired = true; }
+			else if (!next || t.iDeadline < next) { next = t.iDeadline; nextThread = i; }
+		}
+		if (expired) continue;
+		if (!h.iIpc || !h.iIpc->iNowUs)		// no native kernel to wait for: time passes only when nothing can run
+		{
+			if (nextThread >= 0) { Expire(e, nextThread); continue; }
+			strncpy(cpu.iNote, waitAny ? "WaitForAnyRequest with nothing to wait for" : "all guest threads are blocked (deadlock)", sizeof(cpu.iNote) - 1);
+			cpu.Halt(EHleStop);
+			return;
+		}
+		if (!waitAny && nextThread < 0)
+		{
+			strncpy(cpu.iNote, "all guest threads are blocked (deadlock)", sizeof(cpu.iNote) - 1);
+			cpu.Halt(EHleStop);
+			return;
+		}
+		bool got = true;
+		if (nextThread >= 0)
+		{
+			const uint64_t d = next - now;
+			got = h.iIpc->iWaitAnyFor(h.iIpc->iCtx, d > 0x7FFFFFFF ? 0x7FFFFFFF : (int)d);
+		}
+		else
+			h.iIpc->iWaitAny(h.iIpc->iCtx);
+		if (got) AttributeNative(cpu, h);
+	}
+}
+
+// the running thread blocks: the scheduler runs another (or this one again once it is woken)
+static void BlockCurrent(CArmCpu& cpu, THle& h, int aState, int aObj, uint64_t aDeadline)
+{
+	Block(h.iExec, h.iExec.iCur, aState, aObj, aDeadline);
+	Reschedule(cpu, h);
+}
+
+// a thread ends (ExecHandler::ThreadKill): logons complete with the exit reason, mutexes it held go to their waiters
+static void EndThread(CArmCpu& cpu, THle& h, int i, int aType, int aReason, const char* aCategory)
+{
+	TExecState& e = h.iExec;
+	TGuestThread& t = e.iThread[i];
+	t.iState = EThreadDead;
+	t.iExitType = aType;
+	t.iExitReason = aReason;
+	strncpy(t.iExitCategory, aCategory, sizeof(t.iExitCategory) - 1);
+	t.iStackFree = t.iStackChunk >= 0;
+	for (int k = 0; k < KMaxLogons; ++k)
+		if (t.iLogonStatus[k]) { CompleteFor(cpu, e, t.iLogonOwner[k], t.iLogonStatus[k], aReason); t.iLogonStatus[k] = 0; }
+	for (int m = 0; m < e.iSyncCount; ++m)
+		if (e.iSync[m].iType == 1 && e.iSync[m].iHolder == i) { e.iSync[m].iHolder = -1; e.iSync[m].iCount = 0; HandOffMutex(e, m); }
+}
+
+// ExecHandler::ThreadCreate: a new thread with its own stack chunk, suspended; it starts as the kernel starts a user thread (ckernel.cia):
+// at the process re-entry point with r4 = KModuleEntryReasonThreadInit and sp -> a copy of the creation info (_E32Startup hands it to RunThread)
+static int CreateThread(CArmCpu& cpu, THle& h, uint32_t aInfo)
+{
+	TExecState& e = h.iExec;
+	// the stack chunk: the requested size plus 4 KB above the thread data, as the main thread's (StartThreadStack: euser's leave trace scans
+	// stack words upward from sp)
+	const uint32_t total = cpu.Read32(aInfo + 44), stack = ((cpu.Read32(aInfo + 28) + 0xFFF) & ~0xFFFu) + 0x1000;
+	if (total < 48 || total > KMaxThreadCreateInfo || (total & 7) || stack < 2 * KMaxThreadCreateInfo) return KErrArgument;
+	if (e.iThreadCount >= KMaxThreads) return KErrNoMemory;
+	int chunk = -1;
+	for (int i = 0; i < e.iThreadCount && chunk < 0; ++i)		// a dead thread's stack, if it is big enough
+		if (e.iThread[i].iStackFree && e.iChunkMax[e.iThread[i].iStackChunk] >= stack) { chunk = e.iThread[i].iStackChunk; e.iThread[i].iStackFree = false; }
+	if (chunk < 0)
+	{
+		const int hnd = NewChunk(cpu, e, stack);
+		if (hnd < 0) return hnd;
+		chunk = ChunkIndex(e, (uint32_t)hnd);
+		const int r = CommitPages(cpu, e, chunk, 0, e.iChunkMax[chunk]);
+		if (r < 0) return r;
+	}
+	const int idx = e.iThreadCount++;
+	TGuestThread& t = e.iThread[idx];
+	memset(&t, 0, sizeof(t));
+	t.iId = 0x7F000000u + idx;
+	t.iStackChunk = chunk;
+	const uint32_t base = e.iChunkBase[chunk], size = e.iChunkMax[chunk], tld = base + size - 0x1000 - KLocalThreadData;
+	for (uint32_t a = tld; a < tld + KLocalThreadData; a += 4) cpu.Write32(a, 0);
+	cpu.Write32(tld + 12, t.iId);							// TLocalThreadData::iThreadId
+	const uint32_t sp = (tld - total) & ~7u;
+	for (uint32_t o = 0; o < total; o += 4) cpu.Write32(sp + o, cpu.Read32(aInfo + o));
+	cpu.Write32(sp + 24, base);								// iUserStack
+	cpu.Write32(sp + 28, size - 0x1000);					// iUserStackSize
+	const uint32_t entry = e.iReentry ? e.iReentry : h.iProcess->iMod[0].iEntry;
+	t.iR[4] = 1;											// KModuleEntryReasonThreadInit
+	t.iR[13] = sp;
+	t.iR[15] = entry & ~1u;
+	t.iT = entry & 1;
+	t.iTpidrurw = tld;
+	t.iState = EThreadSuspended;
+	return (int)(KHandleThread0 + idx);
+}
+
+// the thread / synchronisation / request-semaphore executive calls; false = not one of them
+static bool ThreadExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
+{
+	TExecState& e = h.iExec;
+	if (!e.iThread) return false;
+	const int cur = e.iCur;
+	if (!strcmp(name, "EFastExecWaitForAnyRequest"))
+	{
+		TGuestThread& t = e.iThread[cur];
+		if (t.iRequests > 0) { --t.iRequests; return true; }
+		BlockCurrent(cpu, h, EThreadWaitAny, 0, 0);
+		return true;
+	}
+	if (!strcmp(name, "EExecRequestSignal")) { SignalThread(e, cur, (int)r[0]); return true; }
+	if (!strcmp(name, "EExecThreadRequestSignal")) { SignalThread(e, ThreadIndex(e, r[0]), 1); return true; }
+	if (!strcmp(name, "EExecThreadRequestCount")) { const int i = ThreadIndex(e, r[0]); r[0] = i >= 0 ? (uint32_t)e.iThread[i].iRequests : 0; return true; }
+	if (!strcmp(name, "EFastExecSetReentryPoint")) { e.iReentry = r[0]; return true; }
+	// ---- mutexes, semaphores, condition variables (local ones; the IPC bridge took any native handle) ----
+	if (!strcmp(name, "EExecMutexCreate") || !strcmp(name, "EExecSemaphoreCreate") || !strcmp(name, "EExecCondVarCreate"))	// (name, [count,] owner)
+	{
+		if (e.iSyncCount >= KMaxSync) { r[0] = (uint32_t)KErrNoMemory; return true; }
+		TSyncObj& s = e.iSync[e.iSyncCount];
+		s.iType = name[5] == 'M' ? 1 : name[5] == 'S' ? 2 : 3;
+		s.iCount = s.iType == 2 ? (int)r[1] : 0;
+		s.iHolder = -1;
+		r[0] = KHandleObj + e.iSyncCount++;
+		return true;
+	}
+	if (!strcmp(name, "EExecMutexWait") || !strcmp(name, "EExecSemaphoreWait"))		// (handle, timeout us: 0 forever, -1 poll)
+	{
+		const bool mutex = name[5] == 'M';
+		const int o = SyncIndex(e, r[0], mutex ? 1 : 2);
+		const int32_t timeout = (int32_t)r[1];
+		if (o < 0) return false;		// a native object (the bridge's)
+		if (timeout < -1) { r[0] = (uint32_t)KErrArgument; return true; }
+		if (mutex ? TakeMutex(e, o, cur) : (e.iSync[o].iCount > 0 && e.iSync[o].iCount--)) { r[0] = KErrNone; return true; }
+		if (timeout == -1) { r[0] = (uint32_t)KErrTimedOut; return true; }
+		if (mutex) { e.iThread[cur].iCondCount = 0; e.iThread[cur].iWaitResult = KErrNone; }
+		BlockCurrent(cpu, h, mutex ? EThreadWaitMutex : EThreadWaitSem, o, Deadline(h, timeout));
+		return true;
+	}
+	if (!strcmp(name, "EExecMutexSignal"))
+	{
+		const int o = SyncIndex(e, r[0], 1);
+		if (o < 0) return false;
+		if (e.iSync[o].iHolder == cur && --e.iSync[o].iCount <= 0) { e.iSync[o].iCount = 0; e.iSync[o].iHolder = -1; HandOffMutex(e, o); }
+		return true;
+	}
+	if (!strcmp(name, "EExecMutexIsHeld")) { const int o = SyncIndex(e, r[0], 1); if (o < 0) return false; r[0] = e.iSync[o].iHolder == cur; return true; }
+	if (!strcmp(name, "EExecSemaphoreSignal1") || !strcmp(name, "EExecSemaphoreSignalN"))
+	{
+		const int o = SyncIndex(e, r[0], 2);
+		if (o < 0) return false;
+		int n = name[20] == '1' ? 1 : (int)r[1];
+		while (n-- > 0)
+		{
+			const int w = OldestWaiter(e, EThreadWaitSem, o);
+			if (w >= 0) Wake(e, w, KErrNone); else ++e.iSync[o].iCount;
+		}
+		return true;
+	}
+	if (!strcmp(name, "EExecCondVarWait"))		// (condvar, mutex handle, timeout us)
+	{
+		const int cv = SyncIndex(e, r[0], 3), m = SyncIndex(e, r[1], 1);
+		const int32_t timeout = (int32_t)r[2];
+		if (cv < 0 || m < 0) { r[0] = (uint32_t)KErrBadHandle; return true; }
+		if (e.iSync[m].iHolder != cur) { r[0] = (uint32_t)KErrGeneral; return true; }		// (the kernel panics a thread that does not hold it)
+		if (timeout < -1) { r[0] = (uint32_t)KErrArgument; return true; }
+		if (timeout == -1) { r[0] = (uint32_t)KErrTimedOut; return true; }
+		TGuestThread& t = e.iThread[cur];
+		t.iCondMutex = m;
+		t.iCondCount = e.iSync[m].iCount;
+		e.iSync[m].iHolder = -1;
+		e.iSync[m].iCount = 0;
+		HandOffMutex(e, m);
+		BlockCurrent(cpu, h, EThreadWaitCond, cv, Deadline(h, timeout));
+		return true;
+	}
+	if (!strcmp(name, "EExecCondVarSignal") || !strcmp(name, "EExecCondVarBroadcast"))
+	{
+		const int cv = SyncIndex(e, r[0], 3);
+		for (int w; cv >= 0 && (w = OldestWaiter(e, EThreadWaitCond, cv)) >= 0; )
+		{
+			CondToMutex(e, w, KErrNone);
+			if (name[12] == 'S') break;
+		}
+		return true;
+	}
+	// ---- threads ----
+	if (!strcmp(name, "EExecThreadCreate")) { r[0] = (uint32_t)CreateThread(cpu, h, r[2]); return true; }	// (name, owner, SThreadCreateInfo8&)
+	if (!strcmp(name, "EExecThreadResume")) { const int i = ThreadIndex(e, r[0]); if (i >= 0 && e.iThread[i].iState == EThreadSuspended) e.iThread[i].iState = EThreadReady; return true; }
+	if (!strcmp(name, "EExecThreadSuspend")) { const int i = ThreadIndex(e, r[0]); if (i >= 0 && i != cur && e.iThread[i].iState == EThreadReady) e.iThread[i].iState = EThreadSuspended; return true; }
+	if (!strcmp(name, "EExecThreadId")) { const int i = ThreadIndex(e, r[0]); r[0] = i >= 0 ? e.iThread[i].iId : (uint32_t)KErrBadHandle; return true; }
+	if (!strcmp(name, "EExecThreadOpenById"))		// (id, owner type)
+	{
+		int i = 0;
+		while (i < e.iThreadCount && (e.iThread[i].iState == EThreadFree || e.iThread[i].iId != r[0])) ++i;
+		r[0] = i < e.iThreadCount ? KHandleThread0 + i : (uint32_t)KErrNotFound;
+		return true;
+	}
+	if (!strcmp(name, "EExecThreadExitType")) { const int i = ThreadIndex(e, r[0]); r[0] = i >= 0 && e.iThread[i].iState == EThreadDead ? e.iThread[i].iExitType : 3; return true; }	// EExitPending
+	if (!strcmp(name, "EExecThreadExitReason")) { const int i = ThreadIndex(e, r[0]); r[0] = i >= 0 && e.iThread[i].iState == EThreadDead ? e.iThread[i].iExitReason : 0; return true; }
+	if (!strcmp(name, "EExecThreadExitCategory")) { const int i = ThreadIndex(e, r[0]); SetDes8(cpu, r[1], i >= 0 ? e.iThread[i].iExitCategory : ""); return true; }
+	if (!strcmp(name, "EExecThreadLogon"))		// (thread, TRequestStatus*, rendezvous)
+	{
+		const int i = ThreadIndex(e, r[0]);
+		if (i < 0 || !r[1]) return true;
+		TGuestThread& t = e.iThread[i];
+		if (t.iState == EThreadDead) { CompleteFor(cpu, e, cur, r[1], t.iExitReason); return true; }
+		int k = 0;
+		while (k < KMaxLogons && t.iLogonStatus[k]) ++k;
+		if (k == KMaxLogons) { CompleteFor(cpu, e, cur, r[1], KErrNoMemory); return true; }
+		t.iLogonStatus[k] = r[1];
+		t.iLogonOwner[k] = cur;
+		t.iLogonRendezvous[k] = r[2] != 0;
+		return true;
+	}
+	if (!strcmp(name, "EExecThreadLogonCancel"))		// (thread, TRequestStatus*, rendezvous): the request completes with KErrNone
+	{
+		const int i = ThreadIndex(e, r[0]);
+		int res = KErrGeneral;
+		for (int k = 0; i >= 0 && k < KMaxLogons; ++k)
+		{
+			TGuestThread& t = e.iThread[i];
+			if (t.iLogonStatus[k] != r[1] || t.iLogonOwner[k] != cur || t.iLogonRendezvous[k] != (r[2] != 0)) continue;
+			CompleteFor(cpu, e, cur, r[1], KErrNone);
+			t.iLogonStatus[k] = 0;
+			res = KErrNone;
+			break;
+		}
+		r[0] = (uint32_t)res;
+		return true;
+	}
+	if (!strcmp(name, "EExecThreadRendezvous"))		// (reason): the rendezvous logons on the running thread
+	{
+		TGuestThread& t = e.iThread[cur];
+		for (int k = 0; k < KMaxLogons; ++k)
+			if (t.iLogonStatus[k] && t.iLogonRendezvous[k]) { CompleteFor(cpu, e, t.iLogonOwner[k], t.iLogonStatus[k], (int32_t)r[0]); t.iLogonStatus[k] = 0; }
+		return true;
+	}
+	if (!strcmp(name, "EExecThreadKill"))		// (handle, TExitType, reason, const TDesC8* category); the main thread is process-permanent
+	{
+		const int i = ThreadIndex(e, r[0]);
+		if (i <= 0) return false;			// the main thread (or not ours): the process ends (ExecCall)
+		char cat[17] = "";
+		if (r[3]) GuestDes(cpu, r[3], cat, sizeof(cat));
+		if (h.iLog)
+		{
+			char l[120];
+			snprintf(l, sizeof(l), "[proteus] guest thread %d ends: type %d %s %d", i, (int)r[1], cat, (int)r[2]);
+			h.iLog(l, h.iLogCtx);
+		}
+		EndThread(cpu, h, i, (int)r[1], (int)r[2], cat);
+		if (i == cur) Reschedule(cpu, h);
+		return true;
+	}
+	return false;
+}
+
 // lr, then the code addresses found on the stack (a heuristic backtrace), as module+offset (+ nearest export) lines in the log
 void Backtrace(CArmCpu& cpu, THle& h)
 {
@@ -153,7 +620,32 @@ void Backtrace(CArmCpu& cpu, THle& h)
 	}
 }
 
+static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm);
+
+// trace: an executive call that answers an error the app may turn into its exit (bounded), with the caller
 bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
+{
+	const uint32_t lr = cpu.R[14];
+	const int cur = h.iExec.iCur;
+	const bool done = DoExecCall(cpu, h, imm);
+	static int errLines = 0;
+	const int32_t res = (int32_t)cpu.R[0];
+	if (h.iLog && h.iProcess && errLines < 100 && h.iExec.iCur == cur && (res == -16 || res == -12 || res == -28))	// KErrBadName / KErrPathNotFound / KErrBadDescriptor
+	{
+		++errLines;
+		const uint32_t n = imm & 0x7FFFFF;
+		const bool fast = (imm & KFast) != 0;
+		const char* name = fast ? (n < sizeof(KFastExecNames) / sizeof(KFastExecNames[0]) ? KFastExecNames[n] : "?")
+								: (n < sizeof(KSlowExecNames) / sizeof(KSlowExecNames[0]) ? KSlowExecNames[n] : "?");
+		char w[120], l[200];
+		Where(*h.iProcess, cpu, lr, w, sizeof(w));
+		snprintf(l, sizeof(l), "[proteus] exec %s -> %d (caller %s)", name, (int)res, w);
+		h.iLog(l, h.iLogCtx);
+	}
+	return done;
+}
+
+static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 {
 	TExecState& e = h.iExec;
 	const bool fast = (imm & KFast) != 0;
@@ -173,9 +665,10 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 		h.iLog(l, h.iLogCtx);
 		if (fast) Backtrace(cpu, h);
 	}
+	if (ThreadExec(cpu, h, name, r)) return true;
 	if (fast)
 	{
-		if (!strcmp(name, "EFastExecWaitForAnyRequest"))
+		if (!strcmp(name, "EFastExecWaitForAnyRequest"))		// (no thread tables: ExecCall without RunExe)
 		{
 			if (!h.iIpc) { strncpy(cpu.iNote, "WaitForAnyRequest with nothing to wait for", sizeof(cpu.iNote) - 1); cpu.Halt(EHleStop); return true; }
 			h.iIpc->iWaitAny(h.iIpc->iCtx);
@@ -218,8 +711,15 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 	}
 	else
 	{
+		// a native request (timer, property subscription, change notifier, process logon: TRequestStatus in r1): its completion signal
+		// belongs to the guest thread making it
+		if (!strcmp(name, "EExecTimerAfter") || !strcmp(name, "EExecTimerAt") || !strcmp(name, "EExecTimerLock") || !strcmp(name, "EExecTimerHighRes")
+			|| !strcmp(name, "EExecTimerAgainHighRes") || !strcmp(name, "EExecTimerInactivity") || !strcmp(name, "EExecPropertySubscribe")
+			|| !strcmp(name, "EExecChangeNotifierLogon") || !strcmp(name, "EExecProcessLogon"))
+			NoteRequest(e, r[1]);
 		if (h.iIpc && h.iIpc->iKernel && (!strncmp(name, "EExecProperty", 13) || !strcmp(name, "EExecOpenObject") || !strcmp(name, "EExecObjectNext") || !strcmp(name, "EExecPlatSecDiagnostic") || !strncmp(name, "EExecChunk", 10)
-			|| !strncmp(name, "EExecMutex", 10) || !strncmp(name, "EExecSemaphore", 14) || !strncmp(name, "EExecChangeNotifier", 19) || !strncmp(name, "EExecTimer", 10) || !strncmp(name, "EExecTimeNow", 12) || !strcmp(name, "EExecTickCount") || !strcmp(name, "EExecHandleClose") || !strcmp(name, "EExecHandleCount"))
+			|| !strncmp(name, "EExecMutex", 10) || !strncmp(name, "EExecSemaphore", 14) || !strncmp(name, "EExecChangeNotifier", 19) || !strncmp(name, "EExecTimer", 10) || !strncmp(name, "EExecTimeNow", 12) || !strcmp(name, "EExecTickCount") || !strcmp(name, "EExecHandleClose") || !strcmp(name, "EExecHandleCount")
+			|| !strcmp(name, "EExecProcessDataParameterLength") || !strcmp(name, "EExecProcessGetDataParameter") || !strncmp(name, "EExecProcessCommandLine", 23))
 			&& h.iIpc->iKernel(h.iIpc->iCtx, name, r, cpu))
 			return true;
 		if (!strcmp(name, "EExecDebugPrint"))
@@ -408,7 +908,7 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 				if (h.iLog) { char l[220]; snprintf(l, sizeof(l), "[proteus] RLibrary::Load %s -> %d %s", file, mod, mod < 0 ? h.iProcess->iError : ""); h.iLog(l, h.iLogCtx); }
 				res = mod >= 0 ? KErrNone : mod;
 			}
-			if (r[3]) { cpu.Write32(r[3], (uint32_t)res); if (ipc) ipc->iSignal(ipc->iCtx, 1); }
+			if (r[3]) { if (e.iThread) CompleteFor(cpu, e, e.iCur, r[3], res); else { cpu.Write32(r[3], (uint32_t)res); if (ipc) ipc->iSignal(ipc->iCtx, 1); } }
 			r[0] = r[3] ? KErrNone : (uint32_t)res;
 			return true;
 		}
@@ -425,7 +925,13 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 		{
 			if (!ipc || !ipc->iOwns(ipc->iCtx, r[0])) { r[0] = (uint32_t)KErrBadHandle; return true; }
 			if (r[3]) cpu.Write32(r[3], 0x80000001u);		// KRequestPending
-			r[0] = (uint32_t)ipc->iSend(ipc->iCtx, r[0], (int)r[1], r[2], r[3], !strcmp(name, "EExecSessionSendSync"));
+			bool sync = !strcmp(name, "EExecSessionSendSync");
+			// the native thread has one synchronous message slot for all guest threads: while another guest thread's synchronous send is
+			// outstanding, this one goes as an asynchronous send (the guest's sessions use the global message pool)
+			if (sync && e.iSyncSendStatus && cpu.Valid(e.iSyncSendStatus, 4) && cpu.Read32(e.iSyncSendStatus) == 0x80000001u) sync = false;
+			NoteRequest(e, r[3]);
+			r[0] = (uint32_t)ipc->iSend(ipc->iCtx, r[0], (int)r[1], r[2], r[3], sync);
+			if (sync) e.iSyncSendStatus = r[3];
 			return true;
 		}
 		if (!strcmp(name, "EExecSessionShare"))		// (TInt& handle, mode)
@@ -434,14 +940,6 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 			r[0] = ipc && ipc->iOwns(ipc->iCtx, hnd) ? (uint32_t)ipc->iShare(ipc->iCtx, hnd, (int)r[1]) : (uint32_t)KErrBadHandle;
 			return true;
 		}
-		if (!strcmp(name, "EExecRequestSignal")) { if (ipc) ipc->iSignal(ipc->iCtx, (int)r[0]); return true; }
-		if (!strcmp(name, "EExecMutexCreate") || !strcmp(name, "EExecSemaphoreCreate") || !strcmp(name, "EExecCondVarCreate")) { r[0] = KHandleObj + e.iCalls; return true; }
-		// condition variables in a one-thread guest: nothing else can signal -- a timed wait times out, an untimed one returns at once
-		// (a spurious wake-up, which every RCondVar::Wait caller loops on); signal / broadcast have no waiter
-		if (!strcmp(name, "EExecCondVarWait")) { r[0] = (int)r[2] > 0 ? (uint32_t)-33 : KErrNone; return true; }		// (cv, mutex, timeout us): KErrTimedOut
-		if (!strcmp(name, "EExecCondVarSignal") || !strcmp(name, "EExecCondVarBroadcast")) { r[0] = KErrNone; return true; }
-		if (!strcmp(name, "EExecMutexWait") || !strcmp(name, "EExecMutexSignal") || !strcmp(name, "EExecSemaphoreWait") || !strcmp(name, "EExecSemaphoreSignal1")
-			|| !strcmp(name, "EExecSemaphoreSignalN")) { r[0] = KErrNone; return true; }
 		if (!strcmp(name, "EExecProcessCommandLineLength")) { r[0] = 0; return true; }
 		if (!strcmp(name, "EExecStaticCallsDone")) { r[0] = KErrNone; return true; }
 		if (!strcmp(name, "EExecUserThreadExiting")) { r[0] = KErrNone; return true; }
@@ -455,10 +953,7 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 			return true;
 		}
 		if (!strcmp(name, "EExecProcessCommandLine")) { return true; }
-		if (!strcmp(name, "EExecThreadId") || !strcmp(name, "EExecProcessId")) { r[0] = 0x100; return true; }
-		// (TThreadId, owner type): the one guest thread (id 0x100) -> KCurrentThreadHandle, which every thread exec here treats as it; any
-		// other id is no thread of this process (other processes' threads are not reachable from the guest)
-		if (!strcmp(name, "EExecThreadOpenById")) { r[0] = r[0] == 0x100 ? 0xFFFF8001u : (uint32_t)-1; return true; }		// KErrNotFound
+		if (!strcmp(name, "EExecProcessId")) { r[0] = 0x100; return true; }
 		// ---- the process / thread asking about itself (one process, one thread) ----
 		const char* exe = h.iExePath ? h.iExePath : "z:\\sys\\bin\\guest.exe";
 		if (!strcmp(name, "EExecProcessFileName") || !strcmp(name, "EExecHandleFullName") || !strcmp(name, "EExecHandleName"))	// (handle, TDes8&)
@@ -505,9 +1000,9 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 		if (!strcmp(name, "EExecThreadProcessPriority")) { r[0] = 350; return true; }
 		if (!strcmp(name, "EExecProcessSetPriority") || !strcmp(name, "EExecThreadSetPriority") || !strcmp(name, "EExecThreadSetProcessPriority")
 			|| !strcmp(name, "EExecProcessSetFlags") || !strcmp(name, "EExecThreadSetFlags") || !strcmp(name, "EExecFsRegisterThread")
-			|| !strcmp(name, "EExecWsRegisterThread") || !strcmp(name, "EExecThreadRendezvous") || !strcmp(name, "EExecProcessRendezvous")
+			|| !strcmp(name, "EExecWsRegisterThread") || !strcmp(name, "EExecProcessRendezvous")
 			|| !strcmp(name, "EExecThreadRename") || !strcmp(name, "EExecProcessRename")) { r[0] = KErrNone; return true; }
-		if (!strcmp(name, "EExecProcessFlags") || !strcmp(name, "EExecThreadFlags") || !strcmp(name, "EExecThreadRequestCount")) { r[0] = 0; return true; }
+		if (!strcmp(name, "EExecProcessFlags") || !strcmp(name, "EExecThreadFlags")) { r[0] = 0; return true; }
 		if (!strcmp(name, "EExecThreadGetCpuTime")) { cpu.Write32(r[1], 0); cpu.Write32(r[1] + 4, 0); r[0] = KErrNone; return true; }
 		if (!strcmp(name, "EExecThreadStackInfo"))		// (handle, TThreadStackInfo&): iBase (top), iLimit, iExpandLimit
 		{
@@ -518,10 +1013,9 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 		}
 		if (!strcmp(name, "EExecProcessGetDataParameter") || !strcmp(name, "EExecProcessGetHandleParameter")
 			|| !strcmp(name, "EExecProcessDataParameterLength")) { r[0] = (uint32_t)KErrNotFound; return true; }
-		if (!strcmp(name, "EExecThreadRequestSignal")) { if (ipc) ipc->iSignal(ipc->iCtx, 1); return true; }
 		if (!strcmp(name, "EExecThreadProcess") || !strcmp(name, "EExecThreadAsProcess")) { r[0] = 0xFFFF8000u; return true; }	// KCurrentProcessHandle
 		if (!strcmp(name, "EExecProcessGetMemoryInfo")) { r[0] = (uint32_t)KErrNotSupported; return true; }
-		if (!strcmp(name, "EExecProcessExitType")) { r[0] = 2; return true; }		// EExitPending
+		if (!strcmp(name, "EExecProcessExitType")) { r[0] = 3; return true; }		// EExitPending (TExitType: Kill, Terminate, Panic, Pending)
 		if (!strcmp(name, "EExecThreadKill") || !strcmp(name, "EExecProcessKill"))
 		{
 			// (handle, TExitType, reason, const TDesC8* category): Kill / Terminate / Panic of the current thread or process

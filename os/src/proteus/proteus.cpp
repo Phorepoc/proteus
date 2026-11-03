@@ -11,6 +11,8 @@
 #include <w32std.h>
 #include <e32rom.h>
 #include <e32svr.h>
+#include <e32hal.h>
+#include <apacmdln.h>
 #include <string.h>
 #include "armcpu.h"
 #include "proteusrt.h"
@@ -20,8 +22,9 @@ _LIT(KArmDirZ, "z:\\sys\\bin\\arm\\");
 static void ResetDestroy(TAny* aArray);
 _LIT(KDefaultExe, "z:\\sys\\bin\\arm\\proteushello.exe");
 // the guest region: reserved address space, committed as the guest uses it (modules as they load, the main stack, chunk pages as the guest
-// commits them) -- a real app's heap reserves its EPOCHEAPSIZE maximum (PyS60: 32 MB) and commits a little of it
-const TInt KGuestBytes = 256 << 20;
+// commits them) -- a real app's heap reserves its EPOCHEAPSIZE maximum (PyS60: 32 MB; Sparkle: 128 MB, which euser doubles for the heap chunk)
+// and commits a little of it. As much as a process's local address space gives (an ARM process has ~1 GB): the reservation costs no RAM.
+const TInt KGuestBytesMax = 1 << 30, KGuestBytesMin = 64 << 20;
 
 // CArmCpu::TCommitFn: commit / decommit host pages of the guest region (a disconnected chunk). A range may overlap pages committed
 // before (a module's last page and the next module's first): then it goes page by page and those count as done.
@@ -252,11 +255,30 @@ static TInt BridgeIndex(TBridge& b, uint32_t aHandle)
 
 static bool BridgeProperty(void* aCtx, const char* aExec, uint32_t* r);
 
+// the guest program's command line: what its creator passed (the loader made this process's "<program> <command line>", MainL splits it)
+static TBuf<KMaxFileName> gGuestCmd;
+
 // kernel objects for the guest: P&S, OpenObject by name, and the calls on the opened chunks / mutexes / semaphores (native, blocking)
 static bool BridgeKernel(void* aCtx, const char* aExec, uint32_t* r, proteus::CArmCpu& aCpu)
 	{
 	TBridge& b = *(TBridge*)aCtx;
 	const TPtrC8 n((const TUint8*)aExec);
+	// the process environment: this process IS the guest's (the loader created it for the program), so its parameter slots -- apparc's
+	// command line in slot 1, ... -- are the guest's; the native calls are the same executive calls (guest memory is this process's)
+	if (n == _L8("EExecProcessDataParameterLength")) { r[0] = (uint32_t)User::ParameterLength((TInt)r[0]); return true; }
+	if (n == _L8("EExecProcessGetDataParameter"))		// (slot, TUint8* data, max length) -> length or an error
+		{
+		TPtr8 d((TUint8*)r[1], 0, (TInt)r[2]);
+		r[0] = (uint32_t)User::GetDesParameter((TInt)r[0], d);
+		return true;
+		}
+	if (n == _L8("EExecProcessCommandLineLength")) { r[0] = (uint32_t)gGuestCmd.Length(); return true; }		// characters
+	if (n == _L8("EExecProcessCommandLine"))		// (process, TDes8&): the UTF-16 command line as bytes (User::CommandLine halves the length)
+		{
+		TDes8& d = *(TDes8*)r[1];
+		d.Copy(TPtrC8((const TUint8*)gGuestCmd.Ptr(), Min(gGuestCmd.Size(), d.MaxLength())));
+		return true;
+		}
 	if (n.Left(13) == _L8("EExecProperty"))
 		return BridgeProperty(aCtx, aExec, r);
 	if (n == _L8("EFastExecGetGlobalUserData"))
@@ -435,7 +457,8 @@ static int BridgeCreate(void* aCtx, const char* aName, int aSlots)
 	return KErrNoMemory;
 	}
 
-static void WatchAsync(TInt aFn, TRequestStatus* aSt);
+static void WatchAsync(TInt aFn, TRequestStatus* aSt, const TDesC& aServer);
+static void UnwatchAsync(TRequestStatus* aSt);
 // a synchronous guest send (SessionSendSync, e.g. sessions with 0 async slots) is done synchronously here -- an async native send would
 // need a slot (KErrServerBusy) -- and the guest's TRequestStatus is completed + this thread signalled, as the kernel would
 static void CompleteGuest(TRequestStatus* aStatus, TInt aResult)
@@ -537,6 +560,17 @@ static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArg
 			RDebug::Printf("PH: proteus WS: fn %x len %d%S", aFunction, len, &ops);
 			}
 		}
+	// CDL server trace (Avkon's layout server; bounded): every request with its arguments (flags, the four words, a 16-bit name in arg 1)
+	static TInt cdlLines = 0;
+	if (b.iName[i] == _L("CdlServer") && cdlLines < 60)
+		{
+		++cdlLines;
+		TBuf8<80> a1;
+		if (aArgs && ((args.iFlags >> 3) & 7) == 7)		// arg 1 TDesC16
+			a1.Copy(((const TDesC16*)args.iArgs[1])->Left(70));
+		RDebug::Printf("PH: proteus CDL: fn %d %s flags %x args %x %x %x %x %S", aFunction, aSync ? "sync" : "async", args.iFlags,
+			args.iArgs[0], args.iArgs[1], args.iArgs[2], args.iArgs[3], &a1);
+		}
 	if (aFunction == RMessage2::EConnect && !b.iConnected[i])
 		{
 		b.iConnected[i] = ETrue;
@@ -554,6 +588,7 @@ static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArg
 		TInt r = KErrNone;
 		if (BridgeFsPrivate(b, i, aFunction, args, r))
 			{
+			if (r < 0) RDebug::Printf("PH: proteus IPC: !FileServer private-path fn %d -> %d", aFunction, r);
 			if (aSync || st)
 				{
 				CompleteGuest(st, r);
@@ -564,14 +599,28 @@ static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArg
 		}
 	if (aSync)
 		{
-		CompleteGuest(st, b.iSession[i].Sync(aFunction, args));
+		UnwatchAsync(st);		// (a status reused for a synchronous call)
+		const TInt r = b.iSession[i].Sync(aFunction, args);
+		static TInt errLines = 0;
+		if (r < 0 && errLines < 200)		// trace: a server call the guest gets an error from (server, function, arg 0 if a 16-bit descriptor: a file name)
+			{
+			++errLines;
+			TBuf8<120> a0;
+			if (aArgs && (args.iFlags & 7) == 7)		// TIpcArgs::EDesC16
+				a0.Copy(((const TDesC16*)args.iArgs[0])->Left(110));
+			else if (aArgs && (args.iFlags & 7) == 6)	// EDesC8
+				a0.Copy(((const TDesC8*)args.iArgs[0])->Left(110));
+			TBuf8<40> srv;
+			srv.Copy(b.iName[i].Left(40));
+			RDebug::Printf("PH: proteus IPC: %S fn %d -> %d %S", &srv, aFunction, r, &a0);
+			}
+		CompleteGuest(st, r);
 		return KErrNone;
 		}
 	if (st)
 		{
 		b.iSession[i].Async(aFunction, args, *st);
-		if (b.iName[i] == _L("!Windowserver"))
-			WatchAsync(aFunction, st);
+		WatchAsync(aFunction, st, b.iName[i]);
 		return KErrNone;
 		}
 	return b.iSession[i].Blind(aFunction, args);
@@ -606,19 +655,40 @@ static int BridgeShare(void* aCtx, uint32_t aHandle, int)
 	}
 
 // window-server async requests of the guest (EventReady, RedrawReady, ...): remember the status, report when the native WSERV completes it
-struct TAsyncWatch { TInt iFn; TRequestStatus* iSt; };
-static TAsyncWatch gAsync[16];
-static void WatchAsync(TInt aFn, TRequestStatus* aSt)
+// (and the other servers' async requests: reported when they complete with an error, bounded)
+struct TAsyncWatch { TInt iFn; TRequestStatus* iSt; TBuf8<24> iSrv; };
+static TAsyncWatch gAsync[32];
+static void WatchAsync(TInt aFn, TRequestStatus* aSt, const TDesC& aServer)
 	{
-	for (TInt k = 0; k < 16; ++k)
-		if (!gAsync[k].iSt || gAsync[k].iSt == aSt) { gAsync[k].iFn = aFn; gAsync[k].iSt = aSt; return; }
+	TInt k = 0;
+	while (k < 32 && gAsync[k].iSt != aSt) ++k;		// the same request status again (reused): that entry, else a free one
+	if (k == 32)
+		for (k = 0; k < 32 && gAsync[k].iSt; ++k) {}
+	if (k == 32)
+		return;
+	gAsync[k].iFn = aFn;
+	gAsync[k].iSt = aSt;
+	gAsync[k].iSrv.Copy(aServer.Left(24));
+	}
+static void UnwatchAsync(TRequestStatus* aSt)
+	{
+	for (TInt k = 0; k < 32; ++k)
+		if (gAsync[k].iSt == aSt) gAsync[k].iSt = NULL;
 	}
 static void CheckAsync()
 	{
-	for (TInt k = 0; k < 16; ++k)
+	static TInt errLines = 0;
+	for (TInt k = 0; k < 32; ++k)
 		if (gAsync[k].iSt && gAsync[k].iSt->Int() != KRequestPending)
 			{
-			RDebug::Printf("PH: proteus WS: async fn %x completed %d", gAsync[k].iFn, gAsync[k].iSt->Int());
+			const TInt v = gAsync[k].iSt->Int();
+			if (gAsync[k].iSrv == _L8("!Windowserver"))
+				RDebug::Printf("PH: proteus WS: async fn %x completed %d", gAsync[k].iFn, v);
+			else if (v < 0 && errLines < 100)
+				{
+				++errLines;
+				RDebug::Printf("PH: proteus IPC: %S async fn %d completed %d", &gAsync[k].iSrv, gAsync[k].iFn, v);
+				}
 			gAsync[k].iSt = NULL;
 			}
 	}
@@ -648,6 +718,31 @@ static void BridgeWaitAny(void*)
 	CheckAsync();
 	}
 static void BridgeSignal(void*, int aCount) { RThread t; while (aCount-- > 0) t.RequestSignal(); }
+
+// a guest thread's timed wait: one request signal within aMicroseconds (true, taken) or a timeout (false). Each completion is one signal:
+// the timer's own is taken here either way (Cancel completes a pending timer)
+static bool BridgeWaitAnyFor(void* aCtx, int aMicroseconds)
+	{
+	static RTimer timer;
+	static TBool created = EFalse;
+	if (!created && timer.CreateLocal() != KErrNone) { BridgeWaitAny(aCtx); return true; }
+	created = ETrue;
+	TRequestStatus st;
+	timer.After(st, aMicroseconds);
+	BridgeWaitAny(aCtx);
+	if (st != KRequestPending) return false;		// (the signal taken was the timer's; a guest request that also completed is still counted)
+	timer.Cancel();
+	User::WaitForRequest(st);
+	return true;
+	}
+
+// microseconds on the system tick: monotonic, unlike the UTC clock (which SNTP moves)
+static uint64_t BridgeNowUs(void*)
+	{
+	static TInt period = 0;
+	if (!period) { TTimeIntervalMicroSeconds32 p; UserHal::TickPeriod(p); period = p.Int() > 0 ? p.Int() : 1000; }
+	return (uint64_t)User::TickCount() * (uint64_t)period;
+	}
 
 // the guest's cleanup stack (e32base.h / ub_cln.cpp): trap handler = &CTrapCleanup::iHandler (TCleanupTrapHandler: vptr, CCleanup*);
 // CCleanup: vptr, iBase, iTop (end of the array), iNext (next free slot); items {TCleanupOperation iOperation, TAny* iPtr} (8 bytes). Logs the top aCount items.
@@ -806,6 +901,13 @@ static TInt MainL()
 		arg.Delete(0, 3);
 		arg.Trim();
 		}
+	// "<program> <its command line>" (the loader's redirect: the program's full name never has a space): the rest is the guest's own
+	const TInt sp = arg.Locate(' ');
+	if (sp >= 0)
+		{
+		gGuestCmd = arg.Mid(sp + 1);
+		arg.SetLength(sp);
+		}
 	TFileName path = arg.Length() ? arg : TFileName(KDefaultExe);
 	RFs fs;
 	User::LeaveIfError(fs.Connect());
@@ -826,21 +928,26 @@ static TInt MainL()
 	TPtr8 ip = img->Des();
 	r = f.Read(0, ip);
 	User::LeaveIfError(r);
-	// the guest region: its own local disconnected chunk, KGuestBytes reserved; the kernel hands out committed pages cleared
+	// the guest region: its own local disconnected chunk, the largest reservation the kernel grants (KGuestBytesMax, halved while it
+	// refuses); the kernel hands out committed pages cleared
 	RChunk chunk;
-	User::LeaveIfError(chunk.CreateDisconnectedLocal(0, 0, KGuestBytes));
+	TInt guestBytes = KGuestBytesMax;
+	while ((r = chunk.CreateDisconnectedLocal(0, 0, guestBytes)) != KErrNone && guestBytes > KGuestBytesMin)
+		guestBytes >>= 1;
+	User::LeaveIfError(r);
+	RDebug::Printf("PH: proteus guest region %d MB", guestBytes >> 20);
 	CleanupClosePushL(chunk);
 	TUint8* mem = chunk.Base();
 	proteus::CArmCpu* cpu = new (ELeave) proteus::CArmCpu;
 	cpu->iHost = mem;
 	cpu->iBase = (TUint32)mem;
-	cpu->iSize = KGuestBytes;
+	cpu->iSize = guestBytes;
 	cpu->iCommit = CommitGuest;
 	cpu->iCommitCtx = &chunk;
-	cpu->iPageMap = (TUint8*)User::AllocZL(KGuestBytes >> 12);
+	cpu->iPageMap = (TUint8*)User::AllocZL(guestBytes >> 12);
 	CleanupStack::PushL(cpu->iPageMap);
 	// the main thread's stack at the region top (proteusrt.cpp StartThreadStack: the thread data 4 KB below the top)
-	if (!cpu->Commit(cpu->iBase + KGuestBytes - proteus::KStackBytes, proteus::KStackBytes))
+	if (!cpu->Commit(cpu->iBase + guestBytes - proteus::KStackBytes, proteus::KStackBytes))
 		User::Leave(KErrNoMemory);
 	RPointerArray<HBufC8> dllBufs;
 	CleanupStack::PushL(TCleanupItem((TCleanupOperation)&ResetDestroy, &dllBufs));
@@ -881,7 +988,7 @@ static TInt MainL()
 		bridge->iUsed[i] = bridge->iConnected[i] = bridge->iPropUsed[i] = EFalse;
 		bridge->iObjType[i] = 0;
 		}
-	proteus::TIpcBridge ipc = { bridge, BridgeCreate, BridgeSend, BridgeOwns, BridgeClose, BridgeShare, BridgeWaitAny, BridgeSignal, BridgeKernel };
+	proteus::TIpcBridge ipc = { bridge, BridgeCreate, BridgeSend, BridgeOwns, BridgeClose, BridgeShare, BridgeWaitAny, BridgeSignal, BridgeKernel, BridgeWaitAnyFor, BridgeNowUs };
 	hle.iIpc = &ipc;
 	TBuf8<KMaxFileName + 1> exePath;
 	exePath.Copy(path);
@@ -1039,14 +1146,30 @@ static TInt SpawnPlain(const TDesC& aName, const char* aPhase)
 	}
 
 // start aName and wait up to aSeconds for it; a process still running then is left running (aExit = EExitPending)
-static TInt RunTimed(const TDesC& aName, const TDesC& aArgs, TInt aSeconds, TExitType& aExit, TInt& aReason)
+static TInt RunTimed(const TDesC& aName, const TDesC& aArgs, TInt aSeconds, TExitType& aExit, TInt& aReason, const TDesC* aAppName = NULL)
 	{
 	aExit = EExitPending;
 	aReason = 0;
 	RProcess p;
-	const TInt r = p.Create(aName, aArgs);
+	TInt r = p.Create(aName, aArgs);
 	if (r != KErrNone)
 		return r;
+	if (aAppName)		// started as the menu starts an app (apparc: a CApaCommandLine naming the app's EXE in the new process's environment slots)
+		{
+		TRAP(r, {
+			CApaCommandLine* cmd = CApaCommandLine::NewLC();
+			cmd->SetExecutableNameL(*aAppName);
+			cmd->SetCommandL(EApaCommandRun);
+			cmd->SetProcessEnvironmentL(p);
+			CleanupStack::PopAndDestroy(cmd);
+			});
+		if (r != KErrNone)
+			{
+			p.Kill(r);
+			p.Close();
+			return r;
+			}
+		}
 	TRequestStatus st, tst;
 	RTimer t;
 	t.CreateLocal();
@@ -1157,7 +1280,8 @@ TInt E32Main()
 					}
 				}
 			// P3 (only when staged: c:\sis\*.sis, installed in name order, + c:\sisapp.txt = the EXE to start): real ARM packages through the
-			// real installer (sisinst = the silent install pheget uses), then the app started by its plain name like the menu does (the loader hook)
+			// real installer (sisinst = the silent install pheget uses), then the app started by its plain name with apparc's command line, as the
+			// menu does (the loader hook)
 			CDir* sis = NULL;
 			if (fs.GetDir(_L("c:\\sis\\*.sis"), KEntryAttNormal, ESortByName, sis) == KErrNone && sis->Count())
 				{
@@ -1186,7 +1310,9 @@ TInt E32Main()
 					exe.Copy(exe8);
 					// a GUI app runs until it is closed: PASS = still running after the wait AND a window group of its own in the native WSERV
 					// (CApaWindowGroupName carries the app UID as 8 hex digits) -- a guest that only blocks somewhere has none
-					const TInt ar = RunTimed(exe, KNullDesC, 240, et, reason);
+					TFileName app(_L("c:\\sys\\bin\\"));		// where the installer put it (the app list's executable name)
+					app.Append(exe);
+					const TInt ar = RunTimed(exe, KNullDesC, 240, et, reason, &app);
 					const TBool running = ar == KErrNone && et == EExitPending;
 					RDebug::Printf("PH: proteus P3 %S: create %d exit type %d reason %d%s", &exe8, ar, (TInt)et, reason, running ? " (running after 240 s)" : "");
 					TBool hasWg = EFalse;

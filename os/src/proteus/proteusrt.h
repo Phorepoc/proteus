@@ -82,10 +82,46 @@ struct TIpcBridge
 	// handles (Chunk*, Mutex*, Semaphore*, HandleClose). r0-r3 in, r0 out; false = not the embedder's (the guest-side emulation runs).
 	// An opened chunk becomes a memory window of aCpu (CArmCpu::AddWindow).
 	bool (*iKernel)(void* aCtx, const char* aExec, uint32_t* aR, CArmCpu& aCpu);
+	// guest threads: wait for a request signal at most aMicroseconds (true = one arrived and was taken, false = timed out); a monotonic clock
+	bool (*iWaitAnyFor)(void* aCtx, int aMicroseconds);
+	uint64_t (*iNowUs)(void* aCtx);
 };
 
 // P2: the executive state of a guest that runs the real ARM euser (proteusexec.cpp)
-enum { KStackBytes = 1 << 20, KHandleChunk0 = 0x00C10000, KHandleObj = 0x00D00000, KHandleLib0 = 0x00E40000, KHandleLoader = 0x00E3F000 };
+enum { KStackBytes = 1 << 20, KHandleChunk0 = 0x00C10000, KHandleObj = 0x00D00000, KHandleLib0 = 0x00E40000, KHandleLoader = 0x00E3F000,
+	KHandleThread0 = 0x00F00000 };		// guest thread i = KHandleThread0 + i (positive: euser takes a negative handle as an error)
+
+// guest threads: each has its own registers, stack + TLocalThreadData, request semaphore and the per-thread executive state (heap, trap
+// handler, active scheduler, TLS). They run on the one native thread, switched cooperatively whenever the running one blocks (WaitForAnyRequest
+// with no signal, a mutex / semaphore / condition-variable wait, exit): the kernel's scheduling decisions without preemption.
+enum { KMaxThreads = 32, KMaxSync = 512, KMaxLogons = 8, KMaxReqs = 128 };
+enum TThreadState { EThreadFree, EThreadSuspended, EThreadReady, EThreadWaitAny, EThreadWaitMutex, EThreadWaitSem, EThreadWaitCond, EThreadDead };
+struct TGuestThread
+{
+	int iState;
+	uint32_t iId;
+	// saved CPU state (the running thread's is in the CArmCpu)
+	uint32_t iR[16], iN, iZ, iC, iV, iT, iGE, iTpidrurw, iTpidruro, iFpscr, iFpexc;
+	uint64_t iD[32];
+	// saved per-thread executive state (the running thread's is in TExecState)
+	uint32_t iHeap, iTrapHandler, iActiveScheduler, iTrapFrame;
+	uint32_t iTlsKey[64], iTlsVal[64];
+	int iTlsCount;
+	int iRequests;				// the request semaphore count (DThread::iRequestSemaphore)
+	int iWaitObj;				// EThreadWaitMutex / Sem / Cond: the sync object
+	int iCondMutex, iCondCount;	// EThreadWaitCond: the mutex to take back on wake-up, and its hold count
+	int32_t iWaitResult;		// the result a wait returns once the mutex is taken back (a timed-out condvar wait: KErrTimedOut)
+	uint32_t iWaitSeq;			// FIFO order of the waiters of one object
+	uint64_t iDeadline;			// timed wait: host microseconds (TIpcBridge::iNowUs), 0 = none
+	int iExitType, iExitReason;
+	char iExitCategory[17];
+	uint32_t iLogonStatus[KMaxLogons];
+	int iLogonOwner[KMaxLogons];
+	bool iLogonRendezvous[KMaxLogons];
+	int iStackChunk;			// the chunk holding its stack (-1 = the main thread's region stack)
+	bool iStackFree;			// dead: the stack chunk may be reused by a new thread
+};
+struct TSyncObj { int iType; int iCount; int iHolder; };		// 1 mutex (iCount = hold count, iHolder = thread), 2 semaphore (iCount), 3 condition variable
 struct TExecState
 {
 	uint32_t iHeap, iTrapHandler, iActiveScheduler, iTrapFrame;
@@ -98,6 +134,17 @@ struct TExecState
 	uint32_t iChunkTop, iLowWater;		// chunks grow down from below the stack, not under iLowWater (the end of the loaded modules)
 	uint32_t iCalls;
 	int iLibFirstNew;			// guest RLibrary::Load: the first module whose entry point LibraryAttach still has to report
+	// guest threads (RunExe allocates the tables; leaked with the process)
+	TGuestThread* iThread;
+	int iThreadCount, iCur;
+	TSyncObj* iSync;
+	int iSyncCount;
+	uint32_t iWaitSeq;
+	uint32_t iReentry;			// EFastExecSetReentryPoint: where a new thread starts (0 = the EXE's entry point, DProcess::iReentryPoint's default)
+	// the requests guest threads handed to native servers / timers: a native signal belongs to the thread whose TRequestStatus completed
+	uint32_t iReqStatus[KMaxReqs];
+	int iReqThread[KMaxReqs];
+	uint32_t iSyncSendStatus;	// the outstanding SessionSendSync (the native thread has one synchronous message slot for all guest threads)
 };
 struct THle
 {

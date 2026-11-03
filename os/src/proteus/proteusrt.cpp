@@ -388,6 +388,19 @@ void RunExe(CArmCpu& cpu, THle& h, uint32_t maxSteps)
 {
 	InstallHle(cpu, h);
 	memset(&h.iExec, 0, sizeof(h.iExec));
+	if (h.iProcess && h.iProcess->iRealEuser)		// the real euser's executive: guest threads (thread 0 = this one, the main thread)
+	{
+		h.iExec.iThread = (TGuestThread*)calloc(KMaxThreads, sizeof(TGuestThread));
+		h.iExec.iSync = (TSyncObj*)calloc(KMaxSync, sizeof(TSyncObj));
+		if (h.iExec.iThread && h.iExec.iSync)
+		{
+			h.iExec.iThreadCount = 1;
+			h.iExec.iThread[0].iState = EThreadReady;
+			h.iExec.iThread[0].iId = h.iThreadId ? h.iThreadId : 0x100;
+			h.iExec.iThread[0].iStackChunk = -1;
+		}
+		else { free(h.iExec.iThread); free(h.iExec.iSync); h.iExec.iThread = 0; h.iExec.iSync = 0; }
+	}
 	h.iExec.iLibFirstNew = h.iProcess ? h.iProcess->iCount : 0;		// entry points of the initial modules are run here, not by LibraryAttach
 	for (int m = 0; h.iProcess && m < h.iProcess->iCount; ++m)
 		if (h.iProcess->iMod[m].iEnd > h.iExec.iLowWater) h.iExec.iLowWater = h.iProcess->iMod[m].iEnd;
