@@ -16,7 +16,17 @@ GLDEF_C TInt E32Main()
 	TInt n = 0;
 	for (TInt i = 0; i < KMaxDrives; ++i) if (drives[i]) ++n;
 	RDebug::Printf("PH: proteus ARM fs: DriveList -> %d, %d drives, C: %d, Z: %d", r, n, drives[EDriveC] != 0, drives[EDriveZ] != 0);
-	_LIT(KFile, "c:\proteusfs.txt");
+	// the private directory: created on C:, then the session's own path (a new session starts there) -- under Proteus that is the
+	// guest's \private\<SecureId>\, not the handler's
+	r = fs.CreatePrivatePath(EDriveC);
+	TFileName priv;
+	const TInt rp = fs.PrivatePath(priv);
+	TBuf8<64> priv8;
+	priv8.Copy(priv);
+	RDebug::Printf("PH: proteus ARM fs: CreatePrivatePath -> %d, PrivatePath -> %d %S", r, rp, &priv8);
+	if (r != KErrNone || rp != KErrNone || (r = fs.SetSessionToPrivate(EDriveC)) != KErrNone)
+		return r != KErrNone ? r : rp;
+	_LIT(KFile, "proteusfs.txt");
 	_LIT8(KText, "written by ARM code through the native file server");
 	RFile f;
 	r = f.Replace(fs, KFile, EFileWrite);

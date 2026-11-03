@@ -133,6 +133,11 @@ struct TBridge
 	TBool iPropUsed[KMaxBridge];
 	RChunk iObj[KMaxBridge];					// P2: kernel objects opened by name (chunk / mutex / semaphore: all an RHandleBase), KObjHandle0 + i
 	TInt iObjType[KMaxBridge];					// TObjectType, 0 = free slot (EThread is never opened here)
+	// the guest's file-server identity: this process is the handler, so the file server's private path is the handler's; the guest's
+	// is \private\<its SecureId>\ (sessions start there, and the private-path calls answer it -- BridgeFsPrivate)
+	TUint32 iSid;
+	TBool iPathSet[KMaxBridge];
+	RFs* iFs;
 	};
 enum { KObjHandle0 = 0x00E20000 };
 
@@ -286,6 +291,16 @@ static bool BridgeKernel(void* aCtx, const char* aExec, uint32_t* r, proteus::CA
 		r[0] = KObjHandle0 + slot;
 		return true;
 		}
+	if (n == _L8("EExecPlatSecDiagnostic"))	// (TPlatSecDiagnostic*): a guest-side check failed -- log it, answer as the kernel (ssecure.cpp)
+		{
+		const TInt32* d = (const TInt32*)r[0];		// iType, iArg1, iArg2, iContextText, iContextTextLength (u32std.h)
+		TBuf8<80> ctx;
+		if (d && d[3] && d[4] > 0)
+			ctx.Copy(TPtrC8((const TUint8*)d[3], Min(d[4], ctx.MaxLength())));
+		RDebug::Printf("PH: proteus PlatSec diagnostic: type %d arg1 %08x arg2 %08x '%S'", d ? d[0] : -1, d ? d[1] : 0, d ? d[2] : 0, &ctx);
+		r[0] = (uint32_t)(PlatSec::ConfigSetting(PlatSec::EPlatSecEnforcement) ? KErrPermissionDenied : KErrNone);
+		return true;
+		}
 	if (n == _L8("EExecObjectNext"))		// (TObjectType, TBuf8<KMaxFullName>& match -> full name, TFindHandle& cursor): TFindXxx::Next on the native kernel
 		{
 		TDes8& name8 = *(TDes8*)r[1];		// guest descriptor = native layout, same memory
@@ -402,6 +417,52 @@ static void CompleteGuest(TRequestStatus* aStatus, TInt aResult)
 	RThread().RequestSignal();
 	}
 
+// the guest's private path on a file-server session (TFsMessage, f32plugin.h). The file server derives it from the client's SecureId,
+// which is this handler's: a new session starts in \private\<handler>\ (CServerFs::NewSessionL) and SessionToPrivate / PrivatePath /
+// CreatePrivatePath (sf_nbs.cpp) answer the handler's directory. These give the guest its own, \private\<its SecureId>\ (the handler
+// has AllFiles to reach it). true = handled here (aResult = the result).
+static TBool BridgeFsPrivate(TBridge& b, TInt i, TInt aFunction, const TIpcArgs& aArgs, TInt& aResult)
+	{
+	enum { EFsSetSessionPath = 15, EFsSessionToPrivate = 85, EFsPrivatePath = 86, EFsCreatePrivatePath = 87 };
+	TBuf<20> priv(_L("\\private\\"));
+	priv.AppendNumFixedWidth(b.iSid, EHex, 8);
+	priv.Append('\\');
+	TFileName p;
+	if (!b.iPathSet[i])			// before the session's first request: where a session of the guest's own would start
+		{
+		b.iPathSet[i] = ETrue;
+		p.Append((TChar)RFs::GetSystemDriveChar());
+		p.Append(':');
+		p.Append(priv);
+		b.iSession[i].Sync(EFsSetSessionPath, TIpcArgs(&p));
+		}
+	if (aFunction != EFsSessionToPrivate && aFunction != EFsPrivatePath && aFunction != EFsCreatePrivatePath)
+		return EFalse;
+	if (aFunction == EFsPrivatePath)
+		{
+		((TDes*)aArgs.iArgs[0])->Copy(priv);		// the guest's TDes16, in this process (same layout)
+		aResult = KErrNone;
+		return ETrue;
+		}
+	TChar ch;
+	aResult = RFs::DriveToChar(aArgs.iArgs[0], ch);
+	if (aResult != KErrNone)
+		return ETrue;
+	p.SetLength(0);
+	p.Append(ch);
+	p.Append(':');
+	p.Append(priv);
+	if (aFunction == EFsSessionToPrivate)
+		aResult = b.iSession[i].Sync(EFsSetSessionPath, TIpcArgs(&p));
+	else
+		{
+		aResult = b.iFs->MkDirAll(p);
+		if (aResult == KErrAlreadyExists)
+			aResult = KErrNone;		// as the server: an existing private path is success
+		}
+	return ETrue;
+	}
+
 static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArgs, uint32_t aStatus, bool aSync)
 	{
 	TBridge& b = *(TBridge*)aCtx;
@@ -457,6 +518,19 @@ static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArg
 			return KErrNone;
 			}
 		return r;
+		}
+	if (b.iName[i] == _L("!FileServer") && b.iSid)
+		{
+		TInt r = KErrNone;
+		if (BridgeFsPrivate(b, i, aFunction, args, r))
+			{
+			if (aSync || st)
+				{
+				CompleteGuest(st, r);
+				return KErrNone;
+				}
+			return r;
+			}
 		}
 	if (aSync)
 		{
@@ -759,8 +833,11 @@ static TInt MainL()
 	hle.iLogCtx = NULL;
 	hle.iUnimplemented = 0;
 	TBridge* bridge = new (ELeave) TBridge;
+	bridge->iSid = size >= 132 ? (img->Ptr()[128] | (img->Ptr()[129] << 8) | (img->Ptr()[130] << 16) | ((TUint32)img->Ptr()[131] << 24)) : 0;	// E32ImageHeader iS.iSecureId
+	bridge->iFs = &fs;
 	for (TInt i = 0; i < KMaxBridge; ++i)
 		{
+		bridge->iPathSet[i] = EFalse;
 		bridge->iUsed[i] = bridge->iConnected[i] = bridge->iPropUsed[i] = EFalse;
 		bridge->iObjType[i] = 0;
 		}
