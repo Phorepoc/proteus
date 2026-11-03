@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // proteusdllexe.mmp -- OURS (Proteus P2): a real ARM EXE that imports a real ARM DLL (proteusdll.dll). ARM build: ./ph arm proteusdll proteusdllexe.
 TARGET			proteusdllexe.exe
 TARGETTYPE		exe

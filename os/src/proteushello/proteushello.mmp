@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // proteushello.mmp -- OURS (Proteus P0): the smallest real ARM Symbian EXE (euser only). ARM build: ./ph arm proteushello.
 TARGET			proteushello.exe
 TARGETTYPE		exe

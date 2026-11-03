@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // e32decomp.h -- OURS (Proteus P2): byte-pair + Symbian-deflate E32Image decompression (pure C++). See e32decomp.cpp.
 #ifndef PROTEUS_E32DECOMP_H
 #define PROTEUS_E32DECOMP_H

@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // armcpu.cpp -- OURS (Proteus P0). See armcpu.h. ARM mode, user-mode instructions up to ARMv7-A: data processing (all 16 ops, barrel shifter), MUL/MLA/MLS/UMULL/UMLAL/
 // UMAAL/SMULL/SMLAL, LDR/STR/LDRB/STRB, LDRH/STRH/LDRSB/LDRSH/LDRD/STRD, LDREX/STREX (all sizes), LDM/STM, B/BL/BX/BLX, CLZ, SWI, MRS/MSR (user fields), the ARMv5TE DSP
 // group, MOVW/MOVT, the ARMv6/v7 media group (Media()), VFPv3. Not covered (stops with EUndefined): NEON, SWP. Thumb: thumb.cpp. R[15] is "the address of the NEXT

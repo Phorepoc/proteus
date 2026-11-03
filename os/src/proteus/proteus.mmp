@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // proteus.mmp -- OURS (Proteus P0): proteus.exe = user-side ARM loader + interpreter (see proteus.cpp). x32 Phorepoc EXE; SSM_TEST=proteus runs it at boot.
 TARGET			proteus.exe
 TARGETTYPE		exe

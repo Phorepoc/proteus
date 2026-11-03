@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // proteushello.cpp -- OURS (Proteus P0, docs/phorepoc/research/proteus-x86.md): the smallest REAL ARM Symbian EXE. Built for ARM (./ph arm proteushello, E32 CPU id ARMv5),
 // run on the x86 board by proteus.exe (the translator/interpreter), it prints one line to the kernel log. Imports euser only.
 #include <e32std.h>

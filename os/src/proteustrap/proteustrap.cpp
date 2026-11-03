@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // proteustrap.cpp -- OURS (Proteus P2, docs/phorepoc/proteus-p2.md): TRAP/Leave and the cleanup stack in guest ARM code.
 // Each step prints a line; the last line is "PH: proteus trap test ok" only if every result matched.
 #include <e32base.h>

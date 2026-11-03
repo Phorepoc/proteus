@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright The Phorepoc Authors
+# SPDX-License-Identifier: Apache-2.0
 # run.sh -- the Proteus instruction differential test (in the toolchain container: arm-none-eabi-gcc, g++; qemu-arm from qemu-user):
 # isa.c on qemu-arm (the reference) vs the same ELF on armcpu.cpp (harness.cpp). Identical output = PASS.
 #   bash tests/isa/run.sh [work dir]

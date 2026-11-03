@@ -1,3 +1,5 @@
+# Copyright The Phorepoc Authors
+# SPDX-License-Identifier: Apache-2.0
 """e32compress -- byte-pair compress an E32Image (Proteus test images: the loader must decompress them).
     python3 e32compress.py <in> <out>
 """

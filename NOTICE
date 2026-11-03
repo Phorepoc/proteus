@@ -1,0 +1,7 @@
+proteus: ARM programs on Phorepoc OS for the PC
+Copyright The Phorepoc Authors (see AUTHORS)
+
+Phorepoc was founded by Kyriakos Bompotis.
+
+All code in this repository is our own, under Apache-2.0 (LICENSE, LICENSES/Apache-2.0.txt). os/src/proteus/euser_ordinals.inc
+lists the export names and ordinals of euser.dll, generated from the Symbian platform's definition file (EPL-1.0).

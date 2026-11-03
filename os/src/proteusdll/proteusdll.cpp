@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // proteusdll.cpp -- OURS (Proteus P2, docs/phorepoc/proteus-p2.md): a real ARM DLL that proteus.exe links into the guest for proteusdllexe.exe.
 // Ordinal 1 is computation + writable static data (gCalls, .data); ordinal 2 calls euser itself (RDebug::Printf); ordinal 3 reports the state a
 // static constructor set (.bss, run by _E32Dll on process attach) -- so imports, WSD and the DLL entry point are all exercised.

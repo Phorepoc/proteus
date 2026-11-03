@@ -1,3 +1,5 @@
+# Copyright The Phorepoc Authors
+# SPDX-License-Identifier: Apache-2.0
 """Byte-pair compression codec for E32Image (compression_type 0x102822AA).
 
 Two directions, both RE'd from EKA2L1 @47b4ad76a:

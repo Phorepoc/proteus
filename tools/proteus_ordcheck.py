@@ -1,3 +1,5 @@
+# Copyright The Phorepoc Authors
+# SPDX-License-Identifier: Apache-2.0
 """proteus_ordcheck -- Proteus P2: does our 2010-source ARM DLL set serve the ordinals a real (Belle) ARM EXE imports?
 
 For every DLL the EXE imports: the ordinals it uses, the export count of the Belle DLL (from a firmware Z: dump, if given) and of OUR ARM

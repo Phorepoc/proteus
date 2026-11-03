@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright The Phorepoc Authors
+# SPDX-License-Identifier: Apache-2.0
 # host test of src/proteus (the P0 ARM interpreter) in the phorepoc-x86 container (g++, LP64 host: guest addresses are offsets)
 cd "$(dirname "$0")/../.."
 R="$(pwd -W)"

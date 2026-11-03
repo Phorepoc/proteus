@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 /* isa.c -- the Proteus instruction differential test: every ARMv6/v7 ARM-mode instruction the interpreter gained beyond ARMv5TE, over
  * pseudo-random inputs (and the edge values), one hex line per result (+ APSR where an instruction sets flags or GE). Freestanding: Linux
  * EABI write/exit system calls only, so the same ELF runs under qemu-arm (the reference) and under armcpu.cpp (harness.cpp).

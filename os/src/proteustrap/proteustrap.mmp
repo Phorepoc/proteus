@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // proteustrap.mmp -- OURS (Proteus P2): TRAP / Leave / cleanup stack on the real ARM euser (host: PROTEUS_REAL_EUSER=1 tests/proteus/run.sh).
 TARGET			proteustrap.exe
 TARGETTYPE		exe

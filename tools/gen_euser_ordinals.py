@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright The Phorepoc Authors
+# SPDX-License-Identifier: Apache-2.0
 """gen_euser_ordinals.py -- writes src/proteus/euser_ordinals.inc: {ordinal, mangled name} for every export of the ARM EABI euser (baseline/kernelhwsrv/kernel/eka/eabi/euseru.def),
 the table Proteus uses to name an ARM image's euser imports (by ordinal, the Symbian way). Run from the repo root."""
 import os

@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // proteusdll.mmp -- OURS (Proteus P2): the smallest real ARM Symbian DLL (C exports, imports euser; writable static data + a static constructor, run by _E32Dll). ARM build: ./ph arm proteusdll.
 TARGET			proteusdll.dll
 TARGETTYPE		dll

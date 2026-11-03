@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // proteusheap.mmp -- OURS (Proteus P2): heap stress (Alloc/ReAlloc/Free, overlap checks) on the real ARM euser (host: PROTEUS_REAL_EUSER=1 tests/proteus/run.sh).
 TARGET			proteusheap.exe
 TARGETTYPE		exe

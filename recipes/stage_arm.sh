@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright The Phorepoc Authors
+# SPDX-License-Identifier: Apache-2.0
 # stage_arm.sh -- copy the ARM side of the Proteus board test into the x32 build: the ARM test programs (built with
 # `phe component build -arch arm proteushello proteusdll proteusdllexe proteusfs` in an ARM build) and the ARM euser +
 # efsrv (that build's device images), plus the byte-pair compressed copies P2/P2b load.

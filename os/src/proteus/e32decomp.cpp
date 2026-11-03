@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // e32decomp.cpp -- OURS (Proteus P2): the two E32Image compressions, pure C++ (host test + x32 proteus.exe).
 // Byte-pair (0x102822AA): [index: i32 size, i32 usize, u16 pages, u16 page sizes][pages]; a page = pair table + token stream (emitter/bytepair.py).
 // Symbian deflate (0x101F7AFC, NOT zlib): port of emitter/e32deflate.py = e32tools/e32image/deflate/{decode,inflate}.cpp.

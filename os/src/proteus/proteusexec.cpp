@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // proteusexec.cpp -- OURS (Proteus P2): the executive (SWI) side of a guest that runs the REAL ARM euser.dll (our 2010-source device build,
 // emitter/euser_dev.dll). euser's Exec:: stubs are `swi n` (slow) / `swi 0x800000|n` (fast), arguments r0-r3, result r0
 // (baseline u32exec.h, numbers in toolchain/generated/exec_enum.h -> exec_names.inc). This is a user-mode stand-in for the kernel of ONE

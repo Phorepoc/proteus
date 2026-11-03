@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // proteusfs.mmp -- OURS (Proteus P2): a real ARM EXE that talks to the file server (RFs/RFile through the ARM efsrv) -- the IPC bridge test.
 // ARM build: ./ph arm proteusfs. Run on x86 by proteus.exe -r (the real ARM euser + efsrv as guest modules).
 TARGET			proteusfs.exe

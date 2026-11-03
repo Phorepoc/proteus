@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // proteusrt.cpp -- OURS (Proteus P0). See proteusrt.h.
 #include "proteusrt.h"
 #include "e32decomp.h"

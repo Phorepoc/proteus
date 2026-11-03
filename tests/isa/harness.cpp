@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // harness.cpp -- runs isa.elf (the instruction differential test, isa.c) on armcpu.cpp on the host: loads the ELF's PT_LOAD segments into one guest
 // region and emulates the two Linux EABI system calls it makes (write = 4, exit = 1). Its output must equal qemu-arm's (run.sh compares them).
 //   harness <isa.elf>

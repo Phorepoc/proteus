@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // armcpu.h -- OURS (Proteus P0, docs/phorepoc/research/proteus-x86.md): a small ARMv5TE user-mode interpreter. Pure C++ (no Symbian types), so it builds on the host for
 // tests (tests/proteus) and as an x32 Phorepoc EXE. It is the P0 stand-in for the dynarmic translator of P1: the same boundary (guest memory callbacks, SVC and
 // "call into the native system" hooks), ARM mode + Thumb-1 (ARMv5T; user decision 2026-10-17: a Thumb-1 decoder now, dynarmic later).

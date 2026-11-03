@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // thumb.cpp -- OURS (Proteus P2, user decision 2026-10-17: a Thumb-1 decoder now, dynarmic later). The ARMv5T Thumb instruction set
 // (ARM ARM v5, chapter A6: the 19 16-bit formats, BL/BLX as two halfwords, BX/BLX interworking). In Thumb state R[15] holds the address
 // of the NEXT halfword while one executes, so reading PC = R[15] + 2 (= this instruction + 4). Not ARMv6 Thumb (SXTH/REV/CPS...) or Thumb-2.

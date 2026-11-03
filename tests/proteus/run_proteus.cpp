@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // tests/proteus/run_proteus.cpp -- host test of the Proteus P0 interpreter (src/proteus): loads a real ARM Symbian EXE (default emitter/proteushello.exe, built by ./ph arm
 // proteushello), runs it from its E32 entry point and checks the RDebug::Printf line + exit. Build/run: bash tests/proteus/run.sh
 #include "../../src/proteus/proteusrt.h"

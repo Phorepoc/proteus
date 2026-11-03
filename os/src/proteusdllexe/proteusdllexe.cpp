@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // proteusdllexe.cpp -- OURS (Proteus P2, docs/phorepoc/proteus-p2.md): an ARM EXE that calls into an ARM DLL; run on x86 by proteus.exe, which loads + links
 // the DLL in the guest and runs its entry point (static constructor) first.
 #include <e32std.h>
