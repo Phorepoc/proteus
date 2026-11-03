@@ -54,6 +54,7 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=600)
     ap.add_argument("--mem", default="1024")
     ap.add_argument("--sis", action="store_true")
+    ap.add_argument("--linger", type=int, default=0, help="seconds the app keeps running after P3's verdict (then the screendump)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     markers, last = list(MARKERS), LAST
@@ -87,6 +88,14 @@ def main() -> int:
     threading.Thread(target=reader, daemon=True).start()
     while time.time() - t0 < a.timeout and len(seen) < len(markers) and not done[0] and p.poll() is None:
         time.sleep(1)
+    t1 = time.time()
+    shot = 0
+    while a.sis and time.time() - t1 < a.linger and p.poll() is None:
+        time.sleep(1)
+        if time.time() - t1 >= 60 * (shot + 1):		# a screen every minute while the app runs
+            shot += 1
+            log.write(b"%7.1f [board_boot] screendump linger-%d\n" % (time.time() - t0, shot))
+            Screendump(mon, os.path.join(a.out, "linger-%d.ppm" % shot))
     if a.sis and p.poll() is None:
         Screendump(mon, os.path.join(a.out, "screen.ppm"))
     p.kill()

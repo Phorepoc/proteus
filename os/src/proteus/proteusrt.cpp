@@ -309,7 +309,7 @@ static void Fmt(CArmCpu& cpu, uint32_t fmtAddr, uint32_t argIdx, char* out, int 
 	out[t.iN] = 0;
 }
 
-static void Say(THle& h, const char* fmt, const char* a = "", const char* b = "")
+void Say(THle& h, const char* fmt, const char* a, const char* b)
 {
 	char line[200];
 	snprintf(line, sizeof(line), fmt, a, b);
@@ -322,8 +322,12 @@ static void OnTrap(CArmCpu& cpu, uint32_t addr, void* ctx)
 	const uint32_t slot = (addr - KTrapBase) >> 1;
 	const uint32_t v = h.iProcess ? (slot < h.iProcess->iSlotCount ? h.iProcess->iSlots[slot] : 0) : slot;
 	const uint32_t dll = (v >> 16) & 0x3F, ord = v & 0xFFFF, mod = v >> 22;
+	if (h.iProcess && GlTrapSlot(cpu, h, v))		// a GL function eglGetProcAddress handed out
+		return;
 	const TLoaded* img = h.iProcess && (int)mod < h.iProcess->iCount ? &h.iProcess->iMod[mod] : h.iImage;
 	const char* dllName = img ? img->iDll[dll] : "";
+	if (IsGlDll(dllName) && GlTrap(cpu, h, dllName, ord))		// OpenGL ES / EGL: the native DLLs
+		return;
 	const char* name = (strncmp(dllName, "euser", 5) == 0) ? EuserName(ord) : "";
 	if (!strcmp(name, "_ZN6RDebug6PrintfEPKcz"))
 	{

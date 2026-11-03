@@ -85,6 +85,7 @@ struct TIpcBridge
 	// guest threads: wait for a request signal at most aMicroseconds (true = one arrived and was taken, false = timed out); a monotonic clock
 	bool (*iWaitAnyFor)(void* aCtx, int aMicroseconds);
 	uint64_t (*iNowUs)(void* aCtx);
+	uint32_t (*iNativeExport)(void* aCtx, const char* aDll, int aOrdinal);	// a native DLL's export (the GL thunks), 0 = none
 };
 
 // P2: the executive state of a guest that runs the real ARM euser (proteusexec.cpp)
@@ -172,6 +173,21 @@ void InstallHle(CArmCpu& aCpu, THle& aHle);
 
 // the name of an euser ordinal in the ARM EABI export table ("" if unknown)
 const char* EuserName(uint32_t aOrdinal);
+
+// a line in the guest's log (fmt takes up to two strings)
+void Say(THle& h, const char* fmt, const char* a = "", const char* b = "");
+
+// aLen bytes copied into guest memory Proteus keeps for itself (a reserved chunk, committed as it fills; never freed):
+// the guest address, 0 = no memory (proteusexec.cpp)
+uint32_t GuestBytes(CArmCpu& aCpu, TExecState& aExec, const void* aSrc, uint32_t aLen);
+
+// proteusgl.cpp: the imports of the Khronos DLLs run on the native ones. IsGlDll = an import of one of them; GlTrap = call
+// the native export of aOrd (false = not in the tables); GlTrapSlot = an import slot eglGetProcAddress made (false = not one)
+bool IsGlDll(const char* aImport);
+bool GlTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd);
+bool GlTrapSlot(CArmCpu& aCpu, THle& aHle, uint32_t aSlotValue);
+// eglCreateWindowSurface(dpy, config, window, attribs) with the guest's RWindow (proteusglwin.cpp)
+bool GlWindowSurface(CArmCpu& aCpu, THle& aHle, uint32_t aNativeFn);
 
 // run an ARM EXE from entry: sets sp (top of the guest region), r4 = 0 (first thread), lr = return-to-host, and runs until it halts
 void RunExe(CArmCpu& aCpu, THle& aHle, uint32_t aMaxSteps);

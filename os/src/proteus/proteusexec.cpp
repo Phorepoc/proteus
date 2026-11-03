@@ -69,6 +69,28 @@ static int CommitPages(CArmCpu& cpu, TExecState& e, int i, uint32_t aOffset, uin
 	return KErrNone;
 }
 
+// memory Proteus keeps for itself in the guest (strings the native GL returns): one 1 MB chunk, its pages committed as it fills
+uint32_t GuestBytes(CArmCpu& cpu, TExecState& e, const void* aSrc, uint32_t aLen)
+{
+	static int chunk = -1;
+	static uint32_t used;
+	const uint32_t KBytes = 1 << 20;
+	if (chunk < 0)
+	{
+		const int h = NewChunk(cpu, e, KBytes);
+		if (h < 0) return 0;
+		chunk = h - KHandleChunk0;
+	}
+	const uint32_t at = (used + 3) & ~3u;
+	if (aLen > KBytes - at) return 0;
+	for (uint32_t p = at >> 12; p <= (at + aLen - 1) >> 12; ++p)
+		if (!e.iChunkPages[chunk][p] && CommitPages(cpu, e, chunk, p << 12, 0x1000) != KErrNone) return 0;
+	const uint32_t g = e.iChunkBase[chunk] + at;
+	for (uint32_t k = 0; k < aLen; ++k) cpu.Write8(g + k, ((const uint8_t*)aSrc)[k]);
+	used = at + aLen;
+	return g;
+}
+
 static int DecommitPages(CArmCpu& cpu, TExecState& e, int i, uint32_t aOffset, uint32_t aSize)
 {
 	if (aOffset > e.iChunkMax[i] || aSize > e.iChunkMax[i] - aOffset) return KErrArgument;

@@ -163,6 +163,66 @@ struct TBridge
 	TBool iPathSet[KMaxBridge];
 	RFs* iFs;
 	};
+
+// The guest's window-server session is a native RWsSession of this process (its first one): the guest's messages go to the
+// server on that session's handle as any other, and native code can address the guest's windows -- an RWindow of gWs that
+// carries the guest window's server handle (GlWindowSurface: the native EGL draws into the guest's window). gWs's
+// Connect sends the EWservMessInit; the guest's own Init is answered with the same client handle.
+static RWsSession gWs;
+static TInt gWsIndex = -1;
+
+static TInt BridgeWsConnect(TBridge& b, TInt i)
+	{
+	const TInt r = gWs.Connect();
+	if (r != KErrNone)
+		return r;
+	b.iSession[i].SetHandle(gWs.Handle());
+	gWsIndex = i;
+	return KErrNone;
+	}
+
+// a native RWindow over a guest window: the guest RWindow begins with its server handle (MWsClientClass::iWsHandle; no
+// virtual functions in RWindowTreeNode's chain). Never closed: the window is the guest's.
+class TGuestWindow : public RWindow
+	{
+public:
+	TGuestWindow(RWsSession& aWs, TInt32 aHandle) : RWindow(aWs) { iWsHandle = aHandle; }
+	void Rebind(TInt32 aHandle) { iWsHandle = aHandle; }		// (a guest RWindow at an address used before)
+	};
+
+bool proteus::GlWindowSurface(proteus::CArmCpu& aCpu, proteus::THle& aHle, uint32_t aNativeFn)
+	{
+	// eglCreateWindowSurface(display, config, window, attributes): the window = the guest's RWindow*
+	const uint32_t guestWin = aCpu.R[2];
+	if (gWsIndex < 0 || !aCpu.Valid(guestWin, 8))
+		{
+		proteus::Say(aHle, "[proteus] eglCreateWindowSurface: no guest window-server session or a bad window -> EGL_NO_SURFACE");
+		aCpu.R[0] = 0;
+		aCpu.SetReturn();
+		return true;
+		}
+	static uint32_t guest[16];
+	static TGuestWindow* native[16];
+	static TInt count;
+	TInt k = 0;
+	while (k < count && guest[k] != guestWin) ++k;
+	if (k == count)
+		{
+		if (count == 16 || !(native[k] = new TGuestWindow(gWs, (TInt32)aCpu.Read32(guestWin))))
+			{
+			aCpu.R[0] = 0;
+			aCpu.SetReturn();
+			return true;
+			}
+		guest[k] = guestWin;
+		++count;
+		}
+	native[k]->Rebind((TInt32)aCpu.Read32(guestWin));
+	typedef uint32_t (*F)(uint32_t, uint32_t, uint32_t, uint32_t);
+	aCpu.R[0] = ((F)(uintptr_t)aNativeFn)(aCpu.R[0], aCpu.R[1], (uint32_t)(uintptr_t)native[k], aCpu.R[3]);
+	aCpu.SetReturn();
+	return true;
+	}
 enum { KObjHandle0 = 0x00E20000 };
 
 // EExecObjectNext: a native TFindXxx with the guest's match pattern and cursor (TFindHandle is the base at offset 0 of every TFindXxx,
@@ -572,6 +632,19 @@ static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArg
 		RDebug::Printf("PH: proteus CDL: fn %d %s flags %x args %x %x %x %x (arg 1 words %x %x)", aFunction, aSync ? "sync" : "async",
 			args.iFlags, args.iArgs[0], args.iArgs[1], args.iArgs[2], args.iArgs[3], d1[0], d1[1]);
 		}
+	if (aFunction == RMessage2::EConnect && !b.iConnected[i] && b.iName[i] == _L("!Windowserver") && gWsIndex < 0)
+		{
+		b.iConnected[i] = ETrue;
+		const TInt r = BridgeWsConnect(b, i);
+		RDebug::Printf("PH: proteus IPC: connect window-server session %d -> %d", i, r);
+		CompleteGuest(st, r);
+		return aSync || st ? KErrNone : r;
+		}
+	if (i == gWsIndex && aFunction == 2)		// EWservMessInit: gWs did it at the connect; the guest gets the same client handle
+		{
+		CompleteGuest(st, gWs.WsHandle());
+		return KErrNone;
+		}
 	if (aFunction == RMessage2::EConnect && !b.iConnected[i])
 		{
 		b.iConnected[i] = ETrue;
@@ -642,7 +715,13 @@ static int BridgeClose(void* aCtx, uint32_t aHandle)
 		return KErrBadHandle;
 	if (aHandle & 0x8000)		// KHandleNoClose
 		return KErrNone;
-	if (b.iConnected[i])
+	if (b.iConnected[i] && i == gWsIndex)		// the window-server session is gWs's (BridgeWsConnect)
+		{
+		b.iSession[i].SetHandle(0);
+		gWs.Close();
+		gWsIndex = -1;
+		}
+	else if (b.iConnected[i])
 		b.iSession[i].Close();
 	b.iUsed[i] = EFalse;
 	return KErrNone;
@@ -743,6 +822,29 @@ static uint64_t BridgeNowUs(void*)
 	static TInt period = 0;
 	if (!period) { TTimeIntervalMicroSeconds32 p; UserHal::TickPeriod(p); period = p.Int() > 0 ? p.Int() : 1000; }
 	return (uint64_t)User::TickCount() * (uint64_t)period;
+	}
+
+// a native DLL's export by ordinal (the GL thunks: libEGL, libGLESv2, ...): each DLL loaded once, kept for the process
+static uint32_t BridgeNativeExport(void*, const char* aDll, int aOrdinal)
+	{
+	struct TNative { TBuf<32> iName; RLibrary iLib; TInt iErr; };
+	static TNative libs[8];
+	static TInt count = 0;
+	TBuf<32> name;
+	name.Copy(TPtrC8((const TUint8*)aDll).Left(32));
+	TInt i = 0;
+	while (i < count && libs[i].iName.CompareF(name)) ++i;
+	if (i == count)
+		{
+		if (count == 8) return 0;
+		new (&libs[i].iLib) RLibrary;
+		libs[i].iName = name;
+		libs[i].iErr = libs[i].iLib.Load(name);
+		if (libs[i].iErr != KErrNone)
+			RDebug::Printf("PH: proteus native %s not loaded: %d", aDll, libs[i].iErr);
+		++count;
+		}
+	return libs[i].iErr == KErrNone ? (uint32_t)(TUint)libs[i].iLib.Lookup(aOrdinal) : 0;
 	}
 
 // the guest's cleanup stack (e32base.h / ub_cln.cpp): trap handler = &CTrapCleanup::iHandler (TCleanupTrapHandler: vptr, CCleanup*);
@@ -989,7 +1091,8 @@ static TInt MainL()
 		bridge->iUsed[i] = bridge->iConnected[i] = bridge->iPropUsed[i] = EFalse;
 		bridge->iObjType[i] = 0;
 		}
-	proteus::TIpcBridge ipc = { bridge, BridgeCreate, BridgeSend, BridgeOwns, BridgeClose, BridgeShare, BridgeWaitAny, BridgeSignal, BridgeKernel, BridgeWaitAnyFor, BridgeNowUs };
+	proteus::TIpcBridge ipc = { bridge, BridgeCreate, BridgeSend, BridgeOwns, BridgeClose, BridgeShare, BridgeWaitAny, BridgeSignal, BridgeKernel, BridgeWaitAnyFor, BridgeNowUs,
+		BridgeNativeExport };
 	hle.iIpc = &ipc;
 	TBuf8<KMaxFileName + 1> exePath;
 	exePath.Copy(path);
