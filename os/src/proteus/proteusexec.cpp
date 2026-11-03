@@ -469,9 +469,21 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 		}
 		if (!strcmp(name, "EExecProcessSecurityInfo") || !strcmp(name, "EExecThreadSecurityInfo") || !strcmp(name, "EExecCreatorSecurityInfo"))
 		{
-			// SSecurityInfo: iSecureId, iVendorId, iCaps (2 words): the guest gets proteus.exe's capabilities (All -TCB)
-			const uint32_t si = strcmp(name, "EExecCreatorSecurityInfo") ? r[1] : r[0];
-			cpu.Write32(si, h.iImage ? h.iImage->iUid3 : 0); cpu.Write32(si + 4, 0); cpu.Write32(si + 8, 0xFFFFFFFEu); cpu.Write32(si + 12, 0x7FFFFFFFu);
+			// SSecurityInfo: iSecureId, iVendorId, iCaps (2 words). The guest's own process/thread: what its EXE header declares, capped at
+			// the handler's (All -TCB) -- the guest's own view (RProcess::HasCapability ...); a server still checks the handler process.
+			// The creator: unchanged (the UID3 with the handler's capabilities; the real creator is not known here)
+			const bool creator = !strcmp(name, "EExecCreatorSecurityInfo");
+			const uint32_t si = creator ? r[0] : r[1];
+			const TLoaded* x = h.iImage;
+			if (creator || !x)
+			{
+				cpu.Write32(si, x ? x->iUid3 : 0); cpu.Write32(si + 4, 0); cpu.Write32(si + 8, 0xFFFFFFFEu); cpu.Write32(si + 12, 0x7FFFFFFFu);
+			}
+			else
+			{
+				cpu.Write32(si, x->iSecureId); cpu.Write32(si + 4, x->iVendorId);
+				cpu.Write32(si + 8, x->iCaps[0] & 0xFFFFFFFEu); cpu.Write32(si + 12, x->iCaps[1] & 0x7FFFFFFFu);
+			}
 			r[0] = KErrNone;
 			return true;
 		}

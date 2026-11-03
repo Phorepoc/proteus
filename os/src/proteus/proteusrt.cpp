@@ -96,6 +96,7 @@ static bool LoadE32At(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at,
 	o.iHeapMax = U32(f + 60);
 	o.iStackSize = U32(f + 64);
 	o.iUid3 = U32(f + 8);
+	o.iSecureId = U32(f + 128); o.iVendorId = U32(f + 132); o.iCaps[0] = U32(f + 136); o.iCaps[1] = U32(f + 140);	// E32ImageHeaderV iS (SSecurityInfo)
 	o.iFlags = U32(f + 44);
 	const uint32_t codeSize = U32(f + 48), dataSize = U32(f + 52), bss = U32(f + 68), entry = U32(f + 72), codeBase = U32(f + 76), dataBase = U32(f + 80);
 	const uint32_t codeOff = U32(f + 100), dataOff = U32(f + 104), impOff = U32(f + 108), cReloc = U32(f + 112), dReloc = U32(f + 116);

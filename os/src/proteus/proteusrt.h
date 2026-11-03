@@ -23,6 +23,7 @@ struct TLoaded
 	char iName[40];				// base name ("proteusdll.dll"; empty for the EXE)
 	char iDrive;				// the drive the file was found on (RLibrary::FileName), 0 = unknown
 	uint32_t iUid1;
+	uint32_t iSecureId, iVendorId, iCaps[2];	// the header's SSecurityInfo (what the program declares)
 	uint32_t iHeapMin, iHeapMax, iStackSize;	// EXE header (real euser: the SStdEpocThreadCreateInfo on the initial stack)
 	uint32_t iExportDir, iExportCount;	// guest address of the (relocated) export directory
 	uint32_t iExceptionDescriptor;	// guest address of the C++ unwinder's exception descriptor (E32ImageHeaderV::iExceptionDescriptor), 0 = none
