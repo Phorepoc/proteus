@@ -20,7 +20,7 @@ import shutil
 import struct
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "emitter"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from e32image import decompress_e32  # noqa: E402
 
 ALIAS = {"euser.dll": "euser_dev.dll", "efsrv.dll": "efsrv_dev.dll", "hal.dll": "hal_dev.dll"}
@@ -80,14 +80,20 @@ def main():
     a = ap.parse_args()
     dirs = a.dirs.split(",") if a.dirs else [os.path.dirname(os.path.abspath(a.exe)), os.path.join(REPO, "emitter")]
     found, missing, order = {}, set(), []  # noqa
+    # file names compare without case (a Symbian file system's rule; SIS contents are mixed case, the Linux host's is not)
+    index = {d: {f.lower(): f for f in os.listdir(d)} for d in dirs if os.path.isdir(d)}
+
+    def lookup(d, name):
+        f = index.get(d, {}).get(name.lower())
+        return os.path.join(d, f) if f else None
     todo = [(os.path.basename(a.exe).lower(), a.exe)]
     extra = a.extra.split(",") if a.extra else []
     if a.cdl:		# the CDL layout instances (<uid>.dll): the CDL engine loads them by UID for every Avkon app, no import names them
         extra += sorted({f for d in dirs if os.path.isdir(d) for f in os.listdir(d) if re.fullmatch(r"[0-9a-f]{8}\.dll", f)})
     for x in extra:
         for d in dirs:
-            if os.path.exists(os.path.join(d, x)):
-                todo.append((x.lower(), os.path.join(d, x)))
+            if lookup(d, x):
+                todo.append((x.lower(), lookup(d, x)))
                 break
         else:
             missing.add(x.lower())
@@ -103,8 +109,8 @@ def main():
                 continue
             for d in dirs:
                 for cand in (b, ALIAS.get(b, b)):
-                    p = os.path.join(d, cand)
-                    if os.path.exists(p):
+                    p = lookup(d, cand)
+                    if p:
                         todo.append((b, p))
                         break
                 else:
