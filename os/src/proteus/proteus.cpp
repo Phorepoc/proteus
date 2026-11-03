@@ -1,3 +1,5 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
 // proteus.cpp -- OURS (Proteus P0, docs/phorepoc/research/proteus-x86.md): proteus.exe, the first Proteus component on the x86/x32 board: a USER-SIDE loader + ARM interpreter that
 // runs a real ARM Symbian EXE (an E32Image with CPU id ARMv5) inside one x32 process. proteus.exe [<arm exe>] (default z:\sys\bin\arm\proteushello.exe: the ARM files live in the
 // per-arch directory \sys\bin\arm\ of the design). The guest's memory is one block of this process's heap (guest address == host address under ILP32); the ARM code's euser imports are
@@ -12,6 +14,7 @@
 #include <string.h>
 #include "armcpu.h"
 #include "proteusrt.h"
+#include "../proteusimg/proteusimg.h"
 
 _LIT(KArmDirZ, "z:\\sys\\bin\\arm\\");
 static void ResetDestroy(TAny* aArray);
@@ -52,6 +55,24 @@ static void Log(const char* aLine, void*)
 	RDebug::Printf("PH: proteus guest> %s", aLine);
 	}
 
+// an ARM image, read-only. Directly when this process may (proteus.exe; a program declaring AllFiles), else through the image broker:
+// the loader gives cpuhandler_arm.exe the program's capabilities, and reading \sys\ needs AllFiles (proteusimg.cpp)
+static TBool gViaBroker = EFalse;
+static TInt OpenImage(RFs& aFs, const TDesC& aPath, RFile& aFile)
+	{
+	if (gViaBroker)
+		{
+		TEntry e;
+		if (aFs.Entry(aPath, e) == KErrNotFound)
+			return KErrNotFound;		// the search probes many places: no broker round trip for a missing file
+		const TInt b = ProteusImgOpen(aPath, aFile);
+		RDebug::Printf("PH: proteus image broker -> %d", b);
+		return b;
+		}
+	const TInt r = aFile.Open(aFs, aPath, EFileRead | EFileShareReadersOnly);
+	return r == KErrPermissionDenied ? ProteusImgOpen(aPath, aFile) : r;
+	}
+
 // P2: the ARM DLLs a guest imports come from the per-arch directory on the EXE's drive, then Z: (buffers live until the process ends)
 struct TFindCtx { RFs* iFs; TFileName iDir; RPointerArray<HBufC8>* iBufs; };
 static const uint8_t* FindDll(const char* aName, uint32_t& aLen, char& aDrive, void* aCtx)
@@ -77,12 +98,12 @@ static const uint8_t* FindDll(const char* aName, uint32_t& aLen, char& aDrive, v
 			}
 		path.Append(name);
 		RFile f;
-		if (f.Open(*c.iFs, path, EFileRead | EFileShareReadersOnly) != KErrNone)
+		if (OpenImage(*c.iFs, path, f) != KErrNone)
 			continue;
 		TInt size = 0;
 		HBufC8* b = f.Size(size) == KErrNone ? HBufC8::New(size) : NULL;
 		TPtr8 bp(b ? b->Des() : TPtr8(NULL, 0));
-		const TInt r = b ? f.Read(bp) : KErrNoMemory;
+		const TInt r = b ? f.Read(0, bp) : KErrNoMemory;
 		f.Close();
 		if (r == KErrNone && i >= 2 && (bp.Length() < 124 || (bp[122] | (bp[123] << 8)) < 0x2000 || (bp[122] | (bp[123] << 8)) > 0x2002))
 			{
@@ -133,8 +154,8 @@ struct TBridge
 	TBool iPropUsed[KMaxBridge];
 	RChunk iObj[KMaxBridge];					// P2: kernel objects opened by name (chunk / mutex / semaphore: all an RHandleBase), KObjHandle0 + i
 	TInt iObjType[KMaxBridge];					// TObjectType, 0 = free slot (EThread is never opened here)
-	// the guest's file-server identity: this process is the handler, so the file server's private path is the handler's; the guest's
-	// is \private\<its SecureId>\ (sessions start there, and the private-path calls answer it -- BridgeFsPrivate)
+	// the guest's file-server identity: \private\<its SecureId>\ (sessions start there, and the private-path calls answer it --
+	// BridgeFsPrivate; the same as the server's own answers when the loader gave this process the program's SecureId)
 	TUint32 iSid;
 	TBool iPathSet[KMaxBridge];
 	RFs* iFs;
@@ -419,8 +440,9 @@ static void CompleteGuest(TRequestStatus* aStatus, TInt aResult)
 
 // the guest's private path on a file-server session (TFsMessage, f32plugin.h). The file server derives it from the client's SecureId,
 // which is this handler's: a new session starts in \private\<handler>\ (CServerFs::NewSessionL) and SessionToPrivate / PrivatePath /
-// CreatePrivatePath (sf_nbs.cpp) answer the handler's directory. These give the guest its own, \private\<its SecureId>\ (the handler
-// has AllFiles to reach it). true = handled here (aResult = the result).
+// CreatePrivatePath (sf_nbs.cpp) answer the handler's directory. These give the guest its own, \private\<its SecureId>\. Started by
+// the loader (core sf_lepoc.cpp ForeignCpuRedirect) the handler already has the program's SecureId and these are the server's own
+// answers; started directly (the tests: "-r <exe>") it has its own, with AllFiles to reach the guest's. true = handled here.
 static TBool BridgeFsPrivate(TBridge& b, TInt i, TInt aFunction, const TIpcArgs& aArgs, TInt& aResult)
 	{
 	enum { EFsSetSessionPath = 15, EFsSessionToPrivate = 85, EFsPrivatePath = 86, EFsCreatePrivatePath = 87 };
@@ -759,6 +781,13 @@ static TInt MainL()
 	TFileName arg;
 	User::CommandLine(arg);
 	arg.Trim();
+	// "-b" first: every ARM image through the image broker (the P2e test: what a program without AllFiles gets when PlatSec is enforced)
+	if (arg.Left(3) == _L("-b "))
+		{
+		gViaBroker = ETrue;
+		arg.Delete(0, 3);
+		arg.Trim();
+		}
 	// the REAL ARM euser.dll (z:\sys\bin\arm\euser.dll, our device build) + the SWI executive (proteusexec.cpp) whenever it is
 	// installed: the way a program started by its name (the loader's redirect) runs. "-h <exe>" = the HLE euser instead (P0's
 	// in-process run uses it too); "-r <exe>" = the real one, said explicitly.
@@ -774,10 +803,12 @@ static TInt MainL()
 	User::LeaveIfError(fs.Connect());
 	CleanupClosePushL(fs);
 	TEntry euserEntry;
-	const TBool realEuser = forceReal || (!forceHle && arg.Length() && fs.Entry(_L("z:\\sys\\bin\\arm\\euser.dll"), euserEntry) == KErrNone);
+	// installed = the entry is there; a handler holding only the program's capabilities may not look into \sys\ (denied = there)
+	const TInt euserState = fs.Entry(_L("z:\\sys\\bin\\arm\\euser.dll"), euserEntry);
+	const TBool realEuser = forceReal || (!forceHle && arg.Length() && (euserState == KErrNone || euserState == KErrPermissionDenied));
 	RDebug::Printf("PH: proteus euser: %s", realEuser ? "real ARM" : "HLE");
 	RFile f;
-	TInt r = f.Open(fs, path, EFileRead | EFileShareReadersOnly);
+	TInt r = OpenImage(fs, path, f);
 	RDebug::Printf("PH: proteus open %S -> %d", TLog8(path).P(), r);
 	User::LeaveIfError(r);
 	CleanupClosePushL(f);
@@ -785,7 +816,8 @@ static TInt MainL()
 	User::LeaveIfError(f.Size(size));
 	HBufC8* img = HBufC8::NewLC(size);
 	TPtr8 ip = img->Des();
-	User::LeaveIfError(f.Read(ip));
+	r = f.Read(0, ip);
+	User::LeaveIfError(r);
 	// the guest region: its own local disconnected chunk, KGuestBytes reserved; the kernel hands out committed pages cleared
 	RChunk chunk;
 	User::LeaveIfError(chunk.CreateDisconnectedLocal(0, 0, KGuestBytes));
@@ -1058,6 +1090,9 @@ TInt E32Main()
 		// P2d: ARM code -> the ARM efsrv -> the IPC bridge -> the native file server
 		const TInt p2d = SpawnProteus(_L("-r z:\\sys\\bin\\arm\\proteusfs.exe"));
 		RDebug::Printf("PH: proteus P2d (ARM efsrv over the IPC bridge) %s", p2d == KErrNone ? "PASS" : "FAIL");
+		// P2f: the same, every ARM image through the image broker (proteusimg.exe: the handler without AllFiles)
+		const TInt p2f = SpawnProteus(_L("-b -r z:\\sys\\bin\\arm\\proteusfs.exe"));
+		RDebug::Printf("PH: proteus P2f (ARM images through the image broker) %s", p2f == KErrNone ? "PASS" : "FAIL");
 		// P2e (only when staged, e.g. DISKFILES=<dir>=proteus): a real app + its ARM DLL closure in c:\proteus\ -- report how far it gets
 		RFs fs;
 		TEntry ent;

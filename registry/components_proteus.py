@@ -1,3 +1,5 @@
+# Copyright The Phorepoc Authors
+# SPDX-License-Identifier: Apache-2.0
 """components_proteus -- Proteus (private until finished: docs/public/README.md "Proteus" in the private repo).
 
 Proteus runs ARM32 Symbian binaries on x32 Phorepoc OS: proteus.exe is an x32 user-side ARM loader + interpreter.
@@ -27,6 +29,8 @@ COMPONENTS = {
                               r"Sys\Bin\arm\proteusfs.exe=" + _ARM + "proteusfs.exe"]),
     # the same program under the name core's loader hands an ARM EXE to (sf_lepoc.cpp ForeignCpuRedirect): in every ROM built with this layer
     "cpuhandler_arm": dict(mmp=os.path.join(OS_ROOT, "src/proteus/proteus.mmp"), cdriver=False, rom="cpuhandler_arm.exe"),
+    # the image broker: ARM images under \sys\bin\ for a handler holding the program's capabilities (no AllFiles)
+    "proteusimg": dict(mmp=os.path.join(OS_ROOT, "src/proteusimg/proteusimg.mmp"), cdriver=False),
     # the ARM test programs (ARM builds only)
     "proteushello": dict(mmp=os.path.join(OS_ROOT, "src/proteushello/proteushello.mmp"), test=True),
     "proteusdll": dict(mmp=os.path.join(OS_ROOT, "src/proteusdll/proteusdll.mmp"), test=True,

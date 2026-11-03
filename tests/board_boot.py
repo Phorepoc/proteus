@@ -1,3 +1,5 @@
+# Copyright The Phorepoc Authors
+# SPDX-License-Identifier: Apache-2.0
 """board_boot -- the Proteus board test on the PC image in QEMU (in the toolchain container).
 
 Boots the ISO of a ROM built with SSM_TEST=proteus on a fresh blank C: and waits for proteus.exe's results on the
@@ -20,9 +22,10 @@ MARKERS = [b"proteus P0 PASS",                   # P0: an ARM EXE inside proteus
            b"proteus P2 PASS",                   # P2: + an ARM DLL (byte-pair)
            b"proteus P2b PASS",                  # P2b: both compressed
            b"proteus P2c (real ARM euser) PASS",
-           b"proteus P2d (ARM efsrv over the IPC bridge) PASS"]
+           b"proteus P2d (ARM efsrv over the IPC bridge) PASS",
+           b"proteus P2f (ARM images through the image broker) PASS"]
 FAIL = (b"PH: proteus ", b" FAIL")
-LAST = b"PH: proteus P2d "                 # the last phase reports (PASS or FAIL): every result is in
+LAST = b"PH: proteus P2f "                 # the last phase reports (PASS or FAIL): every result is in
 MAX_LOG = 8 << 20
 
 
