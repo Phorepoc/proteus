@@ -18,6 +18,13 @@ static void ResetDestroy(TAny* aArray);
 _LIT(KDefaultExe, "z:\\sys\\bin\\arm\\proteushello.exe");
 const TInt KGuestBytes = 32 << 20;
 
+// a 16-bit name for RDebug::Printf's %S (an 8-bit descriptor there: a 16-bit one prints its first character)
+struct TLog8 : public TBuf8<KMaxFileName>
+	{
+	explicit TLog8(const TDesC& a) { Copy(a.Left(KMaxFileName)); }
+	const TDesC8* P() const { return this; }
+	};
+
 static void Log(const char* aLine, void*)
 	{
 	RDebug::Printf("PH: proteus guest> %s", aLine);
@@ -30,10 +37,22 @@ static const uint8_t* FindDll(const char* aName, uint32_t& aLen, void* aCtx)
 	TFindCtx& c = *(TFindCtx*)aCtx;
 	TBuf<64> name;
 	name.Copy(TPtrC8((const TUint8*)aName));
-	const TPtrC dirs[2] = { TPtrC(c.iDir), TPtrC(KArmDirZ) };
-	for (TInt i = 0; i < 2; ++i)
+	// the per-arch directories first; then \sys\bin\ of every drive in the loader's order (Y: .. A:, Z:), where a SIS installs an app's ARM
+	// DLLs next to the native ones: only a file whose E32Image header names an ARM CPU (offset 122) is taken there
+	TFileName path;
+	for (TInt i = 0; i < 2 + 26; ++i)
 		{
-		TFileName path(dirs[i]);
+		if (i == 0) path = c.iDir;
+		else if (i == 1) path = KArmDirZ;
+		else
+			{
+			const TInt d = i - 2 < 25 ? EDriveY - (i - 2) : EDriveZ;
+			TChar ch;
+			if (RFs::DriveToChar(d, ch) != KErrNone) continue;
+			path.SetLength(0);
+			path.Append(ch);
+			path.Append(_L(":\\sys\\bin\\"));
+			}
 		path.Append(name);
 		RFile f;
 		if (f.Open(*c.iFs, path, EFileRead | EFileShareReadersOnly) != KErrNone)
@@ -43,12 +62,19 @@ static const uint8_t* FindDll(const char* aName, uint32_t& aLen, void* aCtx)
 		TPtr8 bp(b ? b->Des() : TPtr8(NULL, 0));
 		const TInt r = b ? f.Read(bp) : KErrNoMemory;
 		f.Close();
+		if (r == KErrNone && i >= 2 && (bp.Length() < 124 || (bp[122] | (bp[123] << 8)) < 0x2000 || (bp[122] | (bp[123] << 8)) > 0x2002))
+			{
+			delete b;					// a native DLL of that name
+			continue;
+			}
 		if (r != KErrNone || c.iBufs->Append(b) != KErrNone)
 			{
 			delete b;
 			return NULL;
 			}
-		RDebug::Printf("PH: proteus DLL %S (%d bytes)", &path, size);
+		TBuf8<KMaxFileName> path8;
+		path8.Copy(path);
+		RDebug::Printf("PH: proteus DLL %S (%d bytes)", &path8, size);
 		aLen = (uint32_t)size;
 		return b->Ptr();
 		}
@@ -539,7 +565,7 @@ static TInt MainL()
 	CleanupClosePushL(fs);
 	RFile f;
 	TInt r = f.Open(fs, path, EFileRead | EFileShareReadersOnly);
-	RDebug::Printf("PH: proteus open %S -> %d", &path, r);
+	RDebug::Printf("PH: proteus open %S -> %d", TLog8(path).P(), r);
 	User::LeaveIfError(r);
 	CleanupClosePushL(f);
 	TInt size = 0;
@@ -733,7 +759,7 @@ static TInt SpawnPlain(const TDesC& aName, const char* aPhase)
 	{
 	RProcess p;
 	TInt r = p.Create(aName, KNullDesC);
-	RDebug::Printf("PH: proteus %s RProcess::Create(%S) -> %d", aPhase, &aName, r);
+	RDebug::Printf("PH: proteus %s RProcess::Create(%S) -> %d", aPhase, TLog8(aName).P(), r);
 	if (r != KErrNone)
 		return r;
 	TRequestStatus st;
@@ -745,6 +771,39 @@ static TInt SpawnPlain(const TDesC& aName, const char* aPhase)
 	const TBool ok = p.ExitType() == EExitKill && reason == KErrNone;
 	p.Close();
 	return ok ? KErrNone : KErrGeneral;
+	}
+
+// start aName and wait up to aSeconds for it; a process still running then is left running (aExit = EExitPending)
+static TInt RunTimed(const TDesC& aName, const TDesC& aArgs, TInt aSeconds, TExitType& aExit, TInt& aReason)
+	{
+	aExit = EExitPending;
+	aReason = 0;
+	RProcess p;
+	const TInt r = p.Create(aName, aArgs);
+	if (r != KErrNone)
+		return r;
+	TRequestStatus st, tst;
+	RTimer t;
+	t.CreateLocal();
+	p.Logon(st);
+	p.Resume();
+	t.After(tst, aSeconds * 1000000);
+	User::WaitForRequest(st, tst);
+	if (st == KRequestPending)
+		{
+		p.LogonCancel(st);
+		User::WaitForRequest(st);
+		}
+	else
+		{
+		t.Cancel();
+		User::WaitForRequest(tst);
+		aExit = p.ExitType();
+		aReason = p.ExitReason();
+		}
+	t.Close();
+	p.Close();
+	return KErrNone;
 	}
 
 TInt E32Main()
@@ -829,6 +888,44 @@ TInt E32Main()
 					q.Close();
 					}
 				}
+			// P3 (only when staged: c:\sis\*.sis, installed in name order, + c:\sisapp.txt = the EXE to start): real ARM packages through the
+			// real installer (sisinst = the silent install pheget uses), then the app started by its plain name like the menu does (the loader hook)
+			CDir* sis = NULL;
+			if (fs.GetDir(_L("c:\\sis\\*.sis"), KEntryAttNormal, ESortByName, sis) == KErrNone && sis->Count())
+				{
+				TExitType et = EExitKill;
+				TInt reason = KErrNone, ir = KErrNone;
+				for (TInt i = 0; i < sis->Count() && ir == KErrNone && et == EExitKill && reason == KErrNone; ++i)
+					{
+					TFileName pkg(_L("c:\\sis\\"));
+					pkg.Append((*sis)[i].iName);
+					ir = RunTimed(_L("sisinst.exe"), pkg, 600, et, reason);
+					RDebug::Printf("PH: proteus P3 install %S: create %d exit type %d reason %d", TLog8(pkg).P(), ir, (TInt)et, reason);
+					}
+				TBuf8<64> exe8;
+				RFile af;
+				if (af.Open(fs, _L("c:\\sisapp.txt"), EFileRead | EFileShareReadersOnly) == KErrNone)
+					{
+					af.Read(exe8);
+					af.Close();
+					TInt n = 0;
+					while (n < exe8.Length() && exe8[n] > ' ') ++n;
+					exe8.SetLength(n);
+					}
+				if (ir == KErrNone && et == EExitKill && reason == KErrNone && exe8.Length())
+					{
+					TBuf<64> exe;
+					exe.Copy(exe8);
+					// a GUI app runs until it is closed: "still running" after the wait = it started and did not die
+					const TInt ar = RunTimed(exe, KNullDesC, 240, et, reason);
+					const TBool running = ar == KErrNone && et == EExitPending;
+					RDebug::Printf("PH: proteus P3 %S: create %d exit type %d reason %d%s", &exe8, ar, (TInt)et, reason, running ? " (running after 240 s)" : "");
+					RDebug::Printf("PH: proteus P3 (installed ARM app) %s", running || (et == EExitKill && reason == KErrNone) ? "PASS" : "FAIL");
+					}
+				else
+					RDebug::Printf("PH: proteus P3 (installed ARM app) FAIL");
+				}
+			delete sis;
 			fs.Close();
 			}
 		}
