@@ -565,11 +565,12 @@ static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArg
 	if (b.iName[i] == _L("CdlServer") && cdlLines < 60)
 		{
 		++cdlLines;
-		TBuf8<80> a1;
-		if (aArgs && ((args.iFlags >> 3) & 7) == 7)		// arg 1 TDesC16
-			a1.Copy(((const TDesC16*)args.iArgs[1])->Left(70));
-		RDebug::Printf("PH: proteus CDL: fn %d %s flags %x args %x %x %x %x %S", aFunction, aSync ? "sync" : "async", args.iFlags,
-			args.iArgs[0], args.iArgs[1], args.iArgs[2], args.iArgs[3], &a1);
+		// a descriptor argument: its first two words (length|type, max length or pointer) -- read only if the argument is non-null
+		TUint32 d1[2] = { 0, 0 };
+		if (aArgs && ((args.iFlags >> 3) & 4) && args.iArgs[1])
+			Mem::Copy(d1, (const TAny*)args.iArgs[1], sizeof(d1));
+		RDebug::Printf("PH: proteus CDL: fn %d %s flags %x args %x %x %x %x (arg 1 words %x %x)", aFunction, aSync ? "sync" : "async",
+			args.iFlags, args.iArgs[0], args.iArgs[1], args.iArgs[2], args.iArgs[3], d1[0], d1[1]);
 		}
 	if (aFunction == RMessage2::EConnect && !b.iConnected[i])
 		{

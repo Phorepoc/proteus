@@ -924,11 +924,14 @@ static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 		if (!strcmp(name, "EExecSessionSendSync") || !strcmp(name, "EExecSessionSend"))	// (handle, function, TIpcArgs*, TRequestStatus*)
 		{
 			if (!ipc || !ipc->iOwns(ipc->iCtx, r[0])) { r[0] = (uint32_t)KErrBadHandle; return true; }
-			if (r[3]) cpu.Write32(r[3], 0x80000001u);		// KRequestPending
 			bool sync = !strcmp(name, "EExecSessionSendSync");
 			// the native thread has one synchronous message slot for all guest threads: while another guest thread's synchronous send is
-			// outstanding, this one goes as an asynchronous send (the guest's sessions use the global message pool)
-			if (sync && e.iSyncSendStatus && cpu.Valid(e.iSyncSendStatus, 4) && cpu.Read32(e.iSyncSendStatus) == 0x80000001u) sync = false;
+			// outstanding, this one goes as an asynchronous send (checked before this request's status is set pending: a thread reuses
+			// one TRequestStatus for its synchronous sends)
+			if (sync && e.iSyncSendStatus && e.iSyncSendStatus != r[3] && cpu.Valid(e.iSyncSendStatus, 4)
+				&& cpu.Read32(e.iSyncSendStatus) == 0x80000001u)
+				sync = false;
+			if (r[3]) cpu.Write32(r[3], 0x80000001u);		// KRequestPending
 			NoteRequest(e, r[3]);
 			r[0] = (uint32_t)ipc->iSend(ipc->iCtx, r[0], (int)r[1], r[2], r[3], sync);
 			if (sync) e.iSyncSendStatus = r[3];
