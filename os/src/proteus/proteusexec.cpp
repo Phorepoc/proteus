@@ -25,7 +25,7 @@ static uint32_t& Slot(TExecState& e, uint32_t aKey)
 	return e.iTlsVal[e.iTlsCount++];
 }
 
-// a chunk = [base, base + max) carved downward from the guest region's top (below the main stack); committed = all (the region is zeroed)
+// a chunk = [base, base + max) carved downward from the guest region's top (below the main stack); its pages are committed by CommitPages (host pages too: CArmCpu::Commit)
 static int NewChunk(CArmCpu& cpu, TExecState& e, uint32_t aMax)
 {
 	aMax = (aMax + 0xFFF) & ~0xFFFu;
@@ -60,6 +60,7 @@ static int CommitPages(CArmCpu& cpu, TExecState& e, int i, uint32_t aOffset, uin
 	if ((aOffset & 0xFFF) || aOffset > e.iChunkMax[i] || aSize > e.iChunkMax[i] - aOffset) return KErrArgument;
 	const uint32_t p0 = aOffset >> 12, p1 = (aOffset + aSize + 0xFFF) >> 12;
 	for (uint32_t p = p0; p < p1; ++p) if (e.iChunkPages[i][p]) return -11;		// KErrAlreadyExists
+	if (!cpu.Commit(e.iChunkBase[i] + (p0 << 12), (p1 - p0) << 12)) return KErrNoMemory;
 	for (uint32_t p = p0; p < p1; ++p) e.iChunkPages[i][p] = 1;
 	ClearPages(cpu, e, i, p0, p1);
 	return KErrNone;
@@ -69,7 +70,8 @@ static int DecommitPages(CArmCpu& cpu, TExecState& e, int i, uint32_t aOffset, u
 {
 	if (aOffset > e.iChunkMax[i] || aSize > e.iChunkMax[i] - aOffset) return KErrArgument;
 	const uint32_t p0 = aOffset >> 12, p1 = (aOffset + aSize + 0xFFF) >> 12;
-	for (uint32_t p = p0; p < p1; ++p) if (e.iChunkPages[i][p]) { e.iChunkPages[i][p] = 0; ClearPages(cpu, e, i, p, p + 1); }
+	for (uint32_t p = p0; p < p1; ++p)
+		if (e.iChunkPages[i][p]) { e.iChunkPages[i][p] = 0; ClearPages(cpu, e, i, p, p + 1); cpu.Commit(e.iChunkBase[i] + (p << 12), 0x1000, false); }
 	return KErrNone;			// pages that were not committed are ignored
 }
 
@@ -130,7 +132,7 @@ void Backtrace(CArmCpu& cpu, THle& h)
 	snprintf(l, sizeof(l), "[proteus]   lr %s", w);
 	h.iLog(l, h.iLogCtx);
 	int shown = 0;
-	for (uint32_t a = cpu.R[13]; shown < 12 && a < cpu.R[13] + 0x800 && cpu.Valid(a, 4); a += 4)
+	for (uint32_t a = cpu.R[13]; shown < 40 && a < cpu.R[13] + 0x2000 && cpu.Valid(a, 4); a += 4)
 	{
 		const uint32_t v = cpu.Read32(a) & ~1u;
 		for (int m = 0; m < h.iProcess->iCount; ++m)
@@ -157,6 +159,17 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 							: (n < sizeof(KSlowExecNames) / sizeof(KSlowExecNames[0]) ? KSlowExecNames[n] : "?");
 	uint32_t* r = cpu.R;
 	++e.iCalls;
+	// trace: the first 400 slow execs (and every WaitForAnyRequest among them) with the caller -- where a guest that went quiet blocks
+	static int traced = 0;
+	if (h.iLog && h.iProcess && traced < 400 && (!fast || !strcmp(name, "EFastExecWaitForAnyRequest")))
+	{
+		++traced;
+		char w[120], l[200];
+		Where(*h.iProcess, cpu, r[14], w, sizeof(w));
+		snprintf(l, sizeof(l), "[proteus] exec %s r0 %x r1 %x lr %s", name, r[0], r[1], w);
+		h.iLog(l, h.iLogCtx);
+		if (fast) Backtrace(cpu, h);
+	}
 	if (fast)
 	{
 		if (!strcmp(name, "EFastExecWaitForAnyRequest"))
@@ -227,7 +240,7 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 			r[0] = !strcmp(name, "EExecChunkBottom") ? b : t;
 			return true;
 		}
-		if (!strcmp(name, "EExecChunkAdjust"))	// (handle, type, a1, a2): all of a chunk is committed -- logged
+		if (!strcmp(name, "EExecChunkAdjust"))	// (handle, type, a1, a2): commits / decommits pages (CommitPages, DecommitPages)
 		{
 			// RChunk adjust types (e32std.h TAdjust): 0 Adjust, 1 AdjustDoubleEnded, 2 Commit(offset, size), 3 Decommit(offset, size), 4 Allocate.
 			// The memory is always there, but the real kernel hands out freshly committed pages ZEROED, and the hybrid heap (RHybridHeap:
@@ -323,6 +336,14 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 			const int mod = (int)(r[0] & 0xFFFF);
 			const TLoaded* m = (r[0] & 0xFFFF0000u) == KHandleLib0 && h.iProcess && mod < h.iProcess->iCount ? &h.iProcess->iMod[mod] : NULL;
 			r[0] = m && r[1] >= 1 && r[1] <= m->iExportCount ? cpu.Read32(m->iExportDir + 4 * (r[1] - 1)) : 0;
+			return true;
+		}
+		if (!strcmp(name, "EExecExceptionDescriptor"))	// (code address) -> the exception descriptor of the module holding it (scodeseg.cpp), 0 = none
+		{
+			const uint32_t a = r[0];
+			r[0] = 0;
+			for (int m = 0; h.iProcess && m < h.iProcess->iCount; ++m)
+				if (a >= h.iProcess->iMod[m].iLoadAddr && a < h.iProcess->iMod[m].iEnd) { r[0] = h.iProcess->iMod[m].iExceptionDescriptor; break; }
 			return true;
 		}
 		if (!strcmp(name, "EExecLibraryType"))		// (handle, TUidType&)

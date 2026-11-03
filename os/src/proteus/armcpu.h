@@ -31,6 +31,27 @@ public:
 	// guest memory
 	uint8_t* iHost;
 	uint32_t iBase, iSize;
+	// the host memory behind the region may be only reserved (the board: a disconnected chunk, committed as the guest commits, the way
+	// the kernel commits a process's chunks). Null = all of it is usable (the host builds). Offsets are region-relative, page aligned.
+	typedef bool (*TCommitFn)(uint32_t aOffset, uint32_t aSize, bool aCommit, void* aCtx);
+	TCommitFn iCommit;
+	void* iCommitCtx;
+	uint8_t* iPageMap;			// with iCommit: one byte per region page, 1 = committed (a guest access to any other page faults)
+	bool Commit(uint32_t aAddr, uint32_t aLen, bool aCommit = true)
+	{
+		if (!iCommit || !aLen) return true;
+		if (!InRegion(aAddr, aLen)) return false;
+		const uint32_t a0 = (aAddr - iBase) & ~0xFFFu, a1 = (aAddr - iBase + aLen + 0xFFF) & ~0xFFFu;
+		if (!iCommit(a0, a1 - a0, aCommit, iCommitCtx)) return false;
+		for (uint32_t p = a0 >> 12; p < a1 >> 12; ++p) iPageMap[p] = aCommit;
+		return true;
+	}
+	bool Committed(uint32_t aAddr, uint32_t aLen) const
+	{
+		if (!iPageMap || !aLen) return true;
+		for (uint32_t p = (aAddr - iBase) >> 12, e = (aAddr - iBase + aLen - 1) >> 12; p <= e; ++p) if (!iPageMap[p]) return false;
+		return true;
+	}
 	// hooks (set by the embedder)
 	typedef void (*TTrapFn)(CArmCpu& aCpu, uint32_t aAddr, void* aCtx);			// pc entered [KTrapBase, KTrapEnd): emulate the function, then return (BX lr) with SetReturn()
 	typedef bool (*TSvcFn)(CArmCpu& aCpu, uint32_t aImm, void* aCtx);			// false = not handled
@@ -41,6 +62,8 @@ public:
 	int iBpCount;
 	void (*iOnBp)(CArmCpu& aCpu, int aIndex, void* aCtx);
 	void* iBpCtx;
+	// every 2^26 instructions (a long run shows where it is: a busy guest vs one spinning in a loop); iBpCtx is its context too
+	void (*iOnProgress)(CArmCpu& aCpu, void* aCtx);
 	// debug store watchpoint: a guest store (incl. emulated execs writing guest memory) into [iWatchLo, iWatchHi) calls iOnWatch
 	uint32_t iWatchLo, iWatchHi;
 	void (*iOnWatch)(CArmCpu& aCpu, uint32_t aAddr, uint32_t aValue, int aSize, void* aCtx);
@@ -56,7 +79,7 @@ public:
 
 	// guest memory access (false/0 + fault on a bad address)
 	bool InRegion(uint32_t aAddr, uint32_t aLen) const { return aAddr >= iBase && aLen <= iSize && aAddr - iBase <= iSize - aLen; }
-	bool Valid(uint32_t aAddr, uint32_t aLen) const { return InRegion(aAddr, aLen) || Window(aAddr, aLen) >= 0; }
+	bool Valid(uint32_t aAddr, uint32_t aLen) const { return (InRegion(aAddr, aLen) && Committed(aAddr, aLen)) || Window(aAddr, aLen) >= 0; }
 	// P2: native mappings the guest may touch besides its region (a global chunk opened for it, ...): guest address == host address
 	// there (x32/ILP32), so these exist only on the board. A stray pointer outside region + windows still faults.
 	enum { KMaxWindows = 32 };

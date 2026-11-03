@@ -27,12 +27,15 @@ MAX_LOG = 8 << 20
 
 
 def Screendump(sock_path: str, out: str) -> None:
-    """QEMU's monitor: screendump <file> (PPM)."""
+    """QEMU's monitor: screendump <file> (PPM). A Ctrl press first: the lights go off after 30 s without input, and a
+    modifier alone wakes them without acting on the app."""
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(10)
         s.connect(sock_path)
         s.recv(4096)
+        s.sendall(b"sendkey ctrl\n")
+        time.sleep(4)
         s.sendall(f"screendump {out}\n".encode())
         time.sleep(2)
         s.close()

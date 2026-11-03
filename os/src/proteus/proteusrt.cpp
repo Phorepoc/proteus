@@ -97,7 +97,8 @@ static bool LoadE32At(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at,
 	if (codeOff + codeSize > len || (dataSize && dataOff + dataSize > len)) { Err(o, "truncated image"); return false; }
 	const uint32_t dataAddr = (at + codeSize + 15) & ~15u;
 	const uint32_t end = dataAddr + dataSize + bss;
-	if (!cpu.Valid(at, end - at)) { Err(o, "image does not fit the guest region"); return false; }
+	if (!cpu.InRegion(at, end - at)) { Err(o, "image does not fit the guest region"); return false; }
+	if (!cpu.Commit(at, end - at)) { Err(o, "no memory for the image"); return false; }
 	memcpy(cpu.iHost + (at - cpu.iBase), f + codeOff, codeSize);
 	if (dataSize) memcpy(cpu.iHost + (dataAddr - cpu.iBase), f + dataOff, dataSize);
 	if (bss) memset(cpu.iHost + (dataAddr + dataSize - cpu.iBase), 0, bss);
@@ -105,7 +106,15 @@ static bool LoadE32At(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at,
 	o.iDelta = at - codeBase;
 	const uint32_t dDelta = dataAddr - dataBase;
 	o.iEntry = at + entry;			// iEntryPoint is the offset of the entry within the code
+	// E32ImageHeader::ExceptionDescriptor(): a code offset with bit 0 set, else none; the kernel adds the code run address (pcodeseg.cpp)
+	const uint32_t xd = len >= 148 ? U32(f + 144) : 0;
+	o.iExceptionDescriptor = (xd & 1) && xd != 0xFFFFFFFFu ? at + (xd & ~1u) : 0;
 	o.iEnd = (end + 0xFFF) & ~0xFFFu;
+	// which export directory entries (in the code section) the code relocations move: RVCT's elf2e32 lists them all, our emitter none
+	const uint32_t expCount = U32(f + 92), expOff = U32(f + 88) - codeOff;
+	const bool expInCode = expCount && U32(f + 88) >= codeOff && U32(f + 88) + 4 * expCount <= codeOff + codeSize;
+	struct TBits { uint8_t* p; ~TBits() { free(p); } } expRel = { expInCode ? (uint8_t*)calloc(expCount, 1) : NULL };
+	if (expInCode && !expRel.p) { Err(o, "no memory"); return false; }
 	// relocations: [size][count] then per-4K-page blocks [base][blocksize][u16 info...]; nibble 0x1000 = text delta, 0x2000 = data delta, 0x3000 = inferred by value
 	for (int pass = 0; pass < 2; ++pass)
 	{
@@ -126,6 +135,7 @@ static bool LoadE32At(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at,
 				++seen;
 				const uint32_t off = base + (info & 0xFFF), type = info & 0xF000;
 				const uint32_t where = (pass == 0 ? at : dataAddr) + off;
+				if (pass == 0 && expRel.p && off - expOff < 4 * expCount && !((off - expOff) & 3)) expRel.p[(off - expOff) >> 2] = 1;
 				if (!cpu.Valid(where, 4)) { Err(o, "relocation outside the image"); return false; }
 				uint32_t w = cpu.Read32(where);
 				uint32_t d = type == 0x1000 ? o.iDelta : type == 0x2000 ? dDelta : (w >= dataBase && w < dataBase + dataSize + bss ? dDelta : o.iDelta);
@@ -136,23 +146,26 @@ static bool LoadE32At(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at,
 	}
 	// export directory: inside the code section; entries are code addresses (codeBase based), relocated by the loader, not by the reloc table
 	o.iExportCount = U32(f + 92);
-	// Two layouts: elf2e32 / our device images keep it in the code section (link-time addresses; with the ELF import format the code relocations
-	// already moved them, else the loader adds the delta); EKA2L1-era images of our emitter append a trailing table (link-time addresses) after the
-	// sections -- copied to a page after the image here.
+	// Two layouts: elf2e32 / our device images keep it in the code section (link-time addresses; an entry the code relocations already moved
+	// -- RVCT's ELF-format images, sf_lepoc.cpp RelocateExports -- stays, the others get the delta); EKA2L1-era images of our emitter append a
+	// trailing table (link-time addresses) after the sections -- copied to a page after the image here.
 	if (o.iExportCount && U32(f + 88))
 	{
 		const uint32_t eo = U32(f + 88);
 		if (eo + 4 * o.iExportCount > len) { Err(o, "export directory outside the file"); return false; }
-		const bool inCode = eo >= codeOff && eo + 4 * o.iExportCount <= codeOff + codeSize;
-		const bool elfFmt = ((o.iFlags >> 28) & 0xF) == 2;
+		const bool inCode = expInCode;
 		o.iExportDir = inCode ? at + (eo - codeOff) : o.iEnd;
-		if (!inCode) o.iEnd = (o.iEnd + 4 * o.iExportCount + 0xFFF) & ~0xFFFu;
+		if (!inCode)
+		{
+			if (!cpu.Commit(o.iEnd, 4 * o.iExportCount)) { Err(o, "no memory for the export directory"); return false; }
+			o.iEnd = (o.iEnd + 4 * o.iExportCount + 0xFFF) & ~0xFFFu;
+		}
 		for (uint32_t i = 0; i < o.iExportCount; ++i)
 		{
 			const uint32_t a = o.iExportDir + 4 * i;
 			if (!cpu.Valid(a, 4)) { Err(o, "export directory outside the guest region"); return false; }
 			if (!inCode) cpu.Write32(a, U32(f + eo + 4 * i) + o.iDelta);
-			else if (!elfFmt) cpu.Write32(a, cpu.Read32(a) + o.iDelta);
+			else if (!expRel.p[i]) cpu.Write32(a, cpu.Read32(a) + o.iDelta);
 		}
 	}
 	// imports: [size] then per DLL [name offset][count][count x code offset]; every import word (an ordinal, adj in the high half) becomes a TRAP address

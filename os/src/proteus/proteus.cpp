@@ -16,7 +16,29 @@
 _LIT(KArmDirZ, "z:\\sys\\bin\\arm\\");
 static void ResetDestroy(TAny* aArray);
 _LIT(KDefaultExe, "z:\\sys\\bin\\arm\\proteushello.exe");
-const TInt KGuestBytes = 32 << 20;
+// the guest region: reserved address space, committed as the guest uses it (modules as they load, the main stack, chunk pages as the guest
+// commits them) -- a real app's heap reserves its EPOCHEAPSIZE maximum (PyS60: 32 MB) and commits a little of it
+const TInt KGuestBytes = 256 << 20;
+
+// CArmCpu::TCommitFn: commit / decommit host pages of the guest region (a disconnected chunk). A range may overlap pages committed
+// before (a module's last page and the next module's first): then it goes page by page and those count as done.
+static bool CommitGuest(uint32_t aOffset, uint32_t aSize, bool aCommit, void* aCtx)
+	{
+	RChunk& c = *(RChunk*)aCtx;
+	TInt r = aCommit ? c.Commit(aOffset, aSize) : c.Decommit(aOffset, aSize);
+	if (r == KErrAlreadyExists && aCommit)
+		{
+		r = KErrNone;
+		for (uint32_t o = aOffset; o < aOffset + aSize && r == KErrNone; o += 0x1000)
+			{
+			r = c.Commit(o, 0x1000);
+			if (r == KErrAlreadyExists) r = KErrNone;
+			}
+		}
+	if (r != KErrNone)
+		RDebug::Printf("PH: proteus %scommit guest +%x %x -> %d", aCommit ? "" : "de", aOffset, aSize, r);
+	return r == KErrNone;
+	}
 
 // a 16-bit name for RDebug::Printf's %S (an 8-bit descriptor there: a 16-bit one prints its first character)
 struct TLog8 : public TBuf8<KMaxFileName>
@@ -525,6 +547,19 @@ static void WatchHit(proteus::CArmCpu& aCpu, uint32_t aAddr, uint32_t aValue, in
 		proteus::Backtrace(aCpu, hle);
 	}
 
+// CArmCpu::iOnProgress: every 2^26 instructions, where the guest is (pc, lr); 4000 lines at most
+static void Progress(proteus::CArmCpu& aCpu, void* aHleP)
+	{
+	static TInt lines = 0;
+	if (++lines > 4000)
+		return;
+	const proteus::THle& hle = *(const proteus::THle*)aHleP;
+	char pc[120], lr[120];
+	proteus::Where(*hle.iProcess, aCpu, aCpu.iLastPc, pc, sizeof(pc));
+	proteus::Where(*hle.iProcess, aCpu, aCpu.R[14], lr, sizeof(lr));
+	RDebug::Printf("PH: proteus progress %u M instructions: pc %s, lr %s", (TUint)(aCpu.iSteps >> 20), pc, lr);
+	}
+
 static void BreakHit(proteus::CArmCpu& aCpu, TInt aIndex, void* aHleP)
 	{
 	proteus::THle& hle = *(proteus::THle*)aHleP;
@@ -552,9 +587,12 @@ static TInt MainL()
 	TFileName arg;
 	User::CommandLine(arg);
 	arg.Trim();
-	// "-r <exe>": run with the REAL ARM euser.dll (sys/bin/arm/euser.dll, our 2010 device build) + the SWI executive (proteusexec.cpp)
-	const TBool realEuser = arg.Left(3) == _L("-r ");
-	if (realEuser)
+	// the REAL ARM euser.dll (z:\sys\bin\arm\euser.dll, our device build) + the SWI executive (proteusexec.cpp) whenever it is
+	// installed: the way a program started by its name (the loader's redirect) runs. "-h <exe>" = the HLE euser instead (P0's
+	// in-process run uses it too); "-r <exe>" = the real one, said explicitly.
+	const TBool forceHle = arg.Left(3) == _L("-h ");
+	const TBool forceReal = arg.Left(3) == _L("-r ");
+	if (forceHle || forceReal)
 		{
 		arg.Delete(0, 3);
 		arg.Trim();
@@ -563,6 +601,9 @@ static TInt MainL()
 	RFs fs;
 	User::LeaveIfError(fs.Connect());
 	CleanupClosePushL(fs);
+	TEntry euserEntry;
+	const TBool realEuser = forceReal || (!forceHle && arg.Length() && fs.Entry(_L("z:\\sys\\bin\\arm\\euser.dll"), euserEntry) == KErrNone);
+	RDebug::Printf("PH: proteus euser: %s", realEuser ? "real ARM" : "HLE");
 	RFile f;
 	TInt r = f.Open(fs, path, EFileRead | EFileShareReadersOnly);
 	RDebug::Printf("PH: proteus open %S -> %d", TLog8(path).P(), r);
@@ -573,16 +614,22 @@ static TInt MainL()
 	HBufC8* img = HBufC8::NewLC(size);
 	TPtr8 ip = img->Des();
 	User::LeaveIfError(f.Read(ip));
-	// the guest region: its own local chunk (P2: 32 MB, was 1 MB of heap -- a real app's DLL closure needs room); committed + zeroed
+	// the guest region: its own local disconnected chunk, KGuestBytes reserved; the kernel hands out committed pages cleared
 	RChunk chunk;
-	User::LeaveIfError(chunk.CreateLocal(KGuestBytes, KGuestBytes));
+	User::LeaveIfError(chunk.CreateDisconnectedLocal(0, 0, KGuestBytes));
 	CleanupClosePushL(chunk);
 	TUint8* mem = chunk.Base();
-	Mem::FillZ(mem, KGuestBytes);
 	proteus::CArmCpu* cpu = new (ELeave) proteus::CArmCpu;
 	cpu->iHost = mem;
 	cpu->iBase = (TUint32)mem;
 	cpu->iSize = KGuestBytes;
+	cpu->iCommit = CommitGuest;
+	cpu->iCommitCtx = &chunk;
+	cpu->iPageMap = (TUint8*)User::AllocZL(KGuestBytes >> 12);
+	CleanupStack::PushL(cpu->iPageMap);
+	// the main thread's stack at the region top (proteusrt.cpp StartThreadStack: the thread data 4 KB below the top)
+	if (!cpu->Commit(cpu->iBase + KGuestBytes - proteus::KStackBytes, proteus::KStackBytes))
+		User::Leave(KErrNoMemory);
 	RPointerArray<HBufC8> dllBufs;
 	CleanupStack::PushL(TCleanupItem((TCleanupOperation)&ResetDestroy, &dllBufs));
 	TFindCtx fc;
@@ -681,9 +728,11 @@ static TInt MainL()
 				}
 			if (cpu->iBpCount)
 				cpu->iOnBp = BreakHit;
-			cpu->iBpCtx = &hle;
 			}
 	}
+	cpu->iBpCtx = &hle;
+	if (hle.iProcess)
+		cpu->iOnProgress = Progress;
 	// the ROM is mapped (read-only) in every process: a window, so guest code can read ROM-resident files (bafl resources) as on the device
 	const TRomHeader* rom = (const TRomHeader*)UserSvr::RomHeaderAddress();
 	hle.iRomHeader = (TUint32)rom;
@@ -727,7 +776,7 @@ static TInt MainL()
 	delete cpu;
 	proteus::FreeProcess(*proc);
 	delete proc;
-	CleanupStack::PopAndDestroy(5, &fs);		// dllBufs, chunk, img, f, fs
+	CleanupStack::PopAndDestroy(6, &fs);		// dllBufs, the page map, chunk, img, f, fs
 	RDebug::Printf(arg.Length() ? "PH: proteus guest run %s" : "PH: proteus P0 %s", ok ? "PASS" : "FAIL");
 	return ok ? KErrNone : KErrGeneral;
 	}
@@ -916,11 +965,42 @@ TInt E32Main()
 					{
 					TBuf<64> exe;
 					exe.Copy(exe8);
-					// a GUI app runs until it is closed: "still running" after the wait = it started and did not die
+					// a GUI app runs until it is closed: PASS = still running after the wait AND a window group of its own in the native WSERV
+					// (CApaWindowGroupName carries the app UID as 8 hex digits) -- a guest that only blocks somewhere has none
 					const TInt ar = RunTimed(exe, KNullDesC, 240, et, reason);
 					const TBool running = ar == KErrNone && et == EExitPending;
 					RDebug::Printf("PH: proteus P3 %S: create %d exit type %d reason %d%s", &exe8, ar, (TInt)et, reason, running ? " (running after 240 s)" : "");
-					RDebug::Printf("PH: proteus P3 (installed ARM app) %s", running || (et == EExitKill && reason == KErrNone) ? "PASS" : "FAIL");
+					TBool hasWg = EFalse;
+					TFileName exePath(_L("c:\\sys\\bin\\"));
+					exePath.Append(exe);
+					TBuf8<12> hdr;
+					RFile ef;
+					if (running && ef.Open(fs, exePath, EFileRead | EFileShareReadersOnly) == KErrNone)
+						{
+						ef.Read(hdr, 12);
+						ef.Close();
+						}
+					RWsSession ws;
+					if (hdr.Length() == 12 && ws.Connect() == KErrNone)
+						{
+						TBuf<8> uid;
+						uid.NumFixedWidth(hdr[8] | (hdr[9] << 8) | (hdr[10] << 16) | ((TUint)hdr[11] << 24), EHex, 8);
+						CArrayFixFlat<TInt>* wgs = new CArrayFixFlat<TInt>(8);
+						if (wgs && ws.WindowGroupList(wgs) == KErrNone)
+							for (TInt i = 0; i < wgs->Count() && !hasWg; ++i)
+								{
+								TBuf<256> nm;
+								if (ws.GetWindowGroupNameFromIdentifier((*wgs)[i], nm) == KErrNone && nm.FindF(uid) >= 0)
+									{
+									hasWg = ETrue;
+									RDebug::Printf("PH: proteus P3 window group %d: %S", (*wgs)[i], TLog8(nm).P());
+									}
+								}
+						delete wgs;
+						ws.Close();
+						RDebug::Printf("PH: proteus P3 app uid %S: %s", TLog8(uid).P(), hasWg ? "has a window group" : "no window group");
+						}
+					RDebug::Printf("PH: proteus P3 (installed ARM app) %s", running && hasWg ? "PASS" : "FAIL");
 					}
 				else
 					RDebug::Printf("PH: proteus P3 (installed ARM app) FAIL");

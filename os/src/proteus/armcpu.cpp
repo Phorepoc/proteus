@@ -1006,6 +1006,7 @@ void CArmCpu::Run(uint64_t aMaxSteps)
 	while (iHalt == ERunning)
 	{
 		Step();
+		if (iOnProgress && !(iSteps & ((1u << 26) - 1))) iOnProgress(*this, iBpCtx);
 		if (iSteps - start >= aMaxSteps)
 		{
 			Halt(EStepLimit);

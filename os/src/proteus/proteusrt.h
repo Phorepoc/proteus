@@ -24,6 +24,7 @@ struct TLoaded
 	uint32_t iUid1;
 	uint32_t iHeapMin, iHeapMax, iStackSize;	// EXE header (real euser: the SStdEpocThreadCreateInfo on the initial stack)
 	uint32_t iExportDir, iExportCount;	// guest address of the (relocated) export directory
+	uint32_t iExceptionDescriptor;	// guest address of the C++ unwinder's exception descriptor (E32ImageHeaderV::iExceptionDescriptor), 0 = none
 	int iModule;				// index in the TProcess (trap addresses encode it)
 	int iDllModule[KMaxDllRefs];			// per import DLL: the guest module it binds to, -1 = HLE (trap)
 };
