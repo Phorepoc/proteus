@@ -1,0 +1,14 @@
+// proteusfs.mmp -- OURS (Proteus P2): a real ARM EXE that talks to the file server (RFs/RFile through the ARM efsrv) -- the IPC bridge test.
+// ARM build: ./ph arm proteusfs. Run on x86 by proteus.exe -r (the real ARM euser + efsrv as guest modules).
+TARGET			proteusfs.exe
+TARGETTYPE		exe
+UID				0x1000007a 0xE70157F4
+CAPABILITY		NONE
+VENDORID		0
+
+OS_LAYER_SYSTEMINCLUDE_SYMBIAN
+
+SOURCEPATH		.
+SOURCE			proteusfs.cpp
+
+LIBRARY			euser.lib efsrv.lib

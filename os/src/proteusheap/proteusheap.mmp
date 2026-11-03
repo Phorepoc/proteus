@@ -1,0 +1,13 @@
+// proteusheap.mmp -- OURS (Proteus P2): heap stress (Alloc/ReAlloc/Free, overlap checks) on the real ARM euser (host: PROTEUS_REAL_EUSER=1 tests/proteus/run.sh).
+TARGET			proteusheap.exe
+TARGETTYPE		exe
+UID				0x1000007a 0xE70157F6
+CAPABILITY		NONE
+VENDORID		0
+
+OS_LAYER_SYSTEMINCLUDE_SYMBIAN
+
+SOURCEPATH		.
+SOURCE			proteusheap.cpp
+
+LIBRARY			euser.lib

@@ -1,0 +1,13 @@
+// proteusdllexe.mmp -- OURS (Proteus P2): a real ARM EXE that imports a real ARM DLL (proteusdll.dll). ARM build: ./ph arm proteusdll proteusdllexe.
+TARGET			proteusdllexe.exe
+TARGETTYPE		exe
+UID				0x1000007a 0xE70157F3
+CAPABILITY		NONE
+VENDORID		0
+
+OS_LAYER_SYSTEMINCLUDE_SYMBIAN
+
+SOURCEPATH		.
+SOURCE			proteusdllexe.cpp
+
+LIBRARY			euser.lib proteusdll.lib

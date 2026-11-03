@@ -1,0 +1,15 @@
+// proteus.mmp -- OURS (Proteus P0): proteus.exe = user-side ARM loader + interpreter (see proteus.cpp). x32 Phorepoc EXE; SSM_TEST=proteus runs it at boot.
+TARGET			proteus.exe
+TARGETTYPE		exe
+UID				0x1000007a 0xE70157F1
+EPOCSTACKSIZE	0x10000
+CAPABILITY		All -TCB
+VENDORID		0
+EPOCHEAPSIZE	0x10000 0x2000000
+
+OS_LAYER_SYSTEMINCLUDE_SYMBIAN
+OS_LAYER_LIBC_SYSTEMINCLUDE
+USERINCLUDE		.
+SOURCEPATH		.
+SOURCE			proteus.cpp armcpu.cpp thumb.cpp proteusrt.cpp e32decomp.cpp proteusexec.cpp
+LIBRARY			euser.lib efsrv.lib libc.lib libm.lib ws32.lib

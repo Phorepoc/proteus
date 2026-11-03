@@ -1,0 +1,4 @@
+EXPORTS
+	ProteusDllAdd @ 1 NONAME
+	ProteusDllGreet @ 2 NONAME
+	ProteusDllState @ 3 NONAME

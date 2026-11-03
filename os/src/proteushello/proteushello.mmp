@@ -1,0 +1,13 @@
+// proteushello.mmp -- OURS (Proteus P0): the smallest real ARM Symbian EXE (euser only). ARM build: ./ph arm proteushello.
+TARGET			proteushello.exe
+TARGETTYPE		exe
+UID				0x1000007a 0xE70157F0
+CAPABILITY		NONE
+VENDORID		0
+
+OS_LAYER_SYSTEMINCLUDE_SYMBIAN
+
+SOURCEPATH		.
+SOURCE			proteushello.cpp
+
+LIBRARY			euser.lib

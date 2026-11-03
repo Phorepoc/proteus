@@ -1,0 +1,13 @@
+// proteustrap.mmp -- OURS (Proteus P2): TRAP / Leave / cleanup stack on the real ARM euser (host: PROTEUS_REAL_EUSER=1 tests/proteus/run.sh).
+TARGET			proteustrap.exe
+TARGETTYPE		exe
+UID				0x1000007a 0xE70157F5
+CAPABILITY		NONE
+VENDORID		0
+
+OS_LAYER_SYSTEMINCLUDE_SYMBIAN
+
+SOURCEPATH		.
+SOURCE			proteustrap.cpp
+
+LIBRARY			euser.lib
