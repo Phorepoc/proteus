@@ -7,7 +7,7 @@ to the *_dev device builds, the ones the real-euser path runs), and optionally c
 Thumb report per module (Proteus' interpreter is ARM-only): exports whose address has bit 0 set (Thumb entry points) and a
 heuristic count of Thumb BL/BLX halfword pairs vs ARM condition-0xE words (see thumb_stats). Unresolved DLLs are listed (they stay HLE traps).
 
-    py tools/proteus_closure.py <arm exe> [--dirs d1,d2] [--out dir] [--quiet]
+    py tools/proteus_closure.py <arm exe> [--dirs d1,d2] [--out dir] [--quiet] [--extra a.dll,b.dll] [--cdl]
 """
 from __future__ import annotations
 
@@ -74,11 +74,15 @@ def main():
     ap.add_argument("--out")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--extra", help="comma-separated DLLs the app loads at run time (RLibrary::Load: ECOM/CDL plug-ins), with their closure")
+    ap.add_argument("--cdl", action="store_true", help="add every CDL layout instance (<8 hex digits>.dll) in --dirs, with its closure")
     a = ap.parse_args()
     dirs = a.dirs.split(",") if a.dirs else [os.path.dirname(os.path.abspath(a.exe)), os.path.join(REPO, "emitter")]
     found, missing, order = {}, set(), []  # noqa
     todo = [(os.path.basename(a.exe).lower(), a.exe)]
-    for x in (a.extra.split(",") if a.extra else []):
+    extra = a.extra.split(",") if a.extra else []
+    if a.cdl:		# the CDL layout instances (<uid>.dll): the CDL engine loads them by UID for every Avkon app, no import names them
+        extra += sorted({f for d in dirs if os.path.isdir(d) for f in os.listdir(d) if re.fullmatch(r"[0-9a-f]{8}\.dll", f)})
+    for x in extra:
         for d in dirs:
             if os.path.exists(os.path.join(d, x)):
                 todo.append((x.lower(), os.path.join(d, x)))

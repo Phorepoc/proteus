@@ -36,6 +36,8 @@ bool LoadE32(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at, TLoaded&
 }
 
 // the DLL base name of an import name: "proteusdll{000a0000}[e70157f2].dll" -> "proteusdll.dll"
+// "CONE{000a0000}.DLL" -> "cone.dll": lower case, as module and file names are case-insensitive (an app importing CONE.DLL and one
+// importing cone.dll share one module -- two copies would each have their own Dll::Tls, so CCoeEnv::Static() is null in one of them)
 static void BaseName(const char* in, char* out, int max)
 {
 	int n = 0;
@@ -43,6 +45,7 @@ static void BaseName(const char* in, char* out, int max)
 	for (const char* s = in; *s && *s != '{' && *s != '[' && s != ext && n < max - 5; ++s) out[n++] = *s;
 	out[n] = 0;
 	strcat(out, ext ? ext : ".dll");
+	for (char* s = out; *s; ++s) if (*s >= 'A' && *s <= 'Z') *s = (char)(*s - 'A' + 'a');
 }
 
 void FreeProcess(TProcess& p)
@@ -68,8 +71,10 @@ static bool LoadE32At(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at,
 	const int myIndex = proc ? (int)(&o - proc->iMod) : 0;
 	char keepName[40];
 	strcpy(keepName, o.iName);
+	const char keepDrive = o.iDrive;
 	memset(&o, 0, sizeof(o));
 	strcpy(o.iName, keepName);
+	o.iDrive = keepDrive;
 	o.iModule = myIndex;
 	if (len < 124 || memcmp(f + 16, "EPOC", 4) != 0) { Err(o, "not an E32Image"); return false; }
 	if (U32(f + 28) != 0)
@@ -188,7 +193,8 @@ static bool LoadE32At(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at,
 				for (int m = 1; m < proc->iCount; ++m)			// already loaded (shared by two importers)?
 					if (!strcmp(proc->iMod[m].iName, base)) o.iDllModule[d] = m;
 				uint32_t dlen = 0;
-				const uint8_t* dimg = o.iDllModule[d] < 0 ? find(base, dlen, findCtx) : NULL;
+				char drive = 0;
+				const uint8_t* dimg = o.iDllModule[d] < 0 ? find(base, dlen, drive, findCtx) : NULL;
 				if (dimg)
 				{
 					if (proc->iCount >= KMaxModules) { Err(o, "too many DLLs"); return false; }
@@ -197,6 +203,7 @@ static bool LoadE32At(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at,
 					uint32_t next = o.iEnd ? o.iEnd : ((at + U32(f + 48) + U32(f + 52) + U32(f + 68) + 0x1FFF) & ~0xFFFu);
 					for (int k = 0; k < proc->iCount - 1; ++k) if (proc->iMod[k].iEnd > next) next = proc->iMod[k].iEnd;
 					strncpy(proc->iMod[m].iName, base, sizeof(proc->iMod[m].iName) - 1);
+					proc->iMod[m].iDrive = drive;
 					if (!LoadE32At(cpu, dimg, dlen, next, proc->iMod[m], proc, find, findCtx))
 					{
 						snprintf(o.iError, sizeof(o.iError), "%s: %s", base, proc->iMod[m].iError);
@@ -465,13 +472,15 @@ int LoadLibraryModule(CArmCpu& aCpu, TProcess& aProc, const char* aName, TFindDl
 		if (!strcmp(aProc.iMod[m].iName, base)) return m;
 	if (aProc.iCount >= KMaxModules) return -4;				// KErrNoMemory
 	uint32_t len = 0;
-	const uint8_t* img = aFind ? aFind(base, len, aFindCtx) : NULL;
+	char drive = 0;
+	const uint8_t* img = aFind ? aFind(base, len, drive, aFindCtx) : NULL;
 	if (!img) return -1;									// KErrNotFound
 	if (len < 4 || U32(img) != 0x10000079) return -20;		// KErrCorrupt-ish: not a DLL
 	uint32_t next = 0;
 	for (int k = 0; k < aProc.iCount; ++k) if (aProc.iMod[k].iEnd > next) next = aProc.iMod[k].iEnd;
 	const int m = aProc.iCount++;
 	strncpy(aProc.iMod[m].iName, base, sizeof(aProc.iMod[m].iName) - 1);
+	aProc.iMod[m].iDrive = drive;
 	if (!LoadE32At(aCpu, img, len, next, aProc.iMod[m], &aProc, aFind, aFindCtx))
 	{
 		strncpy(aProc.iError, aProc.iMod[m].iError, sizeof(aProc.iError) - 1);

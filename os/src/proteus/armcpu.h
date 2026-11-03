@@ -64,6 +64,9 @@ public:
 	void* iBpCtx;
 	// every 2^26 instructions (a long run shows where it is: a busy guest vs one spinning in a loop); iBpCtx is its context too
 	void (*iOnProgress)(CArmCpu& aCpu, void* aCtx);
+	// pc outside the guest region (a call through a native object's vtable, e.g. a CBitmapFont in the font server's shared heap): the
+	// embedder returns the guest code to run instead (BX semantics, bit 0 = Thumb) or 0 (the fetch faults as before); iBpCtx is its context
+	uint32_t (*iOnForeignPc)(CArmCpu& aCpu, uint32_t aPc, void* aCtx);
 	// debug store watchpoint: a guest store (incl. emulated execs writing guest memory) into [iWatchLo, iWatchHi) calls iOnWatch
 	uint32_t iWatchLo, iWatchHi;
 	void (*iOnWatch)(CArmCpu& aCpu, uint32_t aAddr, uint32_t aValue, int aSize, void* aCtx);

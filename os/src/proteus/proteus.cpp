@@ -54,7 +54,7 @@ static void Log(const char* aLine, void*)
 
 // P2: the ARM DLLs a guest imports come from the per-arch directory on the EXE's drive, then Z: (buffers live until the process ends)
 struct TFindCtx { RFs* iFs; TFileName iDir; RPointerArray<HBufC8>* iBufs; };
-static const uint8_t* FindDll(const char* aName, uint32_t& aLen, void* aCtx)
+static const uint8_t* FindDll(const char* aName, uint32_t& aLen, char& aDrive, void* aCtx)
 	{
 	TFindCtx& c = *(TFindCtx*)aCtx;
 	TBuf<64> name;
@@ -98,6 +98,7 @@ static const uint8_t* FindDll(const char* aName, uint32_t& aLen, void* aCtx)
 		path8.Copy(path);
 		RDebug::Printf("PH: proteus DLL %S (%d bytes)", &path8, size);
 		aLen = (uint32_t)size;
+		aDrive = (char)path[0];		// the per-arch directories count as their drive (the arm subdirectory of C: is C:)
 		return b->Ptr();
 		}
 	RDebug::Printf("PH: proteus DLL %s: no ARM file (stays HLE)", aName);
@@ -134,6 +135,17 @@ struct TBridge
 	TInt iObjType[KMaxBridge];					// TObjectType, 0 = free slot (EThread is never opened here)
 	};
 enum { KObjHandle0 = 0x00E20000 };
+
+// EExecObjectNext: a native TFindXxx with the guest's match pattern and cursor (TFindHandle is the base at offset 0 of every TFindXxx,
+// 16 bytes, the same layout on both sides); the cursor goes back to the guest
+template <class T> static TInt FindNext(const TDesC& aMatch, TFindHandle& aCursor, TFullName& aFound)
+{
+	T f(aMatch);
+	Mem::Copy(&f, &aCursor, sizeof(TFindHandle));
+	const TInt e = f.Next(aFound);
+	Mem::Copy(&aCursor, &f, sizeof(TFindHandle));
+	return e;
+}
 
 static TInt ObjIndex(TBridge& b, uint32_t aHandle)
 	{
@@ -272,6 +284,29 @@ static bool BridgeKernel(void* aCtx, const char* aExec, uint32_t* r, proteus::CA
 		if (e != KErrNone) { r[0] = (uint32_t)e; return true; }
 		b.iObjType[slot] = 12;
 		r[0] = KObjHandle0 + slot;
+		return true;
+		}
+	if (n == _L8("EExecObjectNext"))		// (TObjectType, TBuf8<KMaxFullName>& match -> full name, TFindHandle& cursor): TFindXxx::Next on the native kernel
+		{
+		TDes8& name8 = *(TDes8*)r[1];		// guest descriptor = native layout, same memory
+		TFullName match, found;
+		match.Copy(name8.Left(match.MaxLength()));
+		TFindHandle& cursor = *(TFindHandle*)r[2];
+		TInt e = KErrNotSupported;
+		switch ((TInt)r[0])		// TObjectType (u32std.h)
+			{
+			case 0: e = FindNext<TFindThread>(match, cursor, found); break;
+			case 1: e = FindNext<TFindProcess>(match, cursor, found); break;
+			case 2: e = FindNext<TFindChunk>(match, cursor, found); break;
+			case 3: e = FindNext<TFindLibrary>(match, cursor, found); break;
+			case 4: e = FindNext<TFindSemaphore>(match, cursor, found); break;
+			case 5: e = FindNext<TFindMutex>(match, cursor, found); break;
+			case 7: e = FindNext<TFindServer>(match, cursor, found); break;
+			case 9: e = FindNext<TFindLogicalDevice>(match, cursor, found); break;
+			case 10: e = FindNext<TFindPhysicalDevice>(match, cursor, found); break;
+			}
+		if (e == KErrNone) name8.Copy(found.Left(name8.MaxLength()));
+		r[0] = (uint32_t)e;
 		return true;
 		}
 	if (n == _L8("EExecOpenObject"))		// (TObjectType, const TDesC8& name, TOwnerType)
@@ -560,6 +595,69 @@ static void Progress(proteus::CArmCpu& aCpu, void* aHleP)
 	RDebug::Printf("PH: proteus progress %u M instructions: pc %s, lr %s", (TUint)(aCpu.iSteps >> 20), pc, lr);
 	}
 
+// CArmCpu::iOnForeignPc: the guest called native code -- in practice a virtual function of a native object it shares, like the
+// CBitmapFont in the font server's heap (CFbsFont::DoFontSpecInTwips calls Address()->FontSpecInTwips()), whose vtable points into
+// the native fntstr.dll. The guest has the ARM twin of that DLL with the same class layouts, so run the twin's function on the
+// object: the native function is export i of the native DLL -> export i of the ARM DLL; else slot k of an exported native vtable
+// (_ZTV.., the export points at its first slot) -> slot k of the ARM vtable of the same ordinal. 0 = none (the fetch faults).
+static uint32_t ForeignPc(proteus::CArmCpu& aCpu, uint32_t aPc, void* aHleP)
+	{
+	const proteus::THle& hle = *(const proteus::THle*)aHleP;
+	if (!hle.iProcess)
+		return 0;
+	const TRomHeader* rom = (const TRomHeader*)hle.iRomHeader;
+	if (!rom || aPc - rom->iRomBase >= rom->iRomSize)
+		return 0;				// not ROM code: nothing native to map
+	enum { KCache = 64, KMaxSlots = 64 };
+	static TUint32 cachePc[KCache], cacheTo[KCache];
+	static TInt cached = 0;
+	for (TInt i = 0; i < cached; ++i)
+		if (cachePc[i] == aPc) return cacheTo[i];
+	const proteus::TProcess& p = *hle.iProcess;
+	TUint32 to = 0;
+	char how[200] = "";
+	for (TInt pass = 0; pass < 2 && !to; ++pass)
+		for (TInt m = 1; m < p.iCount && !to; ++m)
+			{
+			const proteus::TLoaded& md = p.iMod[m];
+			if (!md.iExportDir || !md.iExportCount)
+				continue;
+			TBuf<40> nm;
+			nm.Copy(TPtrC8((const TUint8*)md.iName));
+			RLibrary lib;
+			if (lib.Load(nm) != KErrNone)		// the native DLL of that name (ROM: XIP, so no copy)
+				continue;
+			for (TUint32 ord = 1; ord <= md.iExportCount && !to; ++ord)
+				{
+				const TUint32 n = (TUint32)lib.Lookup((TInt)ord);
+				if (!n || n - rom->iRomBase >= rom->iRomSize)
+					continue;
+				if (pass == 0 && (n & ~1u) == (aPc & ~1u))
+					{
+					to = aCpu.Read32(md.iExportDir + 4 * (ord - 1));
+					{ TPtr8 hp((TUint8*)how, sizeof(how) - 1); hp.Format(_L8("%s export %u"), md.iName, (TUint)ord); hp.ZeroTerminate(); }
+					}
+				for (TInt k = 0; pass == 1 && !to && k < KMaxSlots && n + 4 * k + 4 - rom->iRomBase <= rom->iRomSize; ++k)
+					if (*(const TUint32*)(n + 4 * k) == aPc)
+						{
+						const TUint32 vt = aCpu.Read32(md.iExportDir + 4 * (ord - 1));
+						to = vt ? aCpu.Read32(vt + 4 * k) : 0;
+						{ TPtr8 hp((TUint8*)how, sizeof(how) - 1); hp.Format(_L8("%s vtable export %u slot %d"), md.iName, (TUint)ord, (int)k); hp.ZeroTerminate(); }
+						}
+				}
+			lib.Close();
+			}
+	char w[120] = "";
+	if (to) proteus::Where(p, aCpu, to, w, sizeof(w));
+	RDebug::Printf("PH: proteus native call %08x -> %s%s%s", (TUint)aPc, to ? w : "no ARM twin", to ? " via " : "", how);
+	if (cached < KCache)
+		{
+		cachePc[cached] = aPc;
+		cacheTo[cached++] = to;
+		}
+	return to;
+	}
+
 static void BreakHit(proteus::CArmCpu& aCpu, TInt aIndex, void* aHleP)
 	{
 	proteus::THle& hle = *(proteus::THle*)aHleP;
@@ -733,6 +831,7 @@ static TInt MainL()
 	cpu->iBpCtx = &hle;
 	if (hle.iProcess)
 		cpu->iOnProgress = Progress;
+	cpu->iOnForeignPc = ForeignPc;
 	// the ROM is mapped (read-only) in every process: a window, so guest code can read ROM-resident files (bafl resources) as on the device
 	const TRomHeader* rom = (const TRomHeader*)UserSvr::RomHeaderAddress();
 	hle.iRomHeader = (TUint32)rom;

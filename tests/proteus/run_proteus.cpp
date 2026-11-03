@@ -13,7 +13,7 @@ static int gN;
 // P2: ARM DLLs are looked up next to the EXE (emitter/<name>)
 static std::string gDir;
 static std::vector<std::vector<uint8_t> > gDlls;
-static const uint8_t* FindDll(const char* name, uint32_t& len, void*)
+static const uint8_t* FindDll(const char* name, uint32_t& len, char& drive, void*)
 {
 	FILE* f = fopen((gDir + name).c_str(), "rb");
 	if (!f && getenv("PROTEUS_DLLDIR")) f = fopen((std::string(getenv("PROTEUS_DLLDIR")) + "/" + name).c_str(), "rb");	// e.g. emitter (our ARM builds)

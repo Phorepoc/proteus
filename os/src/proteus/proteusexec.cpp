@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 namespace proteus
 {
@@ -215,7 +216,7 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 	}
 	else
 	{
-		if (h.iIpc && h.iIpc->iKernel && (!strncmp(name, "EExecProperty", 13) || !strcmp(name, "EExecOpenObject") || !strncmp(name, "EExecChunk", 10)
+		if (h.iIpc && h.iIpc->iKernel && (!strncmp(name, "EExecProperty", 13) || !strcmp(name, "EExecOpenObject") || !strcmp(name, "EExecObjectNext") || !strncmp(name, "EExecChunk", 10)
 			|| !strncmp(name, "EExecMutex", 10) || !strncmp(name, "EExecSemaphore", 14) || !strncmp(name, "EExecChangeNotifier", 19) || !strncmp(name, "EExecTimer", 10) || !strncmp(name, "EExecTimeNow", 12) || !strcmp(name, "EExecTickCount") || !strcmp(name, "EExecHandleClose"))
 			&& h.iIpc->iKernel(h.iIpc->iCtx, name, r, cpu))
 			return true;
@@ -315,6 +316,14 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 		TIpcBridge* ipc = h.iIpc;
 		if (!strcmp(name, "EExecHandleClose") && ipc && ipc->iOwns(ipc->iCtx, r[0])) { r[0] = ipc->iClose(ipc->iCtx, r[0]); return true; }
 		if (!strcmp(name, "EExecHandleClose") || !strcmp(name, "EExecHandleDuplicate")) { r[0] = KErrNone; return true; }
+		if (!strcmp(name, "EExecMathRandom"))		// Math::Random: 32 random bits (xorshift32, seeded once from the clock and an address)
+		{
+			static uint32_t s = 0;
+			if (!s) s = (uint32_t)time(0) ^ (uint32_t)(uintptr_t)&s ^ 0x9E3779B9u;
+			s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+			r[0] = s;
+			return true;
+		}
 		// ---- the guest's loader: RLibrary::Load = a "!Loader" session (ELoadLibrary) + the DLL lock / attach / lookup execs, all served
 		// here against the guest's module list -- the native loader would load x86 code ----
 		if (!strcmp(name, "EExecWaitDllLock") || !strcmp(name, "EExecReleaseDllLock") || !strcmp(name, "EExecLibraryAttached")) { r[0] = KErrNone; return true; }
@@ -336,6 +345,17 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 			const int mod = (int)(r[0] & 0xFFFF);
 			const TLoaded* m = (r[0] & 0xFFFF0000u) == KHandleLib0 && h.iProcess && mod < h.iProcess->iCount ? &h.iProcess->iMod[mod] : NULL;
 			r[0] = m && r[1] >= 1 && r[1] <= m->iExportCount ? cpu.Read32(m->iExportDir + 4 * (r[1] - 1)) : 0;
+			return true;
+		}
+		if (!strcmp(name, "EExecLibraryFileName"))		// (handle, TDes8& name): "<drive>:\sys\bin\<name>", the drive the DLL was found on
+		{
+			const int mod = (int)(r[0] & 0xFFFF);
+			const TLoaded* m = (r[0] & 0xFFFF0000u) == KHandleLib0 && h.iProcess && mod > 0 && mod < h.iProcess->iCount ? &h.iProcess->iMod[mod] : NULL;
+			if (!m) { r[0] = (uint32_t)-6; return true; }		// KErrBadHandle
+			char s[64];
+			snprintf(s, sizeof(s), "%c:\\sys\\bin\\%s", m->iDrive ? m->iDrive : 'Z', m->iName);
+			SetDes8(cpu, r[1], s);
+			r[0] = KErrNone;
 			return true;
 		}
 		if (!strcmp(name, "EExecExceptionDescriptor"))	// (code address) -> the exception descriptor of the module holding it (scodeseg.cpp), 0 = none

@@ -356,6 +356,15 @@ void CArmCpu::Step()
 		Halt(EReturned, (int32_t)R[0]);
 		return;
 	}
+	if (iOnForeignPc && pc - iBase > iSize - 2)		// outside the guest region: native code (a native object's vtable) -> its guest twin?
+	{
+		const uint32_t t = iOnForeignPc(*this, pc, iBpCtx);
+		if (t)
+		{
+			Branch(t);
+			return;
+		}
+	}
 	if (iT)
 	{
 		ThumbStep(pc);

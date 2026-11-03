@@ -21,6 +21,7 @@ struct TLoaded
 	char iError[96];
 	// P2: DLL linking
 	char iName[40];				// base name ("proteusdll.dll"; empty for the EXE)
+	char iDrive;				// the drive the file was found on (RLibrary::FileName), 0 = unknown
 	uint32_t iUid1;
 	uint32_t iHeapMin, iHeapMax, iStackSize;	// EXE header (real euser: the SStdEpocThreadCreateInfo on the initial stack)
 	uint32_t iExportDir, iExportCount;	// guest address of the (relocated) export directory
@@ -33,7 +34,7 @@ struct TLoaded
 enum { KMaxModules = 256 };
 // find an ARM DLL by its base name ("proteusdll.dll"); returns the file bytes (owned by the embedder, alive while the process runs) or NULL = not an
 // ARM DLL we have (the import then stays an HLE trap)
-typedef const uint8_t* (*TFindDllFn)(const char* aName, uint32_t& aLen, void* aCtx);
+typedef const uint8_t* (*TFindDllFn)(const char* aName, uint32_t& aLen, char& aDrive, void* aCtx);	// aDrive: the drive letter it was found on
 struct TProcess
 {
 	TLoaded iMod[KMaxModules];
