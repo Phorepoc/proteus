@@ -1266,7 +1266,7 @@ static TInt MainL()
 		cpu->AddWindow((TUint32)rom->iRomBase, rom->iRomSize);
 		RDebug::Printf("PH: proteus ROM window %x + %x", (TUint)rom->iRomBase, rom->iRomSize);
 		}
-	proteus::RunExe(*cpu, hle, 0xFFFFFFFFu);		// no instruction budget for a real app (it was 50 M: about.exe hit it while drawing text)
+	proteus::RunExe(*cpu, hle, ~0ull);		// no instruction budget for a real app (it was 50 M: about.exe hit it while drawing text; 4 G: Sparkle hit that on VirtualBox)
 	RDebug::Printf("PH: proteus guest halted: %d exit %d after %d instructions, fault %x '%s'", (TInt)cpu->iHalt, cpu->iExitCode, (TInt)cpu->iSteps, cpu->iFaultAddr, cpu->iNote);
 	if (cpu->iHalt == proteus::EUndefined)
 		for (TInt m = 0; m < proc->iCount; ++m)

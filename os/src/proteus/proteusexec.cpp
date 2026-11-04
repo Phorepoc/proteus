@@ -515,7 +515,7 @@ void Preempt(CArmCpu& cpu, THle& h)
 void ThreadStats(CArmCpu& cpu, THle& h, char* aOut, int aMax)
 {
 	TExecState& e = h.iExec;
-	int n = snprintf(aOut, aMax, "cur=%d wait=%ums slow=%uK svc=%uK trap=%uK ran(M):", e.iCur, (unsigned)(e.iWaitUs / 1000), (unsigned)(cpu.iStatSlow >> 10), (unsigned)(cpu.iStatSvc >> 10), (unsigned)(cpu.iStatTrap >> 10));
+	int n = snprintf(aOut, aMax, "cur=%d wait=%ums slow=%uK svc=%uK trap=%uK mem=%uK ran(M):", e.iCur, (unsigned)(e.iWaitUs / 1000), (unsigned)(cpu.iStatSlow >> 10), (unsigned)(cpu.iStatSvc >> 10), (unsigned)(cpu.iStatTrap >> 10), (unsigned)(cpu.iStatMem >> 10));
 	for (int i = 0; i < e.iThreadCount && n > 0 && n < aMax - 16; ++i)
 	{
 		const uint64_t ran = e.iThread[i].iRan + (i == e.iCur ? cpu.iSteps - e.iSliceStart : 0);

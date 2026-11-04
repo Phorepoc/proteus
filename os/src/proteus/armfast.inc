@@ -140,12 +140,14 @@ struct FastCore
 	{
 		c->R[15] = np;
 		c->iLastPc = cur;
+		++c->iStatMem;
 		return size == 4 ? c->Read32(a) : size == 2 ? c->Read16(a) : c->Read8(a);
 	}
 	static __attribute__((noinline, cold)) void SlowWr(CArmCpu* c, uint32_t np, uint32_t cur, uint32_t a, uint32_t v, int size)
 	{
 		c->R[15] = np;
 		c->iLastPc = cur;
+		++c->iStatMem;
 		if (size == 4) c->Write32(a, v); else if (size == 2) c->Write16(a, (uint16_t)v); else c->Write8(a, (uint8_t)v);
 	}
 	static PH_INLINE uint32_t SlowRdS(FS& s, uint32_t a, int size)
@@ -810,7 +812,7 @@ void CArmCpu::Run(uint64_t aMaxSteps)
 	const uint64_t start = iSteps;
 	while (iHalt == ERunning)
 	{
-		uint64_t limit = start + aMaxSteps;
+		uint64_t limit = aMaxSteps > ~0ull - start ? ~0ull : start + aMaxSteps;		// (no overflow for "no budget" = ~0)
 		if (iSliceSteps && iNextSlice < limit) limit = iNextSlice;
 		if (iOnProgress)
 		{

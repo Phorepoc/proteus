@@ -391,7 +391,7 @@ static uint32_t StartThreadStack(CArmCpu& cpu, const THle& h)
 	return tld;
 }
 
-void RunExe(CArmCpu& cpu, THle& h, uint32_t maxSteps)
+void RunExe(CArmCpu& cpu, THle& h, uint64_t maxSteps)
 {
 	InstallHle(cpu, h);
 	memset(&h.iExec, 0, sizeof(h.iExec));

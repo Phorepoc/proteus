@@ -213,7 +213,7 @@ extern int gExecTraceWindow;		// > 0: log the next that many executive calls
 bool GlWindowSurface(CArmCpu& aCpu, THle& aHle, uint32_t aNativeFn);
 
 // run an ARM EXE from entry: sets sp (top of the guest region), r4 = 0 (first thread), lr = return-to-host, and runs until it halts
-void RunExe(CArmCpu& aCpu, THle& aHle, uint32_t aMaxSteps);
+void RunExe(CArmCpu& aCpu, THle& aHle, uint64_t aMaxSteps);
 }
 
 #endif

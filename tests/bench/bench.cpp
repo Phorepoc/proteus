@@ -41,7 +41,7 @@ int main(int argc, char** argv)
 		CArmCpu* cpu = new CArmCpu;
 		cpu->iHost = mem.data(); cpu->iBase = base; cpu->iSize = size; cpu->R[13] = base + size - 16; cpu->iSvc = Svc; cpu->Branch(entry);
 		timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
-		cpu->Run(4000000000ull);
+		cpu->Run(~0ull);		// no budget: the limit arithmetic must not overflow
 		clock_gettime(CLOCK_MONOTONIC, &b);
 		fflush(stdout);
 		if (cpu->iHalt != proteus::EExited) { fprintf(stderr, "halt %d at %08x %s pc=%08x\n", (int)cpu->iHalt, cpu->iFaultAddr, cpu->iNote, cpu->iLastPc); return 1; }
