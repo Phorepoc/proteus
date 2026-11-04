@@ -48,8 +48,8 @@ struct FastCore
 	{
 		KSlow = 0,
 		KDp = 1,					// 1 + kind * 32 + op * 2 + S, kind 0 = immediate, 1 = register shifted by an immediate, 2 = register shifted by a register
-		KLs = 100,					// 100 + (L << 1 | B) + 4 * register-offset
-		KLdm = 110, KB, KBl, KBx, KMul, KMull, KHalf, KLdrex, KStrex, KMovw, KMovt, KMedia
+		KLs = 100,					// 100 + (ins bits 24:20 = P U B W L) + 32 * register-offset
+		KLdm = 170, KB, KBl, KBx, KMul, KMull, KHalf, KLdrex, KStrex, KMovw, KMovt, KMedia
 	};
 
 	static void Init()
@@ -109,8 +109,8 @@ struct FastCore
 				else if (hi == 0x34) k = KMovt;
 				else if ((hi & 0x19) != 0x10) k = (uint8_t)(KDp + op * 2 + S);
 				break;
-			case 2: k = (uint8_t)(KLs + ((hi & 1) << 1) + ((hi >> 2) & 1)); break;		// L = bit 20, B = bit 22
-			case 3: k = (lo & 1) ? (uint8_t)KMedia : (uint8_t)(KLs + 4 + (((hi >> 0) & 1) << 1) + ((hi >> 2) & 1)); break;
+			case 2: k = (uint8_t)(KLs + (hi & 31)); break;		// L = bit 20, B = bit 22
+			case 3: k = (lo & 1) ? (uint8_t)KMedia : (uint8_t)(KLs + 32 + (hi & 31)); break;
 			case 4: k = KLdm; break;
 			case 5: k = (hi & 0x10) ? KBl : KB; break;
 			default: break;
@@ -219,7 +219,7 @@ struct FastCore
 	static PH_INLINE void Branch(FS& s, uint32_t t)
 	{
 		s.np = t & ~1u;
-		if (t & 1) s.thumb = true;
+		if (t & 1) { s.thumb = true; s.stop = true; }
 	}
 
 	// ---- data processing --------------------------------------------------------------------------------------------------------------
@@ -323,10 +323,10 @@ struct FastCore
 	}
 
 	// ---- LDR / STR / LDRB / STRB --------------------------------------------------------------------------------------------------------
-	template<int L, int B, int REG>
+	template<int L, int B, int REG, int P, int U, int W>
 	static PH_INLINE void Ls(FS& s, uint32_t ins)
 	{
-		const bool p = ins & (1u << 24), u = ins & (1u << 23), w = ins & (1u << 21);
+		const bool p = P, u = U, w = W;
 		const uint32_t rn = (ins >> 16) & 0xF, rd = (ins >> 12) & 0xF;
 		uint32_t off;
 		if (!REG) off = ins & 0xFFF;
@@ -400,6 +400,10 @@ struct FastCore
 	PH_DPOP(K, 0) PH_DPOP(K, 1) PH_DPOP(K, 2) PH_DPOP(K, 3) PH_DPOP(K, 4) PH_DPOP(K, 5) PH_DPOP(K, 6) PH_DPOP(K, 7) \
 	PH_DPOP(K, 8) PH_DPOP(K, 9) PH_DPOP(K, 10) PH_DPOP(K, 11) PH_DPOP(K, 12) PH_DPOP(K, 13) PH_DPOP(K, 14) PH_DPOP(K, 15)
 
+#define PH_LS1(R, H) case KLs + (R) * 32 + (H): Ls<(H) & 1, ((H) >> 2) & 1, R, ((H) >> 4) & 1, ((H) >> 3) & 1, ((H) >> 1) & 1>(s, ins); break;
+#define PH_LSA(R, H) PH_LS1(R, H) PH_LS1(R, (H) + 1) PH_LS1(R, (H) + 2) PH_LS1(R, (H) + 3) PH_LS1(R, (H) + 4) PH_LS1(R, (H) + 5) PH_LS1(R, (H) + 6) PH_LS1(R, (H) + 7)
+#define PH_LSB(R) PH_LSA(R, 0) PH_LSA(R, 8) PH_LSA(R, 16) PH_LSA(R, 24)
+
 	// Executes instructions until iSteps >= aLimit, the guest halts, or the next instruction needs the generic path (then true: the caller
 	// runs one Step()). Precondition: ARM state, no breakpoints.
 	static bool Batch(CArmCpu& c, uint64_t aLimit)
@@ -424,7 +428,7 @@ struct FastCore
 		{
 			uint32_t ins;
 			const uint32_t off = s.np - s.base;
-			if (PH_UNLIKELY(off > s.size - 4 || (s.np & 3) || s.thumb)) { generic = !s.thumb; break; }
+			if (PH_UNLIKELY(off > s.size - 4 || (s.np & 3))) { generic = true; break; }
 			__builtin_memcpy(&ins, s.host + off, 4);
 			s.cur = s.np;
 			const uint32_t cond = ins >> 28;
@@ -455,14 +459,8 @@ struct FastCore
 			PH_DPK(0)
 			PH_DPK(1)
 			PH_DPK(2)
-			case KLs + 0: Ls<0, 0, 0>(s, ins); break;
-			case KLs + 1: Ls<0, 1, 0>(s, ins); break;
-			case KLs + 2: Ls<1, 0, 0>(s, ins); break;
-			case KLs + 3: Ls<1, 1, 0>(s, ins); break;
-			case KLs + 4: Ls<0, 0, 1>(s, ins); break;
-			case KLs + 5: Ls<0, 1, 1>(s, ins); break;
-			case KLs + 6: Ls<1, 0, 1>(s, ins); break;
-			case KLs + 7: Ls<1, 1, 1>(s, ins); break;
+			PH_LSB(0)
+			PH_LSB(1)
 			case KLdm: if (ins & (1u << 20)) Block<1>(s, ins); else Block<0>(s, ins); break;
 			case KB: s.np += 4 + ((int32_t)(ins << 8) >> 6); break;
 			case KBl: s.r[14] = s.np; s.np += 4 + ((int32_t)(ins << 8) >> 6); break;

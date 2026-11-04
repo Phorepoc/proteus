@@ -15,3 +15,10 @@ qemu-arm -cpu cortex-a15 "$W/isa.elf" > "$W/qemu.txt"
 echo "$(wc -l < "$W/qemu.txt") results"
 if cmp -s "$W/qemu.txt" "$W/proteus.txt"; then echo "isa: PASS"; else
   echo "isa: FAIL -- first differences (qemu < > proteus):"; diff "$W/qemu.txt" "$W/proteus.txt" | head -40; exit 1; fi
+# the base classes (data processing, load/store, LDM/STM, conditions, multiplies, branches, exclusives): the fast path coverage
+arm-none-eabi-gcc -marm -march=armv7ve -O1 -ffreestanding -nostdlib -static -Wl,-Ttext=0x10000 -Wl,-e,_start -o "$W/base.elf" "$HERE/base.c"
+qemu-arm -cpu cortex-a15 "$W/base.elf" > "$W/bqemu.txt"
+"$W/harness" "$W/base.elf" > "$W/bproteus.txt" || true
+echo "$(wc -l < "$W/bqemu.txt") base results"
+if cmp -s "$W/bqemu.txt" "$W/bproteus.txt"; then echo "base: PASS"; else
+  echo "base: FAIL -- first differences (qemu < > proteus):"; diff "$W/bqemu.txt" "$W/bproteus.txt" | head -40; exit 1; fi
