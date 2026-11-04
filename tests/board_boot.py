@@ -54,6 +54,7 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=600)
     ap.add_argument("--mem", default="1024")
     ap.add_argument("--sis", action="store_true")
+    ap.add_argument("--shot-at", default="", help="comma-separated seconds since QEMU start: a screendump shot-<s>.ppm at each")
     ap.add_argument("--linger", type=int, default=0, help="seconds the app keeps running after P3's verdict (then the screendump)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
@@ -86,8 +87,11 @@ def main() -> int:
                 done[0] = True
 
     threading.Thread(target=reader, daemon=True).start()
+    shots = sorted(int(x) for x in a.shot_at.split(",") if x)
     while time.time() - t0 < a.timeout and len(seen) < len(markers) and not done[0] and p.poll() is None:
         time.sleep(1)
+        if shots and time.time() - t0 >= shots[0]:
+            Screendump(mon, os.path.join(a.out, "shot-%d.ppm" % shots.pop(0)))
     t1 = time.time()
     shot = 0
     while a.sis and time.time() - t1 < a.linger and p.poll() is None:

@@ -139,7 +139,17 @@ static bool Call(CArmCpu& aCpu, THle& aHle, uint32_t aIndex)
 	if (!strcmp(t.iName, "eglCreateWindowSurface"))
 		return GlWindowSurface(aCpu, aHle, gNative[aIndex]);
 	gHle = &aHle;
+	// the trace: the first calls of each function (arguments, result), then every 60th eglSwapBuffers; eglCreate* always
+	static uint32_t seen[KThunkCount];
+	const uint32_t a0 = aCpu.R[0], a1 = aCpu.R[1], a2 = aCpu.R[2], a3 = aCpu.R[3];
 	t.iCall(aCpu, gNative[aIndex], t.iName);
+	const uint32_t n = ++seen[aIndex];
+	if (n <= 2 || (!strncmp(t.iName, "eglSwap", 7) && n % 60 == 0) || !strncmp(t.iName, "eglCreate", 9))
+	{
+		char line[200];
+		snprintf(line, sizeof(line), "[proteus] GL %s #%u (%x,%x,%x,%x) -> %x", t.iName, n, a0, a1, a2, a3, aCpu.R[0]);
+		Say(aHle, "%s", line);
+	}
 	aCpu.SetReturn();
 	return true;
 }

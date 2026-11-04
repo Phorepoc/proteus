@@ -16,7 +16,7 @@ namespace proteus
 #include "exec_names.inc"
 
 enum { KFast = 0x800000 };
-enum { KErrNone = 0, KErrNotFound = -1, KErrNotSupported = -5, KErrNoMemory = -4, KErrArgument = -6, KErrBadHandle = -8 };
+enum { KErrNone = 0, KErrNotFound = -1, KErrNotSupported = -5, KErrNoMemory = -4, KErrArgument = -6, KErrBadHandle = -8, KErrCancel = -3, KErrOverflow = -9, KErrUnderflow = -10 };
 
 static uint32_t& Slot(TExecState& e, uint32_t aKey)
 {
@@ -543,6 +543,66 @@ static bool ThreadExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
 			if (name[12] == 'S') break;
 		}
 		return true;
+	}
+	// ---- message queues (RMsgQueue): local to the process; a named one is only a name for the same thing here ----
+	if (!strcmp(name, "EExecMsgQueueCreate"))		// (name or NULL, slots, message length, owner type)
+	{
+		if ((int32_t)r[1] <= 0 || (int32_t)r[2] < 4 || (r[2] & 3) || r[2] > 256) { r[0] = (uint32_t)KErrArgument; return true; }		// (the kernel panics: KERN-EXEC 49 / 48)
+		uint8_t* data = (uint8_t*)calloc(r[1], r[2]);
+		if (e.iSyncCount >= KMaxSync || !data) { free(data); r[0] = (uint32_t)KErrNoMemory; return true; }
+		TSyncObj& s = e.iSync[e.iSyncCount];
+		memset(&s, 0, sizeof(s));
+		s.iType = 4;
+		s.iData = data; s.iSlots = (int)r[1]; s.iLen = (int)r[2];
+		r[0] = KHandleObj + e.iSyncCount++;
+		return true;
+	}
+	if (!strncmp(name, "EExecMsgQueue", 13))
+	{
+		const int o = SyncIndex(e, r[0], 4);
+		if (o < 0) return false;
+		TSyncObj& q = e.iSync[o];
+		const char* op = name + 13;
+		if (!strcmp(op, "Send"))			// (handle, data, length): KErrOverflow when full
+		{
+			if ((int32_t)r[2] <= 0 || (int)r[2] > q.iLen) { r[0] = (uint32_t)KErrArgument; return true; }
+			if (q.iCount == q.iSlots) { r[0] = (uint32_t)KErrOverflow; return true; }
+			uint8_t* slot = q.iData + (size_t)((q.iHolder + q.iCount) % q.iSlots) * q.iLen;
+			memset(slot, 0, q.iLen);
+			for (uint32_t i = 0; i < r[2]; ++i) slot[i] = (uint8_t)cpu.Read8(r[1] + i);
+			++q.iCount;
+			if (q.iDataStatus) { CompleteFor(cpu, e, q.iDataThread, q.iDataStatus, KErrNone); q.iDataStatus = 0; }
+			r[0] = KErrNone;
+			return true;
+		}
+		if (!strcmp(op, "Receive"))			// (handle, buffer, length = the message length): KErrUnderflow when empty
+		{
+			if ((int)r[2] != q.iLen) { r[0] = (uint32_t)KErrArgument; return true; }
+			if (!q.iCount) { r[0] = (uint32_t)KErrUnderflow; return true; }
+			const uint8_t* slot = q.iData + (size_t)q.iHolder * q.iLen;
+			for (int i = 0; i < q.iLen; ++i) cpu.Write8(r[1] + i, slot[i]);
+			q.iHolder = (q.iHolder + 1) % q.iSlots;
+			--q.iCount;
+			if (q.iSpaceStatus) { CompleteFor(cpu, e, q.iSpaceThread, q.iSpaceStatus, KErrNone); q.iSpaceStatus = 0; }
+			r[0] = KErrNone;
+			return true;
+		}
+		if (!strcmp(op, "NotifySpaceAvailable") || !strcmp(op, "NotifyDataAvailable"))		// (handle, TRequestStatus&)
+		{
+			const bool space = op[6] == 'S';
+			if (space ? q.iCount < q.iSlots : q.iCount > 0) { CompleteFor(cpu, e, cur, r[1], KErrNone); return true; }
+			(space ? q.iSpaceStatus : q.iDataStatus) = r[1];
+			(space ? q.iSpaceThread : q.iDataThread) = cur;
+			return true;
+		}
+		if (!strcmp(op, "CancelSpaceAvailable") || !strcmp(op, "CancelDataAvailable"))
+		{
+			const bool space = op[6] == 'S';
+			uint32_t& st = space ? q.iSpaceStatus : q.iDataStatus;
+			if (st) { CompleteFor(cpu, e, space ? q.iSpaceThread : q.iDataThread, st, KErrCancel); st = 0; }
+			return true;
+		}
+		if (!strcmp(op, "Size")) { r[0] = (uint32_t)q.iLen; return true; }
 	}
 	// ---- threads ----
 	if (!strcmp(name, "EExecThreadCreate")) { r[0] = (uint32_t)CreateThread(cpu, h, r[2]); return true; }	// (name, owner, SThreadCreateInfo8&)

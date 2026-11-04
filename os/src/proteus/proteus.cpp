@@ -4,6 +4,7 @@
 // runs a real ARM Symbian EXE (an E32Image with CPU id ARMv5) inside one x32 process. proteus.exe [<arm exe>] (default z:\sys\bin\arm\proteushello.exe: the ARM files live in the
 // per-arch directory \sys\bin\arm\ of the design). The guest's memory is one block of this process's heap (guest address == host address under ILP32); the ARM code's euser imports are
 // emulated by ordinal (proteusrt.cpp). Prints "PH: proteus ..." lines. P0 stand-in for the loader hook (f32image.h iCpuIdentifier) + dynarmic of P1.
+#include <stdio.h>
 #include <e32base.h>
 #include <e32debug.h>
 #include <f32file.h>
@@ -220,6 +221,11 @@ bool proteus::GlWindowSurface(proteus::CArmCpu& aCpu, proteus::THle& aHle, uint3
 	native[k]->Rebind((TInt32)aCpu.Read32(guestWin));
 	typedef uint32_t (*F)(uint32_t, uint32_t, uint32_t, uint32_t);
 	aCpu.R[0] = ((F)(uintptr_t)aNativeFn)(aCpu.R[0], aCpu.R[1], (uint32_t)(uintptr_t)native[k], aCpu.R[3]);
+	{
+		char line[160];
+		snprintf(line, sizeof(line), "[proteus] GL eglCreateWindowSurface(window %x, ws handle %x) -> %x", guestWin, (unsigned)aCpu.Read32(guestWin), aCpu.R[0]);
+		proteus::Say(aHle, "%s", line);
+	}
 	aCpu.SetReturn();
 	return true;
 	}

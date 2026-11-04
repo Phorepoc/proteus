@@ -122,7 +122,12 @@ struct TGuestThread
 	int iStackChunk;			// the chunk holding its stack (-1 = the main thread's region stack)
 	bool iStackFree;			// dead: the stack chunk may be reused by a new thread
 };
-struct TSyncObj { int iType; int iCount; int iHolder; };		// 1 mutex (iCount = hold count, iHolder = thread), 2 semaphore (iCount), 3 condition variable
+struct TSyncObj
+{
+	int iType; int iCount; int iHolder;
+	// a message queue (type 4: iCount = messages queued, iHolder = the head slot); the requests of NotifySpaceAvailable / NotifyDataAvailable
+	uint8_t* iData; int iSlots, iLen; uint32_t iSpaceStatus, iDataStatus; int iSpaceThread, iDataThread;
+};		// 1 mutex (iCount = hold count, iHolder = thread), 2 semaphore (iCount), 3 condition variable, 4 message queue
 struct TExecState
 {
 	uint32_t iHeap, iTrapHandler, iActiveScheduler, iTrapFrame;
