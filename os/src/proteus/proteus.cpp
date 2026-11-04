@@ -400,7 +400,19 @@ static bool BridgeKernel(void* aCtx, const char* aExec, uint32_t* r, proteus::CA
 	// the hardware abstraction layer (HAL::Get / UserHal -> UserSvr::HalFunction): the same executive call on the native kernel, whose answers are
 	// the device's (the guest's pointers are this process's memory). An unanswered group used to end in KErrNotSupported, which Let's Golf 2 turned
 	// into its "Feature is not supported" note (the display / digitiser / ... attributes it reads at start-up)
-	if (n == _L8("EExecHalFunction")) { r[0] = (uint32_t)UserSvr::HalFunction((TInt)r[0], (TInt)r[1], (TAny*)r[2], (TAny*)r[3]); return true; }
+	if (n == _L8("EExecHalFunction"))
+		{
+		const uint32_t grp = r[0], fn = r[1], a1 = r[2];
+		const TInt e = UserSvr::HalFunction((TInt)r[0], (TInt)r[1], (TAny*)r[2], (TAny*)r[3]);
+		static TInt halLines = 0;
+		if (grp != 0 && halLines < 80)		// the device attributes the guest reads (display size, mode, ...): group, function, result, first word of the answer
+			{
+			++halLines;
+			RDebug::Printf("PH: proteus HAL: group %d fn %d -> %d (a1 word %d)", grp, fn, e, e == KErrNone && a1 > 0x1000 ? *(const TInt*)a1 : 0);
+			}
+		r[0] = (uint32_t)e;
+		return true;
+		}
 	if (n == _L8("EExecProcessDataParameterLength")) { r[0] = (uint32_t)User::ParameterLength((TInt)r[0]); return true; }
 	if (n == _L8("EExecProcessGetDataParameter"))		// (slot, TUint8* data, max length) -> length or an error
 		{
@@ -1240,6 +1252,22 @@ static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArg
 		{
 		UnwatchAsync(st);		// (a status reused for a synchronous call)
 		const TInt r = b.iSession[i].Sync(aFunction, args);
+		// window-server replies to the screen-device queries (sizes, modes, rotation, origin, scale): the words the guest reads back (bounded)
+		static TInt wsRep = 0;
+		if (b.iName[i] == _L("!Windowserver") && wsRep < 150 && aFunction == 4 && aArgs && ((args.iFlags >> 3) & 5) == 4 && (args.iFlags & 5) == 4 && args.iArgs[1])
+			{
+			const TDesC8& d = *(const TDesC8*)args.iArgs[0];
+			const TDesC8& rep = *(const TDesC8*)args.iArgs[1];
+			if (d.Length() >= 4 && rep.Length() > 0)
+				{
+				++wsRep;
+				const TUint8* p = d.Ptr();
+				TBuf8<80> w;
+				for (TInt k = 0; k + 4 <= rep.Length() && k < 24; k += 4)
+					w.AppendFormat(_L8(" %x"), *(const TUint32*)(rep.Ptr() + k));
+				RDebug::Printf("PH: proteus WSR: op %x len %d -> %d, reply (%d bytes)%S", (p[0] | (p[1] << 8)) & 0x7FFF, d.Length(), r, rep.Length(), &w);
+				}
+			}
 		static TInt errLines = 0, nomemLines = 0;
 		if (r < 0 && (errLines < 200 || (r == KErrNoMemory && nomemLines < 100)))		// trace: a server call the guest gets an error from (KErrNoMemory always, bounded on its own) (server, function, arg 0 if a 16-bit descriptor: a file name)
 			{

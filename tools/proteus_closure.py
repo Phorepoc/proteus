@@ -69,6 +69,9 @@ def thumb_stats(img):
     return sum(1 for e in ex if e & 1), len(ex), pairs, arm
 
 
+NATIVE_GL = {"libegl.dll", "libglesv2.dll", "libglesv1_cm.dll", "libgles_cm.dll"}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("exe")
@@ -80,6 +83,7 @@ def main():
     a = ap.parse_args()
     dirs = a.dirs.split(",") if a.dirs else [os.path.dirname(os.path.abspath(a.exe)), os.path.join(REPO, "emitter")]
     found, missing, order = {}, set(), []  # noqa
+    native = set()
     # file names compare without case (a Symbian file system's rule; SIS contents are mixed case, the Linux host's is not)
     index = {d: {f.lower(): f for f in os.listdir(d)} for d in dirs if os.path.isdir(d)}
 
@@ -107,6 +111,9 @@ def main():
             b = base(imp)
             if b in found or b in missing:
                 continue
+            if b in NATIVE_GL:		# the OpenGL ES / EGL DLLs run natively (proteusgl.cpp thunks their imports): an ARM copy would shadow them
+                native.add(b)
+                continue
             for d in dirs:
                 for cand in (b, ALIAS.get(b, b)):
                     p = lookup(d, cand)
@@ -133,6 +140,8 @@ def main():
             os.makedirs(a.out, exist_ok=True)
             shutil.copyfile(found[name], os.path.join(a.out, name))
     print(f"closure: {len(order)} modules ({len(order) - 1} DLLs), unresolved {len(missing)}: {', '.join(sorted(missing)) or '-'}")
+    if native:
+        print(f"native (not staged, run on the native GL): {', '.join(sorted(native))}")
     print(f"thumb: {len(thumb_mods)} mostly-Thumb modules ({', '.join(thumb_mods) or '-'}); {tot_te} Thumb exports, {tot_pairs} Thumb BL pairs in all")
     if a.out:
         print(f"copied to {a.out}  (boot: DISKFILES={a.out}=proteus)")
