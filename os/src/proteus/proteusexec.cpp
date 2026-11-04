@@ -457,6 +457,7 @@ static int CreateThread(CArmCpu& cpu, THle& h, uint32_t aInfo)
 }
 
 // the thread / synchronisation / request-semaphore executive calls; false = not one of them
+int gExecTraceWindow;
 static bool ThreadExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
 {
 	TExecState& e = h.iExec;
@@ -738,12 +739,13 @@ static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 	++e.iCalls;
 	// trace: the first 400 slow execs (and every WaitForAnyRequest among them) with the caller -- where a guest that went quiet blocks
 	static int traced = 0;
-	if (h.iLog && h.iProcess && traced < 400 && (!fast || !strcmp(name, "EFastExecWaitForAnyRequest")))
+	const bool window = gExecTraceWindow > 0;		// (the bridge opens a window after a connect it wants to see: every exec of the next few)
+	if (h.iLog && h.iProcess && (window || (traced < 400 && (!fast || !strcmp(name, "EFastExecWaitForAnyRequest")))))
 	{
-		++traced;
+		if (window) --gExecTraceWindow; else ++traced;
 		char w[120], l[200];
 		Where(*h.iProcess, cpu, r[14], w, sizeof(w));
-		snprintf(l, sizeof(l), "[proteus] exec %s r0 %x r1 %x lr %s", name, r[0], r[1], w);
+		snprintf(l, sizeof(l), "[proteus] exec %s r0 %x r1 %x r2 %x r3 %x lr %s", name, r[0], r[1], r[2], r[3], w);
 		h.iLog(l, h.iLogCtx);
 		if (fast) Backtrace(cpu, h);
 	}

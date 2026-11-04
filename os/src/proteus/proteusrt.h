@@ -192,6 +192,7 @@ bool IsGlDll(const char* aImport);
 bool GlTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd);
 bool GlTrapSlot(CArmCpu& aCpu, THle& aHle, uint32_t aSlotValue);
 // eglCreateWindowSurface(dpy, config, window, attribs) with the guest's RWindow (proteusglwin.cpp)
+extern int gExecTraceWindow;		// > 0: log the next that many executive calls
 bool GlWindowSurface(CArmCpu& aCpu, THle& aHle, uint32_t aNativeFn);
 
 // run an ARM EXE from entry: sets sp (top of the guest region), r4 = 0 (first thread), lr = return-to-host, and runs until it halts

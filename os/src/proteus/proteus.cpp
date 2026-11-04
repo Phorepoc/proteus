@@ -154,6 +154,7 @@ struct TBridge
 	TBuf<128> iName[KMaxBridge];
 	TInt iSlots[KMaxBridge];
 	TBool iUsed[KMaxBridge], iConnected[KMaxBridge];
+	TBool iNative[KMaxBridge];					// a session handle a server handed the guest in a reply (RMessage2::Complete(handle)): a kernel handle of this process, adopted at its first use
 	RProperty iProp[KMaxBridge];				// guest RProperty handles = KPropHandle0 + i
 	TBool iPropUsed[KMaxBridge];
 	RChunk iObj[KMaxBridge];					// P2: kernel objects opened by name (chunk / mutex / semaphore: all an RHandleBase), KObjHandle0 + i
@@ -316,7 +317,38 @@ static TInt BridgeIndex(TBridge& b, uint32_t aHandle)
 	{
 	// (subsessions keep the session handle with KHandleNoClose 0x8000 set: RSubSessionBase::DoCreateSubSession)
 	const TInt i = (TInt)(aHandle & 0x7FFF);
-	return (aHandle & 0xFFFF0000u) == KBridgeHandle0 && i < KMaxBridge && b.iUsed[i] ? i : -1;
+	if ((aHandle & 0xFFFF0000u) == KBridgeHandle0 && i < KMaxBridge && b.iUsed[i])
+		return i;
+	for (TInt k = 0; k < KMaxBridge; ++k)		// (adopted native session handles keep their own value)
+		if (b.iUsed[k] && b.iNative[k] && b.iSession[k].Handle() == (TInt)(aHandle & ~0x8000u))
+			return k;
+	return -1;
+	}
+
+// a handle none of the guest's own ranges (chunks, sync objects, bridge sessions, properties, loader, libraries, threads: 0xC0..0xF7 in the
+// instance field) can hold, and not the current-thread / process pseudo handles: a kernel handle that came from outside the guest
+static TBool NativeLooking(uint32_t aHandle)
+	{
+	const uint32_t inst = aHandle >> 16;
+	return aHandle && inst < 0xFFF0 && (inst < 0x00C0 || inst >= 0x00F8);
+	}
+
+// the guest's first message on a native session handle it was given: this process's handle, so the session object wraps it as is
+static TInt AdoptNative(TBridge& b, uint32_t aHandle)
+	{
+	for (TInt i = 0; i < KMaxBridge; ++i)
+		if (!b.iUsed[i])
+			{
+			b.iUsed[i] = ETrue;
+			b.iConnected[i] = ETrue;
+			b.iNative[i] = ETrue;
+			b.iName[i] = _L("(native session handle)");
+			b.iSlots[i] = -1;
+			b.iSession[i].SetHandle((TInt)(aHandle & ~0x8000u));
+			RDebug::Printf("PH: proteus IPC: guest uses the server-given session handle %x as bridge session %d", aHandle, i);
+			return i;
+			}
+	return -1;
 	}
 
 static bool BridgeProperty(void* aCtx, const char* aExec, uint32_t* r);
@@ -505,7 +537,8 @@ static bool BridgeKernel(void* aCtx, const char* aExec, uint32_t* r, proteus::CA
 	return false;
 	}
 
-static bool BridgeOwns(void* aCtx, uint32_t aHandle) { return BridgeIndex(*(TBridge*)aCtx, aHandle) >= 0 || PropIndex(*(TBridge*)aCtx, aHandle) >= 0; }
+// (a handle outside the guest's own ranges is a kernel handle the guest was given: a server's reply handed it a session)
+static bool BridgeOwns(void* aCtx, uint32_t aHandle) { return BridgeIndex(*(TBridge*)aCtx, aHandle) >= 0 || PropIndex(*(TBridge*)aCtx, aHandle) >= 0 || NativeLooking(aHandle); }
 
 static int BridgeCreate(void* aCtx, const char* aName, int aSlots)
 	{
@@ -518,6 +551,7 @@ static int BridgeCreate(void* aCtx, const char* aName, int aSlots)
 			b.iName[i].Copy(TPtrC8((const TUint8*)aName));
 			b.iSlots[i] = aSlots;
 			RDebug::Printf("PH: proteus IPC: guest session %d -> server %s (%d slots)", i, aName, aSlots);
+			if (strstr(aName, "MMF")) proteus::gExecTraceWindow = 150;
 			return KBridgeHandle0 + i;
 			}
 	return KErrNoMemory;
@@ -585,7 +619,9 @@ static TBool BridgeFsPrivate(TBridge& b, TInt i, TInt aFunction, const TIpcArgs&
 static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArgs, uint32_t aStatus, bool aSync)
 	{
 	TBridge& b = *(TBridge*)aCtx;
-	const TInt i = BridgeIndex(b, aHandle);
+	TInt i = BridgeIndex(b, aHandle);
+	if (i < 0 && NativeLooking(aHandle))
+		i = AdoptNative(b, aHandle);
 	if (i < 0)
 		return KErrBadHandle;
 	TRequestStatus* st = (TRequestStatus*)aStatus;
@@ -595,7 +631,7 @@ static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArg
 	// window-server trace (the first 120 messages): function, and for a command buffer (a TDesC8 in arg 0) its size and first opcodes
 	// (each command: TUint16 opcode, TInt16 length, [TInt32 handle if opcode bit 15], data)
 	static TInt wsLines = 0;
-	if (b.iName[i] == _L("!Windowserver") && wsLines < 300 && b.iConnected[i])
+	if (b.iName[i] == _L("!Windowserver") && wsLines < 3000 && b.iConnected[i])
 		{
 		// every command: opcode (bit 15 = a new destination handle follows), its handle (sticky), skipping the data (padded to 4)
 		TBuf8<240> ops;
@@ -620,7 +656,7 @@ static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArg
 				o += (cl + 3) & ~3;
 				}
 			}
-		if (wsLines < 120 || aFunction >= 0x10000 || redraw)
+		if (wsLines < 120 || (aFunction >= 0x10000 && wsLines < 400) || redraw)
 			{
 			++wsLines;
 			RDebug::Printf("PH: proteus WS: fn %x len %d%S", aFunction, len, &ops);
@@ -638,6 +674,18 @@ static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArg
 		RDebug::Printf("PH: proteus CDL: fn %d %s flags %x args %x %x %x %x (arg 1 words %x %x)", aFunction, aSync ? "sync" : "async",
 			args.iFlags, args.iArgs[0], args.iArgs[1], args.iArgs[2], args.iArgs[3], d1[0], d1[1]);
 		}
+	{
+		// trace: the first messages to any server but the window server and the file server (function, argument types as TIpcArgs holds them, values)
+		static TInt ipcLines = 0;
+		if (aArgs && ((ipcLines < 150 && b.iName[i] != _L("!Windowserver") && b.iName[i] != _L("!FileServer")) || b.iName[i].Find(_L("MMF")) >= 0))
+			{
+			++ipcLines;
+			TBuf8<40> srv;
+			srv.Copy(b.iName[i].Left(40));
+			RDebug::Printf("PH: proteus IPC: %S session %d fn %d flags %x args %x %x %x %x%s", &srv, i, aFunction, args.iFlags,
+				args.iArgs[0], args.iArgs[1], args.iArgs[2], args.iArgs[3], aSync ? " sync" : st ? " async" : " blind");
+			}
+	}
 	if (aFunction == RMessage2::EConnect && !b.iConnected[i] && b.iName[i] == _L("!Windowserver") && gWsIndex < 0)
 		{
 		b.iConnected[i] = ETrue;
@@ -716,7 +764,9 @@ static int BridgeClose(void* aCtx, uint32_t aHandle)
 		b.iPropUsed[pi] = EFalse;
 		return KErrNone;
 		}
-	const TInt i = BridgeIndex(b, aHandle);
+	TInt i = BridgeIndex(b, aHandle);
+	if (i < 0 && NativeLooking(aHandle))
+		i = AdoptNative(b, aHandle);
 	if (i < 0)
 		return KErrBadHandle;
 	if (aHandle & 0x8000)		// KHandleNoClose
@@ -730,13 +780,16 @@ static int BridgeClose(void* aCtx, uint32_t aHandle)
 	else if (b.iConnected[i])
 		b.iSession[i].Close();
 	b.iUsed[i] = EFalse;
+	b.iNative[i] = EFalse;
 	return KErrNone;
 	}
 
 static int BridgeShare(void* aCtx, uint32_t aHandle, int)
 	{
 	TBridge& b = *(TBridge*)aCtx;
-	const TInt i = BridgeIndex(b, aHandle);
+	TInt i = BridgeIndex(b, aHandle);
+	if (i < 0 && NativeLooking(aHandle))
+		i = AdoptNative(b, aHandle);
 	return i >= 0 && b.iConnected[i] ? b.iSession[i].ShareAuto() : KErrNone;
 	}
 
@@ -1393,11 +1446,14 @@ TInt E32Main()
 			// real installer (sisinst = the silent install pheget uses), then the app started by its plain name with apparc's command line, as the
 			// menu does (the loader hook)
 			CDir* sis = NULL;
-			if (fs.GetDir(_L("c:\\sis\\*.sis"), KEntryAttNormal, ESortByName, sis) == KErrNone && sis->Count())
+			TEntry sisAppEntry;
+			const TBool sisStaged = fs.GetDir(_L("c:\\sis\\*.sis"), KEntryAttNormal, ESortByName, sis) == KErrNone && sis->Count();
+			// (c:\sisapp.txt alone = the packages are installed already: only the app is started)
+			if (sisStaged || fs.Entry(_L("c:\\sisapp.txt"), sisAppEntry) == KErrNone)
 				{
 				TExitType et = EExitKill;
 				TInt reason = KErrNone, ir = KErrNone;
-				for (TInt i = 0; i < sis->Count() && ir == KErrNone && et == EExitKill && reason == KErrNone; ++i)
+				for (TInt i = 0; sisStaged && i < sis->Count() && ir == KErrNone && et == EExitKill && reason == KErrNone; ++i)
 					{
 					TFileName pkg(_L("c:\\sis\\"));
 					pkg.Append((*sis)[i].iName);
