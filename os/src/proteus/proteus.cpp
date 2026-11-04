@@ -752,10 +752,10 @@ static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArg
 		{
 		UnwatchAsync(st);		// (a status reused for a synchronous call)
 		const TInt r = b.iSession[i].Sync(aFunction, args);
-		static TInt errLines = 0;
-		if (r < 0 && errLines < 200)		// trace: a server call the guest gets an error from (server, function, arg 0 if a 16-bit descriptor: a file name)
+		static TInt errLines = 0, nomemLines = 0;
+		if (r < 0 && (errLines < 200 || (r == KErrNoMemory && nomemLines < 100)))		// trace: a server call the guest gets an error from (KErrNoMemory always, bounded on its own) (server, function, arg 0 if a 16-bit descriptor: a file name)
 			{
-			++errLines;
+			if (r == KErrNoMemory) ++nomemLines; else ++errLines;
 			TBuf8<120> a0;
 			if (aArgs && (args.iFlags & 7) == 7)		// TIpcArgs::EDesC16
 				a0.Copy(((const TDesC16*)args.iArgs[0])->Left(110));
@@ -839,16 +839,16 @@ static void UnwatchAsync(TRequestStatus* aSt)
 	}
 static void CheckAsync()
 	{
-	static TInt errLines = 0;
+	static TInt errLines = 0, nomemLines = 0;
 	for (TInt k = 0; k < 32; ++k)
 		if (gAsync[k].iSt && gAsync[k].iSt->Int() != KRequestPending)
 			{
 			const TInt v = gAsync[k].iSt->Int();
 			if (gAsync[k].iSrv == _L8("!Windowserver"))
 				RDebug::Printf("PH: proteus WS: async fn %x completed %d", gAsync[k].iFn, v);
-			else if (v < 0 && errLines < 100)
+			else if (v < 0 && (errLines < 100 || (v == KErrNoMemory && nomemLines < 100)))
 				{
-				++errLines;
+				if (v == KErrNoMemory) ++nomemLines; else ++errLines;
 				RDebug::Printf("PH: proteus IPC: %S async fn %d completed %d", &gAsync[k].iSrv, gAsync[k].iFn, v);
 				}
 			gAsync[k].iSt = NULL;

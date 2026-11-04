@@ -398,7 +398,8 @@ void RunExe(CArmCpu& cpu, THle& h, uint64_t maxSteps)
 	if (h.iProcess && h.iProcess->iRealEuser)		// the real euser's executive: guest threads (thread 0 = this one, the main thread)
 	{
 		h.iExec.iThread = (TGuestThread*)calloc(KMaxThreads, sizeof(TGuestThread));
-		h.iExec.iSync = (TSyncObj*)calloc(KMaxSync, sizeof(TSyncObj));
+		h.iExec.iSync = (TSyncObj*)calloc(KSyncInit, sizeof(TSyncObj));
+		h.iExec.iSyncCap = KSyncInit;
 		if (h.iExec.iThread && h.iExec.iSync)
 		{
 			h.iExec.iThreadCount = 1;

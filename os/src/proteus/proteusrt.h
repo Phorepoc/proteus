@@ -97,7 +97,8 @@ enum { KStackBytes = 1 << 20, KHandleChunk0 = 0x00C10000, KHandleObj = 0x00D0000
 // guest threads: each has its own registers, stack + TLocalThreadData, request semaphore and the per-thread executive state (heap, trap
 // handler, active scheduler, TLS). They run on the one native thread, switched cooperatively whenever the running one blocks (WaitForAnyRequest
 // with no signal, a mutex / semaphore / condition-variable wait, exit): the kernel's scheduling decisions without preemption.
-enum { KMaxThreads = 32, KMaxSync = 512, KMaxLogons = 8, KMaxReqs = 128 };
+// (the sync object table grows as the guest needs it, up to what a handle can name: KHandleObj + index stays below the bridge handles at 0xE00000)
+enum { KMaxThreads = 32, KSyncInit = 512, KMaxSync = 0xF0000, KMaxLogons = 8, KMaxReqs = 128 };
 enum TThreadState { EThreadFree, EThreadSuspended, EThreadReady, EThreadWaitAny, EThreadWaitMutex, EThreadWaitSem, EThreadWaitCond, EThreadDead };
 struct TGuestThread
 {
@@ -130,6 +131,7 @@ struct TGuestThread
 struct TSyncObj
 {
 	int iType; int iCount; int iHolder;
+	int iRefs;			// handles to it (RHandleBase::Duplicate adds one, Close removes one; none left = the slot is free: iType 0)
 	// a message queue (type 4: iCount = messages queued, iHolder = the head slot); the requests of NotifySpaceAvailable / NotifyDataAvailable
 	uint8_t* iData; int iSlots, iLen; uint32_t iSpaceStatus, iDataStatus; int iSpaceThread, iDataThread;
 };		// 1 mutex (iCount = hold count, iHolder = thread), 2 semaphore (iCount), 3 condition variable, 4 message queue
@@ -149,7 +151,7 @@ struct TExecState
 	TGuestThread* iThread;
 	int iThreadCount, iCur;
 	TSyncObj* iSync;
-	int iSyncCount;
+	int iSyncCount, iSyncCap;		// slots in use (high water mark) and allocated
 	uint32_t iWaitSeq;
 	uint32_t iReentry;			// EFastExecSetReentryPoint: where a new thread starts (0 = the EXE's entry point, DProcess::iReentryPoint's default)
 	// the requests guest threads handed to native servers / timers: a native signal belongs to the thread whose TRequestStatus completed

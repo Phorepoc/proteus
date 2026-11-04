@@ -183,6 +183,26 @@ static int ThreadIndex(TExecState& e, uint32_t aHandle)
 	return e.iThread && i < (uint32_t)e.iThreadCount && e.iThread[i].iState != EThreadFree ? (int)i : -1;
 }
 
+// a free slot of the sync object table (a closed object's), else a new one: the table grows with the guest (the kernel has no count limit
+// either; Qt creates a condition variable or mutex per object and closes them), up to what a handle can name. -1 = full.
+static int NewSync(TExecState& e)
+{
+	for (int i = 0; i < e.iSyncCount; ++i)
+		if (!e.iSync[i].iType) { memset(&e.iSync[i], 0, sizeof(TSyncObj)); e.iSync[i].iRefs = 1; return i; }
+	if (e.iSyncCount >= KMaxSync) return -1;
+	if (e.iSyncCount >= e.iSyncCap)
+	{
+		const int cap = e.iSyncCap * 2 > KMaxSync ? KMaxSync : e.iSyncCap * 2;
+		TSyncObj* n = (TSyncObj*)realloc(e.iSync, (size_t)cap * sizeof(TSyncObj));
+		if (!n) return -1;
+		memset(n + e.iSyncCap, 0, (size_t)(cap - e.iSyncCap) * sizeof(TSyncObj));
+		e.iSync = n; e.iSyncCap = cap;
+	}
+	memset(&e.iSync[e.iSyncCount], 0, sizeof(TSyncObj));
+	e.iSync[e.iSyncCount].iRefs = 1;
+	return e.iSyncCount++;
+}
+
 static int SyncIndex(TExecState& e, uint32_t aHandle, int aType)
 {
 	const uint32_t i = aHandle - KHandleObj;
@@ -614,12 +634,13 @@ static bool ThreadExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
 	// ---- mutexes, semaphores, condition variables (local ones; the IPC bridge took any native handle) ----
 	if (!strcmp(name, "EExecMutexCreate") || !strcmp(name, "EExecSemaphoreCreate") || !strcmp(name, "EExecCondVarCreate"))	// (name, [count,] owner)
 	{
-		if (e.iSyncCount >= KMaxSync) { r[0] = (uint32_t)KErrNoMemory; return true; }
-		TSyncObj& s = e.iSync[e.iSyncCount];
+		const int ni = NewSync(e);
+		if (ni < 0) { r[0] = (uint32_t)KErrNoMemory; return true; }
+		TSyncObj& s = e.iSync[ni];
 		s.iType = name[5] == 'M' ? 1 : name[5] == 'S' ? 2 : 3;
 		s.iCount = s.iType == 2 ? (int)r[1] : 0;
 		s.iHolder = -1;
-		r[0] = KHandleObj + e.iSyncCount++;
+		r[0] = KHandleObj + ni;
 		return true;
 	}
 	if (!strcmp(name, "EExecAfter") || !strcmp(name, "EExecAfterHighRes"))		// (interval us, status): the thread's own timer, ExecHandler::After
@@ -694,12 +715,12 @@ static bool ThreadExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
 	{
 		if ((int32_t)r[1] <= 0 || (int32_t)r[2] < 4 || (r[2] & 3) || r[2] > 256) { r[0] = (uint32_t)KErrArgument; return true; }		// (the kernel panics: KERN-EXEC 49 / 48)
 		uint8_t* data = (uint8_t*)calloc(r[1], r[2]);
-		if (e.iSyncCount >= KMaxSync || !data) { free(data); r[0] = (uint32_t)KErrNoMemory; return true; }
-		TSyncObj& s = e.iSync[e.iSyncCount];
-		memset(&s, 0, sizeof(s));
+		const int ni = data ? NewSync(e) : -1;
+		if (ni < 0) { free(data); r[0] = (uint32_t)KErrNoMemory; return true; }
+		TSyncObj& s = e.iSync[ni];
 		s.iType = 4;
 		s.iData = data; s.iSlots = (int)r[1]; s.iLen = (int)r[2];
-		r[0] = KHandleObj + e.iSyncCount++;
+		r[0] = KHandleObj + ni;
 		return true;
 	}
 	if (!strncmp(name, "EExecMsgQueue", 13))
@@ -855,18 +876,19 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 	const uint32_t lr = cpu.R[14];
 	const int cur = h.iExec.iCur;
 	const bool done = DoExecCall(cpu, h, imm);
-	static int errLines = 0;
+	static int errLines = 0, nomemLines = 0;
 	const int32_t res = (int32_t)cpu.R[0];
-	if (h.iLog && h.iProcess && errLines < 100 && h.iExec.iCur == cur && (res == -16 || res == -12 || res == -28))	// KErrBadName / KErrPathNotFound / KErrBadDescriptor
+	if (h.iLog && h.iProcess && h.iExec.iCur == cur && ((errLines < 100 && (res == -16 || res == -12 || res == -28))	// KErrBadName / KErrPathNotFound / KErrBadDescriptor
+		|| (nomemLines < 100 && res == KErrNoMemory)))		// KErrNoMemory: always (it is what ends a load: which call, where)
 	{
-		++errLines;
+		if (res == KErrNoMemory) ++nomemLines; else ++errLines;
 		const uint32_t n = imm & 0x7FFFFF;
 		const bool fast = (imm & KFast) != 0;
 		const char* name = fast ? (n < sizeof(KFastExecNames) / sizeof(KFastExecNames[0]) ? KFastExecNames[n] : "?")
 								: (n < sizeof(KSlowExecNames) / sizeof(KSlowExecNames[0]) ? KSlowExecNames[n] : "?");
 		char w[120], l[200];
 		Where(*h.iProcess, cpu, lr, w, sizeof(w));
-		snprintf(l, sizeof(l), "[proteus] exec %s -> %d (caller %s)", name, (int)res, w);
+		snprintf(l, sizeof(l), "[proteus] exec %s -> %d (caller %s; r1 %x r2 %x r3 %x)", name, (int)res, w, cpu.R[1], cpu.R[2], cpu.R[3]);
 		h.iLog(l, h.iLogCtx);
 	}
 	return done;
@@ -1045,6 +1067,17 @@ static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 		}
 		TIpcBridge* ipc = h.iIpc;
 		if (!strcmp(name, "EExecHandleClose") && ipc && ipc->iOwns(ipc->iCtx, r[0])) { r[0] = ipc->iClose(ipc->iCtx, r[0]); return true; }
+		{
+			// the close of a mutex, semaphore, condition variable or message queue: its handle count (the slot is free again at none; Duplicate is not emulated)
+			const uint32_t si = r[0] - KHandleObj;
+			const bool sync = e.iSync && si < (uint32_t)e.iSyncCount && e.iSync[si].iType;
+			if (sync && !strcmp(name, "EExecHandleClose"))
+			{
+				if (--e.iSync[si].iRefs <= 0) { free(e.iSync[si].iData); memset(&e.iSync[si], 0, sizeof(TSyncObj)); }
+				r[0] = KErrNone;
+				return true;
+			}
+		}
 		if (!strcmp(name, "EExecHandleClose") || !strcmp(name, "EExecHandleDuplicate")) { r[0] = KErrNone; return true; }
 		if (!strcmp(name, "EExecMathRandom"))		// Math::Random: 32 random bits (xorshift32, seeded once from the clock and an address)
 		{

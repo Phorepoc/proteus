@@ -180,3 +180,35 @@ in the guest; it only shows kernel idle when the interesting thread is blocked, 
 Final build on QEMU (P0-P3 PASS): with `AfterHighRes` working Sparkle sleeps and polls through SVCs (`svc=` 118 K per 64 M instructions after the
 load), so the QEMU rate in that phase is ~10 MIPS (64 M per 6-8 s) and 1.47 G instructions at 357 s; the 15-17 MIPS figures above are the
 interpretive phases before it.
+
+## The two blockers, solved (2026-11-04, VirtualBox)
+
+**1. KErrNoMemory (-4) was the sync object table, not memory.** The 512-entry table of mutexes, semaphores, condition variables and message
+queues (`KMaxSync`, `TExecState::iSync`) had no way to free a slot: `EExecHandleClose` of such a handle was a no-op and every create took
+`iSyncCount++`. Qt creates and closes these per object, so the 513th `EExecCondVarCreate` answered -4 and the active object that cached
+`sfx/throw-orb` left with it. Found by logging every -4 an executive call or a bridge call returns (they are now always logged, bounded:
+`exec EExecCondVarCreate -> -4 (caller euser.dll RCondVar::CreateLocal ...)`). The guest heap was not the limit: Sparkle's header says heap min 128 KB,
+max 128 MB (0x8000000), the real euser asks for the 256 MB chunk it asked for before, and Proteus gives exactly that (the guest region is 1 GB,
+reserved; the PC image's RAM is not touched until pages are committed). Nothing was bumped: Close frees the slot (handle count), a free slot is
+reused, and the table grows (realloc) up to what a handle can name (`KMaxSync` = 0xF0000: KHandleObj + index must stay below the bridge handles).
+`Duplicate` of these handles is still not emulated (no one asks). Other fixed tables with the same shape, not hit yet: guest chunks (64, never
+freed), threads (32), logons (8).
+Result: the data load completes on VirtualBox (about 4.8 G instructions to the Start button), the loading bar fills and the **Start** button appears
+(`docs/img/sparkle-vbox-start.png`); a tap on it (VirtualBox mouse integration) gives "Clicked 'start'", the music switches to main-theme and the first
+scene renders (`docs/img/sparkle-vbox-map.png`: mushrooms, tower, windmill; a landscape picture on the portrait panel, rotated 90 degrees).
+Note: the PC image blanks the screen lights after ~30 s without input and the focus then goes (Sparkle: "Focus lost -> BackgroundStop", it stops animating);
+a key press (Ctrl) wakes it. A run on VirtualBox that waits for the menu has to send a key every 20 s.
+
+**2. The sheared screen was the screen driver's pitch, on every screen, not only landscape.** `docs/img/sparkle-vbox-sheared.png`,
+`docs/img/landtest-vbox-sheared.png`. Cause: the OMAP draw devices (used since adaptation-pc v0.3.0 for the software-rotated landscape mode)
+read the row pitch from the HAL and then call the base class's `Construct(aSize)`, which sets the pitch to exactly width * 4 again. The PC
+display pads rows to 64 bytes like the 701 (1472 bytes for 360 px; applications writing screen memory assume it). In VirtualBox VMSVGA the screen is
+always the padded shadow screen, so WSERV drew 1440 bytes per row into 1472 byte rows: the whole screen sheared (the home screen too, in portrait;
+the v0.3.0 notes only showed landscape). QEMU draws straight into a framebuffer of exactly 1440 bytes per row, where the two agree, so every QEMU test
+passed. Confirmed three ways: an unpadded shadow (ScreenWpl = width) in VirtualBox drew correctly; the fix below draws correctly; the pattern of the
+new test is identical on both. Fix (adaptation-pc 0298654, pushed): `os/src/phescdv/scnew.cpp`, the driver's factory, builds the 32-bit
+draw devices through a subclass that puts the HAL's pitch back after the base class has run; test `phelandtest` (SSM_TEST: landscape mode + a
+pattern with corner marks, ramp bars, a frame and a diagonal). Checked: phelandtest on QEMU and VirtualBox (`docs/img/landtest-vbox-fixed.png`, same
+picture), the portrait home screen on VirtualBox (`docs/img/home-vbox-portrait-fixed.png`), all 17 apps of the regress list ALIVE in QEMU portrait.
+The 8- and 16-bit OMAP classes have the same flaw and are unused here (the display is 32 bits).
+Sparkle after the fix, VirtualBox: `docs/img/sparkle-vbox-pitch-fixed.png`.
