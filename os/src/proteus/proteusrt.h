@@ -34,7 +34,7 @@ struct TLoaded
 };
 
 // P2: the modules of one guest process -- the EXE (module 0) and the ARM DLLs it imports, transitively, laid out one after another in the guest region.
-enum { KMaxModules = 256 };
+enum { KMaxModules = 512 };
 // find an ARM DLL by its base name ("proteusdll.dll"); returns the file bytes (owned by the embedder, alive while the process runs) or NULL = not an
 // ARM DLL we have (the import then stays an HLE trap)
 typedef const uint8_t* (*TFindDllFn)(const char* aName, uint32_t& aLen, char& aDrive, void* aCtx);	// aDrive: the drive letter it was found on

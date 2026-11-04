@@ -1221,7 +1221,18 @@ static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 		}
 		if (!strcmp(name, "EExecProcessCommandLineLength")) { r[0] = 0; return true; }
 		if (!strcmp(name, "EExecStaticCallsDone")) { r[0] = KErrNone; return true; }
-		if (!strcmp(name, "EExecUserThreadExiting")) { r[0] = KErrNone; return true; }
+		if (!strcmp(name, "EExecUserThreadExiting"))
+		{
+			if ((int)r[0] != 0 && h.iLog)		// User::Exit(reason): who called it (an app's own exit on an error is otherwise silent)
+			{
+				char l[80];
+				snprintf(l, sizeof(l), "[proteus] User::Exit(%d) from the guest:", (int)r[0]);
+				h.iLog(l, h.iLogCtx);
+				Backtrace(cpu, h);
+			}
+			r[0] = KErrNone;
+			return true;
+		}
 		if (!strcmp(name, "EExecLastThreadHandle")) { r[0] = 0; return true; }		// no other handles
 		if (!strncmp(name, "EExecBTraceOut", 14) || !strncmp(name, "EExecUTraceOut", 14)) { r[0] = 0; return true; }		// trace off
 		if (!strcmp(name, "EExecHalFunction"))		// (group, function, a1, a2): kernel group 0 only -- 7 page size, 8 tick period (us), 10 fast counter Hz
