@@ -7,6 +7,13 @@ typedef unsigned int u32; typedef unsigned char u8;
 static inline void sys_exit(u32 c) { register u32 r0 asm("r0") = c; register u32 r7 asm("r7") = 1; asm volatile("svc 0" :: "r"(r0), "r"(r7)); for (;;); }
 static inline void sys_write(const char* s, u32 n) { register u32 r0 asm("r0") = 1; register const char* r1 asm("r1") = s; register u32 r2 asm("r2") = n; register u32 r7 asm("r7") = 4; asm volatile("svc 0" : "+r"(r0) : "r"(r1), "r"(r2), "r"(r7) : "memory"); }
 
+#ifdef BENCH_THUMB
+/* Thumb-1 (ARMv5T): no LDREX/STREX, no CLZ; plain read-modify-write stands in for the atomics */
+static u32 __attribute__((noinline)) atomic_add(volatile u32* p, u32 v) { u32 o = *p; *p = o + v; return o; }
+static u32 __attribute__((noinline)) atomic_cas(volatile u32* p, u32 expect, u32 nv) { u32 o = *p; if (o == expect) *p = nv; return o; }
+static int clz32(u32 x) { int n = 0; while (!(x & 0x80000000u)) { x <<= 1; ++n; } return n; }
+#else
+static int clz32(u32 x) { return __builtin_clz(x); }
 static u32 __attribute__((noinline)) atomic_add(volatile u32* p, u32 v)
 {
 	u32 old, tmp, st;
@@ -19,6 +26,7 @@ static u32 __attribute__((noinline)) atomic_cas(volatile u32* p, u32 expect, u32
 	asm volatile("1: ldrex %0, [%2]\n cmp %0, %3\n bne 2f\n strex %1, %4, [%2]\n cmp %1, #0\n bne 1b\n 2:\n" : "=&r"(old), "=&r"(st) : "r"(p), "r"(expect), "r"(nv) : "cc", "memory");
 	return old;
 }
+#endif
 void* memset(void* d, int c, u32 n) { u8* p = d; while (n--) *p++ = (u8)c; return d; }
 void* memcpy(void* d, const void* s, u32 n) { u8* p = d; const u8* q = s; while (n--) *p++ = *q++; return d; }
 static void __attribute__((noinline)) wordset(u32* p, u32 v, u32 n) { u32 i; for (i = 0; i + 4 <= n; i += 4) { p[i] = v; p[i+1] = v; p[i+2] = v; p[i+3] = v; } }
@@ -33,7 +41,7 @@ static const struct vt VT = { vf, vg };
 static u8 heap[1 << 16]; static u32 buf[8192]; static struct node nodes[512]; static struct obj objs[64];
 /* a small software floating point (what dfpaeabi does in the real euser): sign/exponent/32-bit mantissa, normalisation by CLZ, UMULL */
 typedef struct { u32 s; int e; u32 m; } sf;
-static sf __attribute__((noinline)) sf_norm(sf a) { if (a.m) { int n = __builtin_clz(a.m); a.m <<= n; a.e -= n; } return a; }
+static sf __attribute__((noinline)) sf_norm(sf a) { if (a.m) { int n = clz32(a.m); a.m <<= n; a.e -= n; } return a; }
 static sf __attribute__((noinline)) sf_mul(sf a, sf b) { sf r; unsigned long long p = (unsigned long long)a.m * b.m; r.s = a.s ^ b.s; r.e = a.e + b.e + 32; r.m = (u32)(p >> 32); return sf_norm(r); }
 static sf __attribute__((noinline)) sf_add(sf a, sf b)
 {

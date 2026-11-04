@@ -287,6 +287,17 @@ static void Expire(TExecState& e, int i)
 
 static uint64_t NowUs(THle& h) { return h.iIpc && h.iIpc->iNowUs ? h.iIpc->iNowUs(h.iIpc->iCtx) : 0; }
 
+// the thread's own timer ran out (DThread::iTimer, CompleteUserAfter): complete its status KErrNone and signal it, like any request
+static bool FireAfter(CArmCpu& cpu, TExecState& e, int i, uint64_t aNow)
+{
+	TGuestThread& t = e.iThread[i];
+	if (!t.iAfterStatus || t.iState == EThreadDead || (aNow && t.iAfterAt > aNow)) return false;
+	cpu.Write32(t.iAfterStatus, 0);
+	t.iAfterStatus = 0;
+	SignalThread(e, i, 1);
+	return true;
+}
+
 // a wait timeout in microseconds (0 = forever, as ExecHandler::MutexWait) -> a deadline on the iNowUs clock (0 = none)
 static uint64_t Deadline(THle& h, int32_t aTimeout) { return aTimeout > 0 ? NowUs(h) + (uint64_t)aTimeout : 0; }
 
@@ -415,14 +426,20 @@ static void Reschedule(CArmCpu& cpu, THle& h)
 		const uint64_t now = NowUs(h);
 		uint64_t next = 0;
 		int nextThread = -1;
+		bool timed = false;
 		bool expired = false, waitAny = false;
 		for (int i = 0; i < e.iThreadCount; ++i)
 		{
 			TGuestThread& t = e.iThread[i];
 			if (t.iState == EThreadWaitAny) waitAny = true;
+			if (t.iAfterStatus && t.iState != EThreadDead)
+			{
+				if (!now || t.iAfterAt <= now) { if (FireAfter(cpu, e, i, now ? now : ~0ull)) expired = true; }
+				else if (!next || t.iAfterAt < next) { next = t.iAfterAt; timed = true; }
+			}
 			if (!t.iDeadline || (t.iState != EThreadWaitMutex && t.iState != EThreadWaitSem && t.iState != EThreadWaitCond)) continue;
 			if (now && t.iDeadline <= now) { Expire(e, i); expired = true; }
-			else if (!next || t.iDeadline < next) { next = t.iDeadline; nextThread = i; }
+			else if (!next || t.iDeadline < next) { next = t.iDeadline; nextThread = i; timed = true; }
 		}
 		if (expired) continue;
 		if (!h.iIpc || !h.iIpc->iNowUs)		// no native kernel to wait for: time passes only when nothing can run
@@ -432,7 +449,7 @@ static void Reschedule(CArmCpu& cpu, THle& h)
 			cpu.Halt(EHleStop);
 			return;
 		}
-		if (!waitAny && nextThread < 0)
+		if (!waitAny && !timed)
 		{
 			strncpy(cpu.iNote, "all guest threads are blocked (deadlock)", sizeof(cpu.iNote) - 1);
 			cpu.Halt(EHleStop);
@@ -440,7 +457,7 @@ static void Reschedule(CArmCpu& cpu, THle& h)
 		}
 		bool got = true;
 		const uint64_t waitFrom = NowUs(h);
-		if (nextThread >= 0)
+		if (timed)
 		{
 			const uint64_t d = next - now;
 			got = h.iIpc->iWaitAnyFor(h.iIpc->iCtx, d > 0x7FFFFFFF ? 0x7FFFFFFF : (int)d);
@@ -477,6 +494,12 @@ void Preempt(CArmCpu& cpu, THle& h)
 		if (!now) now = NowUs(h);
 		if (now && t.iDeadline <= now) Expire(e, i);
 	}
+	for (int i = 0; i < e.iThreadCount; ++i)
+		if (e.iThread[i].iAfterStatus)
+		{
+			if (!now) now = NowUs(h);
+			if (now) FireAfter(cpu, e, i, now);
+		}
 	for (int k = 1; k < e.iThreadCount; ++k)
 	{
 		const int i = (e.iCur + k) % e.iThreadCount;
@@ -597,6 +620,13 @@ static bool ThreadExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
 		s.iCount = s.iType == 2 ? (int)r[1] : 0;
 		s.iHolder = -1;
 		r[0] = KHandleObj + e.iSyncCount++;
+		return true;
+	}
+	if (!strcmp(name, "EExecAfter") || !strcmp(name, "EExecAfterHighRes"))		// (interval us, status): the thread's own timer, ExecHandler::After
+	{
+		TGuestThread& t = e.iThread[cur];
+		t.iAfterStatus = r[1];
+		t.iAfterAt = NowUs(h) + ((int32_t)r[0] > 0 ? (uint64_t)(int32_t)r[0] : 0);
 		return true;
 	}
 	if (!strcmp(name, "EExecMutexWait") || !strcmp(name, "EExecSemaphoreWait"))		// (handle, timeout us: 0 forever, -1 poll)

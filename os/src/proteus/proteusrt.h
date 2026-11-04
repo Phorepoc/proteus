@@ -116,6 +116,8 @@ struct TGuestThread
 	int32_t iWaitResult;		// the result a wait returns once the mutex is taken back (a timed-out condvar wait: KErrTimedOut)
 	uint32_t iWaitSeq;			// FIFO order of the waiters of one object
 	uint64_t iDeadline;			// timed wait: host microseconds (TIpcBridge::iNowUs), 0 = none
+	uint64_t iAfterAt;			// the thread's own timer (Exec::After / AfterHighRes: User::After, User::AfterHighRes): host microseconds ...
+	uint32_t iAfterStatus;		// ... and the TRequestStatus it completes (0 = no timer pending)
 	uint64_t iRan;				// instructions it has executed (accounted when it stops running)
 	int iExitType, iExitReason;
 	char iExitCategory[17];
