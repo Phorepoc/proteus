@@ -26,6 +26,7 @@ COMPONENTS = {
                               r"Sys\Bin\proteusdllbp.exe=" + _ARM + "proteusdllexe.bp.exe",   # P2b: compressed EXE
                               r"Sys\Bin\arm\euser.dll=" + _ARM + "euser.dll",                 # P2c: the real ARM euser under proteus.exe -r
                               r"Sys\Bin\arm\efsrv.dll=" + _ARM + "efsrv.dll",                 # P2d: the ARM efsrv over the IPC bridge
+                              r"Sys\Bin\arm\hal.dll=" + _ARM + "hal.dll",                     # the ARM hal.dll (HAL::Get ...) over the real euser's UserSvr::HalFunction
                               r"Sys\Bin\arm\proteusfs.exe=" + _ARM + "proteusfs.exe"]),
     # the same program under the name core's loader hands an ARM EXE to (sf_lepoc.cpp ForeignCpuRedirect): in every ROM built with this layer
     "cpuhandler_arm": dict(mmp=os.path.join(OS_ROOT, "src/proteus/proteus.mmp"), cdriver=False, rom="cpuhandler_arm.exe"),

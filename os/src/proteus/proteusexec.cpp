@@ -964,9 +964,9 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 	static int errLines = 0, nomemLines = 0;
 	const int32_t res = (int32_t)cpu.R[0];
 	if (h.iLog && h.iProcess && h.iExec.iCur == cur && ((errLines < 100 && (res == -16 || res == -12 || res == -28))	// KErrBadName / KErrPathNotFound / KErrBadDescriptor
-		|| (nomemLines < 100 && res == KErrNoMemory)))		// KErrNoMemory: always (it is what ends a load: which call, where)
+		|| (nomemLines < 100 && (res == KErrNoMemory || res == KErrNotSupported || res == -25))))		// KErrNoMemory (what ends a load), KErrNotSupported, KErrEof (-25: what ended Let's Golf 2 and the Calculator): which call, where
 	{
-		if (res == KErrNoMemory) ++nomemLines; else ++errLines;
+		if (res == KErrNoMemory || res == KErrNotSupported || res == -25) ++nomemLines; else ++errLines;
 		const uint32_t n = imm & 0x7FFFFF;
 		const bool fast = (imm & KFast) != 0;
 		const char* name = fast ? (n < sizeof(KFastExecNames) / sizeof(KFastExecNames[0]) ? KFastExecNames[n] : "?")
@@ -999,6 +999,16 @@ static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 		snprintf(l, sizeof(l), "[proteus] exec %s r0 %x r1 %x r2 %x r3 %x lr %s", name, r[0], r[1], r[2], r[3], w);
 		h.iLog(l, h.iLogCtx);
 		if (fast) Backtrace(cpu, h);
+	}
+	// trace: every message-queue and process-parameter exec (bounded) -- which handle, which slot; where a queue handle the emulation does not know comes from
+	static int qtraced = 0;
+	if (h.iLog && h.iProcess && !fast && qtraced < 300 && (!strncmp(name, "EExecMsgQueue", 13) || !strncmp(name, "EExecProcessGet", 15) || !strncmp(name, "EExecProcessData", 16) || !strncmp(name, "EExecProcessSet", 15)))
+	{
+		++qtraced;
+		char w[120], l[200];
+		Where(*h.iProcess, cpu, r[14], w, sizeof(w));
+		snprintf(l, sizeof(l), "[proteus] qexec %s r0 %x r1 %x r2 %x r3 %x lr %s", name, r[0], r[1], r[2], r[3], w);
+		h.iLog(l, h.iLogCtx);
 	}
 	if (ThreadExec(cpu, h, name, r)) return true;
 	if (fast)
@@ -1054,7 +1064,7 @@ static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 			NoteRequest(h, name, r[1]);
 		if (h.iIpc && h.iIpc->iKernel && (!strncmp(name, "EExecProperty", 13) || !strcmp(name, "EExecOpenObject") || !strcmp(name, "EExecObjectNext") || !strcmp(name, "EExecPlatSecDiagnostic") || !strncmp(name, "EExecChunk", 10)
 			|| !strncmp(name, "EExecMutex", 10) || !strncmp(name, "EExecSemaphore", 14) || !strncmp(name, "EExecChangeNotifier", 19) || !strcmp(name, "EExecResetInactivityTime") || !strcmp(name, "EExecUserInactivityTime") || !strncmp(name, "EExecTimer", 10) || !strncmp(name, "EExecTimeNow", 12) || !strcmp(name, "EExecTickCount") || !strcmp(name, "EExecHandleClose") || !strcmp(name, "EExecHandleCount")
-			|| !strcmp(name, "EExecProcessDataParameterLength") || !strcmp(name, "EExecProcessGetDataParameter") || !strncmp(name, "EExecProcessCommandLine", 23))
+			|| !strcmp(name, "EExecProcessDataParameterLength") || !strcmp(name, "EExecHalFunction") || !strcmp(name, "EExecProcessGetDataParameter") || !strncmp(name, "EExecProcessCommandLine", 23))
 			&& h.iIpc->iKernel(h.iIpc->iCtx, name, r, cpu))
 			return true;
 		if (!strcmp(name, "EExecDebugPrint"))

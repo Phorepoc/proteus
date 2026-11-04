@@ -397,11 +397,18 @@ static bool BridgeKernel(void* aCtx, const char* aExec, uint32_t* r, proteus::CA
 	const TPtrC8 n((const TUint8*)aExec);
 	// the process environment: this process IS the guest's (the loader created it for the program), so its parameter slots -- apparc's
 	// command line in slot 1, ... -- are the guest's; the native calls are the same executive calls (guest memory is this process's)
+	// the hardware abstraction layer (HAL::Get / UserHal -> UserSvr::HalFunction): the same executive call on the native kernel, whose answers are
+	// the device's (the guest's pointers are this process's memory). An unanswered group used to end in KErrNotSupported, which Let's Golf 2 turned
+	// into its "Feature is not supported" note (the display / digitiser / ... attributes it reads at start-up)
+	if (n == _L8("EExecHalFunction")) { r[0] = (uint32_t)UserSvr::HalFunction((TInt)r[0], (TInt)r[1], (TAny*)r[2], (TAny*)r[3]); return true; }
 	if (n == _L8("EExecProcessDataParameterLength")) { r[0] = (uint32_t)User::ParameterLength((TInt)r[0]); return true; }
 	if (n == _L8("EExecProcessGetDataParameter"))		// (slot, TUint8* data, max length) -> length or an error
 		{
 		TPtr8 d((TUint8*)r[1], 0, (TInt)r[2]);
-		r[0] = (uint32_t)User::GetDesParameter((TInt)r[0], d);
+		// the exec returns the LENGTH read (euser GetDesParameter sets the descriptor length from it, us_exec.cpp), an error when negative;
+		// returning KErrNone made every command line arrive empty (apparc then ended the app with KErrEof, -25)
+		const TInt e = User::GetDesParameter((TInt)r[0], d);
+		r[0] = (uint32_t)(e < 0 ? e : d.Length());
 		return true;
 		}
 	if (n == _L8("EExecProcessCommandLineLength")) { r[0] = (uint32_t)gGuestCmd.Length(); return true; }		// characters
@@ -556,6 +563,8 @@ static bool BridgeKernel(void* aCtx, const char* aExec, uint32_t* r, proteus::CA
 	if ((n == _L8("EExecChunkBase") || n == _L8("EExecChunkSize") || n == _L8("EExecChunkMaxSize") || n == _L8("EExecChunkBottom") || n == _L8("EExecChunkTop"))
 		&& ObjIndex(b, r[0]) < 0 && NativeLooking(r[0]))		// a chunk a server's reply handed over
 		AdoptObj(b, aCpu, r[0], 2);
+	if (n.Left(13) == _L8("EExecMsgQueue") && n != _L8("EExecMsgQueueCreate") && ObjIndex(b, r[0]) < 0 && NativeLooking(r[0]))
+		AdoptObj(b, aCpu, r[0], 14);		// a message queue a server's reply handed over (RDirectScreenAccess: the window server's two DSA queues)
 	const TInt i = ObjIndex(b, r[0]);
 	if (i < 0)
 		return false;

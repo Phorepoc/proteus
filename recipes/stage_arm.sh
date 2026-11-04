@@ -13,7 +13,7 @@ for f in proteushello.exe proteusdll.dll proteusdllexe.exe proteusfs.exe; do
   [ -n "$src" ] || { echo "stage_arm: no ARM $f in $ARM (build it first)" >&2; exit 1; }
   cp "$src" "$OUT/$f"
 done
-for f in euser.dll efsrv.dll; do cp "$ARM/arm/device/$f" "$OUT/$f"; done
+for f in euser.dll efsrv.dll hal.dll; do cp "$ARM/arm/device/$f" "$OUT/$f"; done
 python3 "$HERE/tools/e32compress.py" "$OUT/proteusdll.dll" "$OUT/proteusdll.bp.dll"
 python3 "$HERE/tools/e32compress.py" "$OUT/proteusdllexe.exe" "$OUT/proteusdllexe.bp.exe"
 ls -l "$OUT"
