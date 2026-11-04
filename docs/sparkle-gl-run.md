@@ -27,7 +27,7 @@ softpipe both run under TCG, a few frames in several minutes.
 ## Open
 
 - (done, see Landscape below) Sparkle is a landscape game (GL viewport 640x360): the PC image has a landscape screen mode now.
-- Speed.
+- Speed: see "Interpreter speed" below (VirtualBox 150-200 MIPS; QEMU TCG 15-17).
 - P3's verdict is at the end of the 240 s wait; the screendumps (`--linger`, `--shot-at`) provide the display refresh
   Sparkle waits for under `-display none`.
 
@@ -94,3 +94,85 @@ laziness), the memory access path (`Valid` + window scan), and euser's atomics (
 The PC image has a portrait mode (360x640) and a landscape one (640x360, rotated 90 degrees, software rotation in the OMAP screen driver).
 Sparkle asks for landscape (`SetOrientationL`) and gets mode 1 while it is on top (sgc log: `top wg 35 -> mode 1`), uncropped; the home screen
 returns to mode 0 when it leaves (`top wg 36 -> mode 0`).
+
+## Interpreter speed (2026-11-04)
+
+**Method.** A host benchmark first, not QEMU: `tests/bench` (`bench.c` = a freestanding ARM guest with the shapes the Sparkle load spends its
+instructions in: LDREX/STREX loops (Qt reference counts), memset/memcpy byte loops, a free-list walk, virtual calls, string compares, a
+software float (CLZ + UMULL normalisation, what dfpaeabi does), an ALU mix; `bench.cpp` loads it into `CArmCpu`; `run.sh`, `THUMB=1` builds
+the same workload as Thumb-1; the guest prints a checksum that must not change). Three yardsticks: the host (native), `qemu-x86_64` user-mode
+TCG (a proxy for "interpreter under TCG"; no softmmu, so it flatters the real thing), and the real PC image in QEMU system mode and VirtualBox
+(the `proteus progress` lines). The host profile came from callgrind (`valgrind --tool=callgrind`), per source line.
+
+**Profile before (callgrind, 9.7 M guest instructions): 196 host instructions per guest instruction.** `Step()` 40% (the per-instruction
+breakpoint loop, trap/foreign-pc checks, then ~12 mask compares in a chain to find the instruction class: every ALU instruction walked through
+the BX/CLZ/MLS/UMAAL/multiply/halfword/LDREX/STREX/DSP/QADD/MRS/MSR tests before `DataProc`), `DataProc` 13%, `SingleTransfer` 13%, `Run` 7%
+(progress and slice checks after every instruction), `BlockTransfer` 5% (a 16-iteration popcount loop), `Operand2` 5%, `Write32`/`Read32`
+(`Valid` = region check + page-map loop + window scan) 7%, `Cond` (a switch) 3%. Registers, flags, pc and the step counter lived in the object,
+so every instruction was a dozen loads and stores of interpreter state.
+
+**Changes** (`armfast.inc`, included at the end of `armcpu.cpp`; `Step()` and `thumb.cpp` stay as the generic path, unchanged):
+1. One table lookup classifies an instruction: ins bits 27:20 and 7:4 index a 4096-byte class table. Data processing carries op, S and operand
+   kind in the class (96 template instantiations with the operation constant-folded), LDR/STR carry P/U/B/W/L and register offset (64), plus LDM/STM,
+   B/BL/BX/BLX, MUL/MLA, long multiplies, halfword, LDREX/STREX, MOVW/MOVT, media. Everything else (VFP, SWI, the misc group, cond 0xF, traps,
+   breakpoints, a pc outside the region) goes to `Step()` as before.
+2. `pc`, the flags (one NZCV nibble = the index of a 16-entry condition mask table, nothing at all for AL), the step counter and the region
+   description are locals for a whole batch; the batch runs to the next progress / slice / budget boundary. `Run` no longer does per-instruction
+   bookkeeping. No `FS` address escapes into a call (the slow memory path takes the pieces), or gcc keeps it in memory.
+3. Guest loads and stores hit the region directly (one range compare + one page-map byte); windows, page-crossing accesses, faults and
+   watchpoints fall back to the exact `Read32/Write32`. The fallback count is in the progress line (`mem=`): ~19 K per 64 M instructions,
+   so this is not where the time goes.
+4. Thumb-1 runs in the same batch loop (ARM <-> Thumb switches are a flag, not a return to `Run`). The Sparkle executable itself is Thumb (its
+   progress pcs are all 2 mod 4): before, every one of its instructions went through `Step` -> `ThumbStep` -> `Read16` -> `Valid`.
+5. LDM/STM use a bit-trick popcount + `ctz` walk (libgcc's `__popcountdi2` is a call on the x32 target); `__builtin_memcpy` for the fetch (the
+   x32 build is `-fno-builtin`, so a plain `memcpy` there is a libc call).
+
+**Tests (all green).** `tests/isa/run.sh` runs three differential tests, `qemu-arm` against the interpreter, identical output = PASS: `isa.c`
+(ARMv6/v7 additions, 4803 results), **new** `base.c` (all 16 data-processing ops x S x 17 operand forms with flags in and out, LDR/STR/B/H/SB/SH in
+every addressing mode, LDM/STM four modes +/- write-back, every condition over every NZCV, MUL/MLA/long, BX/BLX/BL, ARM<->Thumb round trip,
+LDREX/STREX B/H/W, MOVW/MOVT, pc as an operand; 4038 results) and **new** `thumb.c` (every Thumb-1 format entered and left by BX, flags captured
+without MRS; 395 results). `base.c` and `thumb.c` also pass on the pre-change interpreter (so they test the reference, not the new code). Known
+deliberate difference, left out of the tests: an unaligned LDR rotates (ARMv5), ARMv7 does not.
+
+**Numbers (MIPS; the same bench checksum before and after).**
+
+| yardstick | before | after |
+|---|---|---|
+| host native, ARM workload | 157 | 436-474 |
+| host native, Thumb workload | 199 | 535 |
+| qemu-user TCG, ARM workload | 14.6 | 48.1 |
+| qemu-user TCG, Thumb workload | 19.5 | 62.5 |
+| PC image in QEMU system mode (TCG), Sparkle ARM phases | 6.4-6.9 | 15-17 |
+| PC image in QEMU system mode, Sparkle's Thumb exe phase | 7.1 | 16-18 |
+| PC image in VirtualBox (hardware virtualisation), Sparkle | not measured | **150-200** (3.5 G instructions in 22 s; 22.5 G by 355 s) |
+
+Host instructions per guest instruction: 196 -> about 85 (callgrind). **The 50 MIPS goal is met on VirtualBox (the image the public runs) by
+3-4x and not met on QEMU TCG (15-17).** QEMU system mode costs ~3x more than the user-mode proxy for the same code (every load and store of the
+interpreter's own data goes through the softmmu TLB; the loop still touches ~10 words of state per guest instruction), and a table-driven
+interpreter cannot get much below that: the next step on QEMU is a translation cache (basic blocks of pre-decoded instructions, registers
+cached across a block), i.e. the JIT the brief put out of scope until numbers were in. These are the numbers.
+
+**What else the VirtualBox run found (it is fast enough to get there).**
+- `User::AfterHighRes` (slow exec 135) was not emulated: Sparkle halted at it right after "Pushing layer Loading" (221 M instructions in). Added
+  `Exec::After` / `Exec::AfterHighRes`: the thread's own timer (`DThread::iTimer`) completes the `TRequestStatus` the exec is given at its
+  deadline (`FireAfter` in `proteusexec.cpp`, checked at every slice end and when all threads are blocked; the scheduler's native wait is
+  bounded by the nearest timer).
+- A 4 G instruction cap (`RunExe` took a `uint32_t` budget; the board passed `0xFFFFFFFF`) stopped Sparkle with `EStepLimit` once the interpreter
+  was fast enough to reach it. The budget is `uint64_t` and unlimited for a real app; `Run` limit arithmetic is overflow-safe.
+- With both fixed, Sparkle on VirtualBox runs past its whole data load (22 G instructions by 355 s) and reaches `GameWidget::startAnimating`.
+  Two things stop it from reaching the menu: (1) an active object leaves **-4 (KErrNoMemory)** while caching the sound effects ("..caching sound
+  'sfx/throw-orb'"): the guest heap or the region is exhausted (check Sparkle's heap max against the device default, `tools/heap_audit.py`
+  style, before anything else); (2) the VirtualBox screen shows a sheared copy of the loading screen (360x640 portrait window, 640x360
+  landscape content): the landscape mode switch seen on QEMU does not reach the VMSVGA display. Neither is the interpreter. Screenshot:
+  `docs/img/sparkle-vbox-sheared.png`.
+- P0-P3 PASS on the final build in QEMU (P3 = the installed Sparkle starts). ViewSrv 11 did not occur in any run since the speed-up (QEMU: the
+  load needs more than 2 G instructions at 4 s per 64 M).
+
+**Progress-line statistics** (new, `proteus progress`): `wait` (ms blocked natively in the scheduler), `slow` (instructions that left the fast loop for
+`Step`), `svc`, `trap`, `mem` (guest accesses that left the region fast path), all in K. They showed that the QEMU phase that looks like "50 s for
+64 M instructions" (192 M -> 256 M, `dfpaeabi`) is not interpretation: `wait=0`, 11 K SVCs, 0.65 M slow steps; it is the native image decoders and
+the emulated ATA disk loading Sparkle PNGs.
+
+**Open (speed).** QEMU TCG: a block cache / JIT (see above). VirtualBox: nothing in the interpreter; 150-200 MIPS leaves a Sparkle start well
+inside the view server limits. Sampling the guest with the QEMU monitor (`info registers -a` in a loop) is cheap and needs no instrumentation
+in the guest; it only shows kernel idle when the interesting thread is blocked, so take the samples inside an interpretive window.
