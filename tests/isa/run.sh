@@ -29,3 +29,7 @@ qemu-arm -cpu cortex-a15 "$W/thumb.elf" > "$W/tqemu.txt"
 echo "$(wc -l < "$W/tqemu.txt") thumb results"
 if cmp -s "$W/tqemu.txt" "$W/tproteus.txt"; then echo "thumb: PASS"; else
   echo "thumb: FAIL -- first differences (qemu < > proteus):"; diff "$W/tqemu.txt" "$W/tproteus.txt" | head -40; exit 1; fi
+# VFPv2 short vectors (FPSCR.LEN/STRIDE): self-checking (qemu's A15 has none, so no reference run), on armcpu.cpp only
+arm-none-eabi-gcc -marm -march=armv7ve -mfpu=vfpv3 -mfloat-abi=softfp -O1 -ffreestanding -nostdlib -static -Wl,-Ttext=0x10000 -Wl,-e,_start -o "$W/vfpvec.elf" "$HERE/vfpvec.c"
+"$W/harness" "$W/vfpvec.elf" | tee "$W/vfpvec.txt"
+grep -q "vfpvec PASS" "$W/vfpvec.txt" || { echo "vfpvec: FAIL"; exit 1; }

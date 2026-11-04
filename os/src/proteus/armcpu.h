@@ -125,6 +125,7 @@ public:
 private:
 	void VfpTransfer(uint32_t ins, uint32_t pc);
 	void VfpOp(uint32_t ins, uint32_t pc);
+	void VfpOpScalar(uint32_t ins, uint32_t pc);
 	void VfpUndefined(uint32_t pc, uint32_t ins);
 	void Step();
 	bool Cond(uint32_t aCond) const;

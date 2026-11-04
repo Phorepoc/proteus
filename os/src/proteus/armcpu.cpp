@@ -859,7 +859,73 @@ template<typename T> static void VfpCompare(uint32_t& fpscr, T a, T b)
 }
 
 // ins >> 25 & 7 == 7 with bit 24 clear: coprocessor data processing + register transfers
+static int VfpStep(int x, int bank, int stride)
+{
+	const int b = x & ~(bank - 1);
+	return b + ((x - b + stride) & (bank - 1));
+}
+
+// the instruction with its Fd / Fn / Fm fields replaced (register numbers as indexes: s0-s31, d0-d15)
+static uint32_t VfpPut(uint32_t w, bool dbl, int dd, int nn, int mm)
+{
+	w &= ~((0xFu << 12) | (1u << 22) | (0xFu << 16) | (1u << 7) | 0xFu | (1u << 5));
+	if (dbl) w |= ((uint32_t)(dd & 15) << 12) | ((uint32_t)(dd >> 4) << 22) | ((uint32_t)(nn & 15) << 16) | ((uint32_t)(nn >> 4) << 7) | (uint32_t)(mm & 15) | ((uint32_t)(mm >> 4) << 5);
+	else w |= ((uint32_t)(dd >> 1) << 12) | ((uint32_t)(dd & 1) << 22) | ((uint32_t)(nn >> 1) << 16) | ((uint32_t)(nn & 1) << 7) | (uint32_t)(mm >> 1) | ((uint32_t)(mm & 1) << 5);
+	return w;
+}
+
+// VFPv2 short vectors (FPSCR.LEN / FPSCR.STRIDE, ARM11 and the 701's code: Let's Golf 2's maths). A data-processing op whose destination is
+// outside the first register bank (s8-s31 / d4-d15) runs LEN times over a bank-wrapping register series (step STRIDE); a source Fm in
+// the first bank (s0-s7 / d0-d3) is a scalar, the same register every time. Compares, converts, VMOV immediate and the transfers never
+// vectorise. Each element is executed by the scalar path below with the register fields rewritten.
 void CArmCpu::VfpOp(uint32_t ins, uint32_t pc)
+{
+	const uint32_t len = ((iFpscr >> 16) & 7) + 1;
+	const bool cpOk = (((ins >> 8) & 0xE) == 0xA);
+	if (len > 1 && cpOk && !(ins & 0x10))
+	{
+		const bool dbl = ((ins >> 8) & 0xF) == 11;
+		const uint32_t p = (ins >> 23) & 1, q = (ins >> 21) & 1, r = (ins >> 20) & 1, s = (ins >> 6) & 1;
+		bool vectorisable;
+		bool unary = false;
+		if (!(p && q && r)) vectorisable = true;					// MAC, MUL, ADD, SUB, DIV
+		else
+		{
+			const uint32_t opc2 = (ins >> 16) & 0xF;
+			unary = true;
+			vectorisable = s && (opc2 == 0 || opc2 == 1);			// VMOV/VABS/VNEG/VSQRT register
+		}
+		if (vectorisable)
+		{
+			const uint32_t vd = (ins >> 12) & 0xF, vn = (ins >> 16) & 0xF, vm = ins & 0xF;
+			const uint32_t D = (ins >> 22) & 1, N = (ins >> 7) & 1, M = (ins >> 5) & 1;
+			int d = dbl ? (int)((D << 4) | vd) : (int)((vd << 1) | D);
+			int n = dbl ? (int)((N << 4) | vn) : (int)((vn << 1) | N);
+			int m = dbl ? (int)((M << 4) | vm) : (int)((vm << 1) | M);
+			const int bank = dbl ? 4 : 8;
+			if (d >= bank)											// destination outside bank 0: a vector operation
+			{
+				const int stride = ((iFpscr >> 20) & 3) == 3 ? 2 : 1;
+				const bool mVec = m >= bank, nVec = !unary && n >= bank;
+				// the operands are read per element, so an overlapping destination behaves like the sequential hardware loop
+				const uint32_t savedLen = iFpscr;
+				iFpscr &= ~(7u << 16);								// the elements run as scalars
+				for (uint32_t i = 0; i < len; i++)
+				{
+					VfpOp(VfpPut(ins, dbl, d, n, m), pc);
+					d = VfpStep(d, bank, stride);
+					if (nVec) n = VfpStep(n, bank, stride);
+					if (mVec) m = VfpStep(m, bank, stride);
+				}
+				iFpscr = (iFpscr & ~(7u << 16)) | (savedLen & (7u << 16));
+				return;
+			}
+		}
+	}
+	VfpOpScalar(ins, pc);
+}
+
+void CArmCpu::VfpOpScalar(uint32_t ins, uint32_t pc)
 {
 	const uint32_t cp = (ins >> 8) & 0xF;
 	// MRC/MCR p15, 0, Rt, c13, c0, 2/3: the user thread ID registers (TPIDRURW read/write, TPIDRURO read-only); the rest of CP15 is privileged
