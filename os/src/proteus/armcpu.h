@@ -87,6 +87,7 @@ public:
 	THalt iHalt;
 	int32_t iExitCode;
 	uint64_t iSteps;
+	uint64_t iStatSlow, iStatSvc, iStatTrap;		// statistics (progress line): instructions that left the fast loop for Step(), SWIs, trap-range entries
 	uint32_t iFaultAddr;
 	uint32_t iLastPc;			// the instruction being executed (a Thumb branch halts with pc = the target; this is the branch)
 	char iNote[96];

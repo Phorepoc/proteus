@@ -219,7 +219,29 @@ struct FastCore
 	static PH_INLINE void Branch(FS& s, uint32_t t)
 	{
 		s.np = t & ~1u;
-		if (t & 1) { s.thumb = true; s.stop = true; }
+		s.thumb = (t & 1) != 0;
+	}
+
+	// ---- Thumb helpers (flags in the one nibble) ----
+	static PH_INLINE void ThNz(FS& s, uint32_t v) { s.fl = (s.fl & 3) | ((v >> 31) << 3) | ((uint32_t)(v == 0) << 2); }
+	static PH_INLINE uint32_t ThAdd(FS& s, uint32_t a, uint32_t b, uint32_t cin)
+	{
+		const uint64_t res = (uint64_t)a + b + cin;
+		const uint32_t v = (uint32_t)res;
+		s.fl = ((v >> 31) << 3) | ((uint32_t)(v == 0) << 2) | (((uint32_t)(res >> 32) & 1) << 1) | (((~(a ^ b) & (a ^ v)) >> 31) & 1);
+		return v;
+	}
+	static PH_INLINE void SetC(FS& s, uint32_t c) { s.fl = (s.fl & ~2u) | ((c & 1) << 1); }
+	static PH_INLINE uint32_t ThShift(FS& s, uint32_t type, uint32_t v, uint32_t amt)
+	{
+		if (amt == 0) return v;
+		if (type == 0) { if (amt < 32) { SetC(s, v >> (32 - amt)); return v << amt; } SetC(s, amt == 32 ? v & 1 : 0); return 0; }
+		if (type == 1) { if (amt < 32) { SetC(s, v >> (amt - 1)); return v >> amt; } SetC(s, amt == 32 ? v >> 31 : 0); return 0; }
+		if (type == 2) { if (amt < 32) { SetC(s, v >> (amt - 1)); return (uint32_t)((int32_t)v >> amt); } SetC(s, v >> 31); return (v >> 31) ? 0xFFFFFFFFu : 0; }
+		const uint32_t a = amt & 31;
+		if (!a) { SetC(s, v >> 31); return v; }
+		SetC(s, v >> (a - 1));
+		return (v >> a) | (v << (32 - a));
 	}
 
 	// ---- data processing --------------------------------------------------------------------------------------------------------------
@@ -405,7 +427,7 @@ struct FastCore
 #define PH_LSB(R) PH_LSA(R, 0) PH_LSA(R, 8) PH_LSA(R, 16) PH_LSA(R, 24)
 
 	// Executes instructions until iSteps >= aLimit, the guest halts, or the next instruction needs the generic path (then true: the caller
-	// runs one Step()). Precondition: ARM state, no breakpoints.
+	// runs one Step()). Precondition: no breakpoints. ARM and Thumb state alike.
 	static bool Batch(CArmCpu& c, uint64_t aLimit)
 	{
 		if (!sInit) Init();
@@ -421,11 +443,215 @@ struct FastCore
 		s.cur = s.np;
 		s.fl = Load(c);
 		s.stop = false;
-		s.thumb = false;
+		s.thumb = c.iT != 0;
 		uint64_t steps = c.iSteps;
 		bool generic = false;
 		while (steps < aLimit)
 		{
+			if (s.thumb)
+			{
+				// ---- Thumb-1 (thumb.cpp's ThumbStep, same semantics, on the batch's locals) ----
+				const uint32_t toff = s.np - s.base;
+				if (PH_UNLIKELY(toff > s.size - 2)) { generic = true; break; }
+				uint32_t ins;
+				{
+					uint16_t h;
+					__builtin_memcpy(&h, s.host + toff, 2);
+					ins = h;
+				}
+				s.cur = s.np;
+				s.np += 2;
+				++steps;
+				const uint32_t pcRead = s.np + 2;
+				uint32_t* r = s.r;
+				switch (ins >> 11)
+				{
+				case 0: case 1: case 2:				// format 1: LSL/LSR/ASR Rd, Rm, #imm5
+				{
+					const uint32_t type = ins >> 11, imm = (ins >> 6) & 31, rm = r[(ins >> 3) & 7];
+					const uint32_t v = type == 0 ? ThShift(s, 0, rm, imm) : ThShift(s, type, rm, imm ? imm : 32);
+					r[ins & 7] = v;
+					ThNz(s, v);
+					break;
+				}
+				case 3:								// format 2: ADD/SUB Rd, Rn, Rm|#imm3
+				{
+					const uint32_t a = r[(ins >> 3) & 7], b = (ins & (1u << 10)) ? (ins >> 6) & 7 : r[(ins >> 6) & 7];
+					r[ins & 7] = (ins & (1u << 9)) ? ThAdd(s, a, ~b, 1) : ThAdd(s, a, b, 0);
+					break;
+				}
+				case 4: case 5: case 6: case 7:		// format 3: MOV/CMP/ADD/SUB Rd, #imm8
+				{
+					const uint32_t rd = (ins >> 8) & 7, imm = ins & 0xFF, op = (ins >> 11) & 3;
+					if (op == 0) { r[rd] = imm; ThNz(s, imm); }
+					else if (op == 1) ThAdd(s, r[rd], ~imm, 1);
+					else if (op == 2) r[rd] = ThAdd(s, r[rd], imm, 0);
+					else r[rd] = ThAdd(s, r[rd], ~imm, 1);
+					break;
+				}
+				case 8:
+					if ((ins >> 10) == 0x10)		// format 4: ALU Rd, Rs
+					{
+						const uint32_t rd = ins & 7, rs = (ins >> 3) & 7, a = r[rd], b = r[rs];
+						uint32_t v;
+						switch ((ins >> 6) & 15)
+						{
+						case 0: v = a & b; ThNz(s, v); r[rd] = v; break;
+						case 1: v = a ^ b; ThNz(s, v); r[rd] = v; break;
+						case 2: v = ThShift(s, 0, a, b & 0xFF); ThNz(s, v); r[rd] = v; break;
+						case 3: v = ThShift(s, 1, a, b & 0xFF); ThNz(s, v); r[rd] = v; break;
+						case 4: v = ThShift(s, 2, a, b & 0xFF); ThNz(s, v); r[rd] = v; break;
+						case 5: r[rd] = ThAdd(s, a, b, (s.fl >> 1) & 1); break;
+						case 6: r[rd] = ThAdd(s, a, ~b, (s.fl >> 1) & 1); break;
+						case 7: v = ThShift(s, 3, a, b & 0xFF); ThNz(s, v); r[rd] = v; break;
+						case 8: ThNz(s, a & b); break;
+						case 9: r[rd] = ThAdd(s, 0, ~b, 1); break;
+						case 10: ThAdd(s, a, ~b, 1); break;
+						case 11: ThAdd(s, a, b, 0); break;
+						case 12: v = a | b; ThNz(s, v); r[rd] = v; break;
+						case 13: v = a * b; ThNz(s, v); r[rd] = v; break;
+						case 14: v = a & ~b; ThNz(s, v); r[rd] = v; break;
+						default: v = ~b; ThNz(s, v); r[rd] = v; break;
+						}
+						break;
+					}
+					else							// format 5: hi-register ADD/CMP/MOV, BX/BLX
+					{
+						const uint32_t rd = (ins & 7) | (((ins >> 7) & 1) << 3), rm = (ins >> 3) & 15;
+						const uint32_t b = rm == 15 ? pcRead : r[rm];
+						const uint32_t op = (ins >> 8) & 3;
+						if (op == 0) { const uint32_t v = (rd == 15 ? pcRead : r[rd]) + b; if (rd == 15) Branch(s, (v & ~1u) | 1); else r[rd] = v; }
+						else if (op == 1) ThAdd(s, rd == 15 ? pcRead : r[rd], ~b, 1);
+						else if (op == 2) { if (rd == 15) Branch(s, (b & ~1u) | 1); else r[rd] = b; }
+						else
+						{
+							if (ins & 0x80) r[14] = s.np | 1;
+							Branch(s, b);
+						}
+						break;
+					}
+				case 9:								// format 6: LDR Rd, [PC, #imm8*4]
+					r[(ins >> 8) & 7] = Rd32(s, (pcRead & ~3u) + (ins & 0xFF) * 4);
+					break;
+				case 10: case 11:					// formats 7/8: load/store with register offset
+				{
+					const uint32_t addr = r[(ins >> 3) & 7] + r[(ins >> 6) & 7], rd = ins & 7;
+					switch ((ins >> 9) & 7)
+					{
+					case 0: Wr32(s, addr, r[rd]); break;
+					case 1: Wr16(s, addr, r[rd]); break;
+					case 2: Wr8(s, addr, r[rd]); break;
+					case 3: r[rd] = (uint32_t)(int32_t)(int8_t)Rd8(s, addr); break;
+					case 4: r[rd] = Rd32(s, addr); break;
+					case 5: r[rd] = Rd16(s, addr); break;
+					case 6: r[rd] = Rd8(s, addr); break;
+					default: r[rd] = (uint32_t)(int32_t)(int16_t)Rd16(s, addr); break;
+					}
+					break;
+				}
+				case 12: case 13: case 14: case 15:	// format 9: LDR/STR (word: imm5*4, byte: imm5)
+				{
+					const bool byte = ins & (1u << 12), load = ins & (1u << 11);
+					const uint32_t rd = ins & 7, addr = r[(ins >> 3) & 7] + ((ins >> 6) & 31) * (byte ? 1 : 4);
+					if (load) r[rd] = byte ? Rd8(s, addr) : Rd32(s, addr);
+					else if (byte) Wr8(s, addr, r[rd]);
+					else Wr32(s, addr, r[rd]);
+					break;
+				}
+				case 16: case 17:					// format 10: LDRH/STRH imm5*2
+				{
+					const uint32_t rd = ins & 7, addr = r[(ins >> 3) & 7] + ((ins >> 6) & 31) * 2;
+					if (ins & (1u << 11)) r[rd] = Rd16(s, addr); else Wr16(s, addr, r[rd]);
+					break;
+				}
+				case 18: case 19:					// format 11: SP-relative LDR/STR
+				{
+					const uint32_t rd = (ins >> 8) & 7, addr = r[13] + (ins & 0xFF) * 4;
+					if (ins & (1u << 11)) r[rd] = Rd32(s, addr); else Wr32(s, addr, r[rd]);
+					break;
+				}
+				case 20: case 21:					// format 12: ADD Rd, PC|SP, #imm8*4
+					r[(ins >> 8) & 7] = ((ins & (1u << 11)) ? r[13] : (pcRead & ~3u)) + (ins & 0xFF) * 4;
+					break;
+				case 22: case 23:
+					if ((ins & 0xFF00) == 0xB000)	// format 13: ADD/SUB SP, #imm7*4
+					{
+						const uint32_t o = (ins & 0x7F) * 4;
+						r[13] = (ins & 0x80) ? r[13] - o : r[13] + o;
+						break;
+					}
+					if ((ins & 0xF600) == 0xB400)	// format 14: PUSH {rlist[, LR]} / POP {rlist[, PC]}
+					{
+						const uint32_t list = ins & 0xFF;
+						const bool extra = ins & 0x100;
+						if (!(ins & 0x800))
+						{
+							uint32_t a = r[13] - 4 * (Pop16(list) + (extra ? 1 : 0));
+							r[13] = a;
+							for (uint32_t m = list; m; m &= m - 1) { Wr32(s, a, r[__builtin_ctz(m)]); a += 4; }
+							if (extra) Wr32(s, a, r[14]);
+						}
+						else
+						{
+							uint32_t a = r[13];
+							for (uint32_t m = list; m; m &= m - 1) { r[__builtin_ctz(m)] = Rd32(s, a); a += 4; }
+							uint32_t newPc = 0;
+							if (extra) { newPc = Rd32(s, a); a += 4; }
+							r[13] = a;
+							if (extra) Branch(s, newPc);
+						}
+						break;
+					}
+					goto GenericPath;				// BKPT, undefined
+				case 24: case 25:					// format 15: STMIA/LDMIA Rb!, {rlist}
+				{
+					const uint32_t rb = (ins >> 8) & 7, list = ins & 0xFF;
+					uint32_t a = r[rb];
+					if (ins & (1u << 11))
+					{
+						for (uint32_t m = list; m; m &= m - 1) { r[__builtin_ctz(m)] = Rd32(s, a); a += 4; }
+						if (!(list & (1u << rb))) r[rb] = a;
+					}
+					else
+					{
+						for (uint32_t m = list; m; m &= m - 1) { Wr32(s, a, r[__builtin_ctz(m)]); a += 4; }
+						r[rb] = a;
+					}
+					break;
+				}
+				case 26: case 27:					// format 16/17: B<cond> / SWI
+				{
+					const uint32_t tc = (ins >> 8) & 15;
+					if (tc >= 0xE) goto GenericPath;	// SWI, undefined
+					if ((sCond[tc] >> s.fl) & 1) Branch(s, (pcRead + ((int32_t)(int8_t)(ins & 0xFF) * 2)) | 1);
+					break;
+				}
+				case 28:							// format 18: B
+					Branch(s, (pcRead + ((int32_t)(ins << 21) >> 20)) | 1);
+					break;
+				case 29:							// BLX suffix: to ARM, word aligned
+				{
+					if (ins & 1) goto GenericPath;
+					const uint32_t t = (r[14] + ((ins & 0x7FF) << 1)) & ~3u;
+					r[14] = s.np | 1;
+					Branch(s, t);
+					break;
+				}
+				case 30:							// BL/BLX prefix: LR = PC + (offset_hi << 12)
+					r[14] = pcRead + ((int32_t)(ins << 21) >> 9);
+					break;
+				default:							// BL suffix
+				{
+					const uint32_t t = r[14] + ((ins & 0x7FF) << 1);
+					r[14] = s.np | 1;
+					Branch(s, t | 1);
+					break;
+				}
+				}
+				if (PH_UNLIKELY(s.stop)) break;
+				continue;
+			}
+			{
 			uint32_t ins;
 			const uint32_t off = s.np - s.base;
 			if (PH_UNLIKELY(off > s.size - 4 || (s.np & 3))) { generic = true; break; }
@@ -438,12 +664,15 @@ struct FastCore
 				// the generic path: R[15] = this instruction, everything in the object
 				c.R[15] = s.cur;
 				Store(c, s.fl);
+				c.iT = 0;
 				c.iSteps = steps;
+				++c.iStatSlow;
 				c.Step();
 				steps = c.iSteps;
 				s.np = c.R[15];
 				s.fl = Load(c);
-				if (c.iHalt != ERunning || c.iBpCount || c.iT) { s.thumb = c.iT != 0; s.stop = c.iHalt != ERunning; break; }
+				s.thumb = c.iT != 0;
+				if (c.iHalt != ERunning || c.iBpCount) { s.stop = c.iHalt != ERunning; break; }
 				s.pmap = c.iPageMap;
 				s.watch = c.iOnWatch != 0;
 				continue;
@@ -544,24 +773,31 @@ struct FastCore
 			}
 			if (PH_UNLIKELY(s.stop)) break;
 			continue;
+			}
 		GenericPath:
-			// an encoding the fast classes only pre-select (the exact mask failed): undo the pre-increment and let Step() decide
+			// an encoding the fast classes only pre-select (the exact mask failed), or one this loop leaves to the generic code (SWI, BKPT,
+			// undefined): undo the pre-increment and let Step() decide
 			s.np = s.cur;
 			--steps;
 			c.R[15] = s.cur;
 			Store(c, s.fl);
+			c.iT = s.thumb ? 1 : 0;
 			c.iSteps = steps;
+			++c.iStatSlow;
 			c.Step();
 			steps = c.iSteps;
 			s.np = c.R[15];
 			s.fl = Load(c);
-			if (c.iHalt != ERunning || c.iBpCount || c.iT) { s.thumb = c.iT != 0; s.stop = c.iHalt != ERunning; break; }
+			s.thumb = c.iT != 0;
+			if (c.iHalt != ERunning || c.iBpCount) { s.stop = c.iHalt != ERunning; break; }
+			s.pmap = c.iPageMap;
+			s.watch = c.iOnWatch != 0;
 		}
 		c.R[15] = s.np;
 		Store(c, s.fl);
 		c.iSteps = steps;
 		c.iLastPc = s.cur;
-		if (s.thumb) c.iT = 1;
+		c.iT = s.thumb ? 1 : 0;
 		return generic && !s.stop;
 	}
 };
@@ -582,14 +818,14 @@ void CArmCpu::Run(uint64_t aMaxSteps)
 			if (boundary < limit) limit = boundary;
 		}
 		if (limit <= iSteps) limit = iSteps + 1;				// always one instruction, as before
-		if (!iT && !iBpCount)
+		if (!iBpCount)
 		{
 			if (FastCore::Batch(*this, limit) && iHalt == ERunning && iSteps < limit) Step();		// pc outside the region (trap, foreign pc), odd pc
 		}
 		else
 		{
 			do Step();
-			while (iSteps < limit && iHalt == ERunning && (iT || iBpCount));
+			while (iSteps < limit && iHalt == ERunning && iBpCount);
 		}
 		if (iOnProgress && !(iSteps & ((1u << 26) - 1))) iOnProgress(*this, iBpCtx);
 		if (iSliceSteps && iSteps >= iNextSlice)

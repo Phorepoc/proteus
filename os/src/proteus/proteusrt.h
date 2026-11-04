@@ -154,6 +154,7 @@ struct TExecState
 	uint32_t iReqStatus[KMaxReqs];
 	int iReqThread[KMaxReqs];
 	bool iReqDone[KMaxReqs];		// the request completed and its guest status was reused for a newer request before the signal was credited: it is owed one signal
+	uint64_t iWaitUs;			// microseconds spent blocked natively (Reschedule: nothing ready)
 	uint64_t iSliceStart;		// CArmCpu::iSteps when the running thread started its turn
 	uint32_t iSyncSendStatus;	// the outstanding SessionSendSync (the native thread has one synchronous message slot for all guest threads)
 };

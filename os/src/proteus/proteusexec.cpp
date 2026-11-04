@@ -439,6 +439,7 @@ static void Reschedule(CArmCpu& cpu, THle& h)
 			return;
 		}
 		bool got = true;
+		const uint64_t waitFrom = NowUs(h);
 		if (nextThread >= 0)
 		{
 			const uint64_t d = next - now;
@@ -446,6 +447,7 @@ static void Reschedule(CArmCpu& cpu, THle& h)
 		}
 		else
 			h.iIpc->iWaitAny(h.iIpc->iCtx);
+		e.iWaitUs += NowUs(h) - waitFrom;
 		if (got) AttributeNative(cpu, h);
 	}
 }
@@ -490,7 +492,7 @@ void Preempt(CArmCpu& cpu, THle& h)
 void ThreadStats(CArmCpu& cpu, THle& h, char* aOut, int aMax)
 {
 	TExecState& e = h.iExec;
-	int n = snprintf(aOut, aMax, "cur=%d ran(M):", e.iCur);
+	int n = snprintf(aOut, aMax, "cur=%d wait=%ums slow=%uK svc=%uK trap=%uK ran(M):", e.iCur, (unsigned)(e.iWaitUs / 1000), (unsigned)(cpu.iStatSlow >> 10), (unsigned)(cpu.iStatSvc >> 10), (unsigned)(cpu.iStatTrap >> 10));
 	for (int i = 0; i < e.iThreadCount && n > 0 && n < aMax - 16; ++i)
 	{
 		const uint64_t ran = e.iThread[i].iRan + (i == e.iCur ? cpu.iSteps - e.iSliceStart : 0);

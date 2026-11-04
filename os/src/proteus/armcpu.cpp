@@ -349,6 +349,7 @@ void CArmCpu::Step()
 	for (int b = 0; b < iBpCount; ++b) if (iBp[b] == pc && iOnBp) iOnBp(*this, b, iBpCtx);
 	if (pc >= KTrapBase && pc < KTrapEnd)
 	{
+		++iStatTrap;
 		if (iTrap) iTrap(*this, pc, iCtx);
 		else Halt(EHleStop);
 		return;
@@ -552,6 +553,7 @@ void CArmCpu::Step()
 	case 7:
 		if (ins & (1u << 24))
 		{
+			++iStatSvc;
 			if (!iSvc || !iSvc(*this, ins & 0xFFFFFF, iCtx))
 			{
 				Halt(ESvcUnhandled, (int32_t)(ins & 0xFFFFFF));

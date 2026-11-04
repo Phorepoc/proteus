@@ -22,3 +22,10 @@ qemu-arm -cpu cortex-a15 "$W/base.elf" > "$W/bqemu.txt"
 echo "$(wc -l < "$W/bqemu.txt") base results"
 if cmp -s "$W/bqemu.txt" "$W/bproteus.txt"; then echo "base: PASS"; else
   echo "base: FAIL -- first differences (qemu < > proteus):"; diff "$W/bqemu.txt" "$W/bproteus.txt" | head -40; exit 1; fi
+# Thumb-1 (the formats, entered and left by BX/BLX from ARM)
+arm-none-eabi-gcc -marm -march=armv5te -O1 -ffreestanding -nostdlib -static -Wl,-Ttext=0x10000 -Wl,-e,_start -o "$W/thumb.elf" "$HERE/thumb.c"
+qemu-arm -cpu cortex-a15 "$W/thumb.elf" > "$W/tqemu.txt"
+"$W/harness" "$W/thumb.elf" > "$W/tproteus.txt" || true
+echo "$(wc -l < "$W/tqemu.txt") thumb results"
+if cmp -s "$W/tqemu.txt" "$W/tproteus.txt"; then echo "thumb: PASS"; else
+  echo "thumb: FAIL -- first differences (qemu < > proteus):"; diff "$W/tqemu.txt" "$W/tproteus.txt" | head -40; exit 1; fi
