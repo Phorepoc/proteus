@@ -291,3 +291,26 @@ one core: fewer / cheaper draws, or the llvmpipe-style JIT rasteriser, or SVGA3D
   (`docs/img/regress-vbox-portrait-gsapp.png`). Native apps do not touch the handler; this shows the ROM with the new handler is unharmed.
 - **QEMU** (TCG, the same `SSM_TEST=proteus` ISO as the VirtualBox runs): **P0, P1, P2, P2b, P2c, P2d, P2f, P3 PASS** (440 s; the native queue
   path runs there too: `EExecMsgQueueNotifyDataAvailable` on the native handle, signal credited).
+
+### Music missing: not the mixer, not an underrun (2026-11-04, audio A0 measurement)
+
+Symptom: effects play, Sparkle's music (MP3 files, `music/main-theme`, ...) is nearly absent. Measured on the PC image in VirtualBox (AC97 via the
+null audio driver with VirtualBox's own WAV capture, `VBoxInternal2/Audio/Debug/Enabled`), with the audio trace switches on (`PHOREPOC_AUDIO_A0`, and the
+mixer's new one-line-a-second summary, `PHMIX_TRACE`).
+
+1. **Sparkle uses two audio paths.** Effects: its own software mixer into one `CMdaAudioOutputStream` (22050 Hz mono, 1024 B writes). Music: `CMdaAudioPlayerUtility`
+   on the MP3 files (the game imports `mediaclientaudio`). Only the first reaches the audio server: there is one channel on the mixer, never a second.
+2. **The stream path carries silence between effects**: over 149 s of play after "Switching the music" every one-second mixer summary has `peak 0`; the VirtualBox
+   capture of 560 s has audible samples in 3 seconds. The mixer is not dropping anything (it mixes what it gets) and MMRC never pauses or denies: one stream.
+3. **The music open fails in the guest.** Right after `Switching the music to 'music/main-theme'` the guest connects to `!ecomserver`, gets -17004 twice,
+   and `proteus DLL f32agent.dll: no ARM file (stays HLE)` / `RLibrary::Load Z:\sys\bin\f32agent.dll -> -1`. The MMF client of `CMdaAudioPlayerUtility` loads
+   the controller **plug-in into the application's own process**, so the controller chain must exist as ARM twins in `c:\sys\bin\arm`: `f32agent` (CAF),
+   `mmfaudiocontroller` / `mp3audioplaycontrollerplugin` (+ recogniser, `mp3audiocontrollerutility`, `arimp3decmmfcodec`, `arimp3decwrapper`, `mp3hwdevice`)
+   -- the names the native ECOM registry answers with. None is in the Sparkle closure (273 modules), so the open fails and the game goes on without music. This is a
+   closure gap (a staging task: ARM builds of those components, then `proteus_closure.py --extra`), not a DevSound buffer size: the stream's `PlayData`
+   size is the game's own 1024 B and the buffer chunk the server hands out is 12 KB already.
+4. **A real scheduling effect, fixed here.** The guest threads share one native thread and a native call is indivisible. The audio thread (guest thread 2) was woken by the
+   native reply only at the end of the current slice, which a long GL call (softpipe, tens of ms) stretches: the effects stream ran at ~13 KB/s of the 44 KB/s it needs
+   (turnaround completion -> next write: median 28-38 ms, p90 110-220 ms, in the traced run). A native GL call that takes long now ends the slice, so the scheduler polls the kernel
+   and runs the woken thread at once; wake-up latency is counted per thread (`wakeN=count/avg us/max us/over 10 ms` in the progress line): thread 2 20120 wakes, avg 47 us,
+   28 over 10 ms; the stream then carries ~29 KB/s on average. Guest thread priorities are still not honoured (`EExecThreadSetPriority` is logged now, `[proteus] ... priority`).

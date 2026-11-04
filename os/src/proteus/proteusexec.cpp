@@ -153,6 +153,11 @@ enum { KErrGeneral = -2, KErrTimedOut = -33, KCurrentThreadHandle = (int)0xFFFF8
 static const uint32_t KLocalThreadData = 48;		// as proteusrt.cpp's StartThreadStack: TLocalThreadData at the top of the stack
 static const uint32_t KMaxThreadCreateInfo = 256;	// u32std.h
 
+// the host clock for the wake-up latency statistics (set from every scheduler entry that has the THle)
+static uint64_t (*gClockFn)(void*);
+static void* gClockCtx;
+static uint64_t ClockUs() { return gClockFn ? gClockFn(gClockCtx) : 0; }
+
 static void SaveThread(CArmCpu& c, TExecState& e, TGuestThread& t)
 {
 	memcpy(t.iR, c.R, sizeof(t.iR));
@@ -171,6 +176,14 @@ static void LoadThread(CArmCpu& c, TExecState& e, const TGuestThread& t)
 	memcpy(c.iD, t.iD, sizeof(c.iD));
 	c.iExcl = false;		// a thread switch clears the exclusive monitor
 	e.iSliceStart = c.iSteps;
+	if (t.iReadyAt)			// the wake-up latency: from ready to running
+	{
+		TGuestThread& w = const_cast<TGuestThread&>(t);
+		const uint64_t now = ClockUs(), lat = now > w.iReadyAt ? now - w.iReadyAt : 0;
+		w.iReadyAt = 0; ++w.iWakeN; w.iWakeSum += lat;
+		if (lat > w.iWakeMax) w.iWakeMax = lat;
+		if (lat > 10000) ++w.iWakeSlow;
+	}
 	e.iHeap = t.iHeap; e.iTrapHandler = t.iTrapHandler; e.iActiveScheduler = t.iActiveScheduler; e.iTrapFrame = t.iTrapFrame;
 	memcpy(e.iTlsKey, t.iTlsKey, sizeof(e.iTlsKey)); memcpy(e.iTlsVal, t.iTlsVal, sizeof(e.iTlsVal)); e.iTlsCount = t.iTlsCount;
 }
@@ -216,6 +229,7 @@ static void Wake(TExecState& e, int i, int32_t aResult)
 	t.iR[0] = (uint32_t)aResult;
 	t.iState = EThreadReady;
 	t.iDeadline = 0;
+	t.iReadyAt = ClockUs();
 }
 
 // DThread::RequestSignal: the thread's request semaphore; a thread blocked in WaitForAnyRequest takes the signal and runs
@@ -224,7 +238,7 @@ static void SignalThread(TExecState& e, int i, int aCount)
 	if (i < 0 || i >= e.iThreadCount || e.iThread[i].iState == EThreadDead || aCount <= 0) return;
 	TGuestThread& t = e.iThread[i];
 	t.iRequests += aCount;
-	if (t.iState == EThreadWaitAny) { --t.iRequests; t.iState = EThreadReady; }
+	if (t.iState == EThreadWaitAny) { --t.iRequests; t.iState = EThreadReady; t.iReadyAt = ClockUs(); }
 }
 
 static void CompleteFor(CArmCpu& cpu, TExecState& e, int aThread, uint32_t aStatus, int32_t aValue)
@@ -431,6 +445,7 @@ static void AttributeNative(CArmCpu& cpu, THle& h)
 static void Reschedule(CArmCpu& cpu, THle& h)
 {
 	TExecState& e = h.iExec;
+	if (h.iIpc) { gClockFn = h.iIpc->iNowUs; gClockCtx = h.iIpc->iCtx; }
 	e.iThread[e.iCur].iRan += cpu.iSteps - e.iSliceStart;
 	SaveThread(cpu, e, e.iThread[e.iCur]);
 	for (;;)
@@ -503,6 +518,7 @@ static void BlockCurrent(CArmCpu& cpu, THle& h, int aState, int aObj, uint64_t a
 void Preempt(CArmCpu& cpu, THle& h)
 {
 	TExecState& e = h.iExec;
+	if (h.iIpc) { gClockFn = h.iIpc->iNowUs; gClockCtx = h.iIpc->iCtx; }
 	if (!e.iThread || e.iThreadCount < 1) return;
 	if (h.iIpc && h.iIpc->iPoll)
 		for (int n = 0; n < KMaxReqs && h.iIpc->iPoll(h.iIpc->iCtx); ++n) AttributeNative(cpu, h);
@@ -541,6 +557,10 @@ void ThreadStats(CArmCpu& cpu, THle& h, char* aOut, int aMax)
 		const uint64_t ran = e.iThread[i].iRan + (i == e.iCur ? cpu.iSteps - e.iSliceStart : 0);
 		n += snprintf(aOut + n, aMax - n, " %d:%u%s", i, (unsigned)(ran >> 20), e.iThread[i].iState == EThreadDead ? "x" : "");
 	}
+	for (int i = 0; i < e.iThreadCount && n > 0 && n < aMax - 48; ++i)		// wake-up latency (ready -> running) per thread: n/avg us/max us/over 10 ms
+		if (e.iThread[i].iWakeN)
+			n += snprintf(aOut + n, aMax - n, " wake%d=%u/%u/%u/%u", i, e.iThread[i].iWakeN, (unsigned)(e.iThread[i].iWakeSum / e.iThread[i].iWakeN),
+				(unsigned)e.iThread[i].iWakeMax, e.iThread[i].iWakeSlow);
 }
 
 // a thread ends (ExecHandler::ThreadKill): logons complete with the exit reason, mutexes it held go to their waiters
@@ -1288,6 +1308,17 @@ static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 		if (!strcmp(name, "EExecProcessPriority")) { r[0] = 350; return true; }		// EPriorityForeground
 		if (!strcmp(name, "EExecThreadPriority")) { r[0] = 0; return true; }			// EPriorityNormal
 		if (!strcmp(name, "EExecThreadProcessPriority")) { r[0] = 350; return true; }
+		if (!strcmp(name, "EExecThreadSetPriority") || !strcmp(name, "EExecThreadSetProcessPriority"))		// trace: who asks for what (honoured by nobody yet)
+		{
+			static int n = 0;
+			if (h.iLog && n < 60)
+			{
+				++n;
+				char l[96];
+				snprintf(l, sizeof(l), "[proteus] %s thread %d (cur %d) priority %d", name, ThreadIndex(h.iExec, r[0]), h.iExec.iCur, (int)r[1]);
+				h.iLog(l, h.iLogCtx);
+			}
+		}
 		if (!strcmp(name, "EExecProcessSetPriority") || !strcmp(name, "EExecThreadSetPriority") || !strcmp(name, "EExecThreadSetProcessPriority")
 			|| !strcmp(name, "EExecProcessSetFlags") || !strcmp(name, "EExecThreadSetFlags") || !strcmp(name, "EExecFsRegisterThread")
 			|| !strcmp(name, "EExecWsRegisterThread") || !strcmp(name, "EExecProcessRendezvous")

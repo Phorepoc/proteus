@@ -120,6 +120,8 @@ struct TGuestThread
 	uint64_t iAfterAt;			// the thread's own timer (Exec::After / AfterHighRes: User::After, User::AfterHighRes): host microseconds ...
 	uint32_t iAfterStatus;		// ... and the TRequestStatus it completes (0 = no timer pending)
 	uint64_t iRan;				// instructions it has executed (accounted when it stops running)
+	uint64_t iReadyAt;			// host microseconds when it last became ready (a wake-up), 0 = it has been picked since
+	uint64_t iWakeSum, iWakeMax; uint32_t iWakeN, iWakeSlow;	// wake-up latency (ready -> running) statistics: count, sum / max in us, those over 10 ms
 	int iExitType, iExitReason;
 	char iExitCategory[17];
 	uint32_t iLogonStatus[KMaxLogons];

@@ -1060,7 +1060,7 @@ static void Progress(proteus::CArmCpu& aCpu, void* aHleP)
 	char pc[120], lr[120];
 	proteus::Where(*hle.iProcess, aCpu, aCpu.iLastPc, pc, sizeof(pc));
 	proteus::Where(*hle.iProcess, aCpu, aCpu.R[14], lr, sizeof(lr));
-	char th[160] = "";
+	char th[420] = "";
 	proteus::ThreadStats(aCpu, const_cast<proteus::THle&>(hle), th, sizeof(th));
 	RDebug::Printf("PH: proteus progress %u M instructions: pc %s, lr %s; %s", (TUint)(aCpu.iSteps >> 20), pc, lr, th);
 	}

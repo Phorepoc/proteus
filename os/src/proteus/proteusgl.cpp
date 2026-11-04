@@ -185,9 +185,14 @@ static bool Call(CArmCpu& aCpu, THle& aHle, uint32_t aIndex)
 	static uint32_t seen[KThunkCount];
 	const uint32_t a0 = aCpu.R[0], a1 = aCpu.R[1], a2 = aCpu.R[2], a3 = aCpu.R[3];
 	const bool swap = !strncmp(t.iName, "eglSwap", 7);
+	const uint64_t us0 = aHle.iIpc && aHle.iIpc->iNowUs ? aHle.iIpc->iNowUs(aHle.iIpc->iCtx) : 0;
 	const uint32_t fc0 = Sample(aCpu, aHle);
 	t.iCall(aCpu, gNative[aIndex], t.iName);
 	const uint32_t fc1 = Sample(aCpu, aHle);
+	// A native call is one indivisible step for the interpreter: while it ran, no other guest thread could, and the native replies other threads
+	// wait for (the audio stream's buffer requests) were not looked at. A call that took long ends the time slice now, so the scheduler polls
+	// the kernel and runs a thread that became ready at the next instruction instead of at the end of the slice.
+	if (us0 && aHle.iIpc->iNowUs(aHle.iIpc->iCtx) - us0 > 300 && aCpu.iSliceSteps) aCpu.iNextSlice = aCpu.iSteps;
 	(swap ? gSwapFc : gGlFc) += (uint32_t)(fc1 - fc0);
 	if (swap && ++gSwaps % 30 == 0) Stats(aCpu, aHle);
 	const uint32_t n = ++seen[aIndex];
