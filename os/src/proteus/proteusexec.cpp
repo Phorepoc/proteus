@@ -214,7 +214,7 @@ static void CompleteFor(CArmCpu& cpu, TExecState& e, int aThread, uint32_t aStat
 	// a guest-completed status is no outstanding native request: left noted, a later native signal would be credited to it (AttributeNative
 	// takes the first noted status that is no longer pending) and its owner would see a stray signal
 	for (int k = 0; k < KMaxReqs; ++k)
-		if (e.iReqStatus[k] == aStatus) e.iReqStatus[k] = 0;
+		if (e.iReqStatus[k] == aStatus && !e.iReqDone[k]) e.iReqStatus[k] = 0;
 	SignalThread(e, aThread, 1);
 }
 
@@ -291,23 +291,36 @@ static uint64_t NowUs(THle& h) { return h.iIpc && h.iIpc->iNowUs ? h.iIpc->iNowU
 static uint64_t Deadline(THle& h, int32_t aTimeout) { return aTimeout > 0 ? NowUs(h) + (uint64_t)aTimeout : 0; }
 
 // a request a guest thread handed to the native side: its completion signal belongs to that thread
-static void NoteRequest(TExecState& e, uint32_t aStatus)
+static void NoteRequest(THle& h, const char* aName, uint32_t aStatus)
 {
+	TExecState& e = h.iExec;
 	if (!aStatus || !e.iThread) return;
-	int free = -1;
-	for (int k = 0; k < KMaxReqs; ++k)
+	static int noteLines = 0;
+	if (h.iLog && noteLines < 4000)		// trace: a request handed to the native side
 	{
-		if (e.iReqStatus[k] == aStatus) { e.iReqThread[k] = e.iCur; return; }
-		if (!e.iReqStatus[k] && free < 0) free = k;
+		++noteLines;
+		char l[120];
+		snprintf(l, sizeof(l), "[proteus] sig note: %s status %x thread %d", aName, aStatus, e.iCur);
+		h.iLog(l, h.iLogCtx);
 	}
+	int free = -1;
+	// A guest starts a request on a status only when its earlier request has completed (a cancel completes it too): an entry still open for the same
+	// status completed, and the guest saw it without taking its signal (Qt's RunIfReady runs a completed active object that way). Its signal is still
+	// to come; the status now belongs to the new request, so the old entry is marked owed and the new one is noted beside it.
+	for (int k = 0; k < KMaxReqs; ++k)
+		if (e.iReqStatus[k] == aStatus && !e.iReqDone[k]) e.iReqDone[k] = true;
+	for (int k = 0; k < KMaxReqs; ++k)
+		if (!e.iReqStatus[k] && free < 0) free = k;
 	if (free < 0)		// full: forget the oldest
 	{
 		memmove(e.iReqStatus, e.iReqStatus + 1, sizeof(e.iReqStatus) - sizeof(e.iReqStatus[0]));
 		memmove(e.iReqThread, e.iReqThread + 1, sizeof(e.iReqThread) - sizeof(e.iReqThread[0]));
+		memmove(e.iReqDone, e.iReqDone + 1, sizeof(e.iReqDone) - sizeof(e.iReqDone[0]));
 		free = KMaxReqs - 1;
 	}
 	e.iReqStatus[free] = aStatus;
 	e.iReqThread[free] = e.iCur;
+	e.iReqDone[free] = false;
 }
 
 // one native request signal arrived: credit the thread whose noted request completed; else the only thread waiting for one; else the main thread
@@ -316,14 +329,39 @@ static void AttributeNative(CArmCpu& cpu, THle& h)
 	TExecState& e = h.iExec;
 	int who = -1;
 	for (int k = 0; k < KMaxReqs && who < 0; ++k)
+		if (e.iReqStatus[k] && e.iReqDone[k] && e.iThread[e.iReqThread[k]].iState != EThreadDead)
+		{
+			who = e.iReqThread[k];
+			static int owedLines = 0;
+			if (h.iLog && owedLines < 1000)		// trace: a signal owed by a request whose status was reused before it was credited
+			{
+				++owedLines;
+				char l[96];
+				snprintf(l, sizeof(l), "[proteus] sig credit: owed, status %x of thread %d", e.iReqStatus[k], who);
+				h.iLog(l, h.iLogCtx);
+			}
+			e.iReqStatus[k] = 0;
+			e.iReqDone[k] = false;
+		}
+	for (int k = 0; k < KMaxReqs && who < 0; ++k)
 	{
 		const uint32_t st = e.iReqStatus[k];
 		if (!st) continue;
+		if (e.iReqDone[k]) { e.iReqStatus[k] = 0; e.iReqDone[k] = false; continue; }
 		if (e.iThread[e.iReqThread[k]].iState == EThreadDead || !cpu.Valid(st, 4)) { e.iReqStatus[k] = 0; continue; }
 		const int32_t v = (int32_t)cpu.Read32(st);
 		if (v == KRequestPending) continue;
 		who = e.iReqThread[k];
 		e.iReqStatus[k] = 0;
+		e.iReqDone[k] = false;
+		static int creditLines = 0;
+		if (h.iLog && creditLines < 4000)		// trace: which noted request explains this signal
+		{
+			++creditLines;
+			char l[96];
+			snprintf(l, sizeof(l), "[proteus] sig credit: status %x of thread %d = %x", st, who, (unsigned)v);
+			h.iLog(l, h.iLogCtx);
+		}
 		static int errLines = 0;
 		if (v < 0 && h.iLog && errLines < 100)		// trace: a native request of the guest that completed with an error
 		{
@@ -343,8 +381,15 @@ static void AttributeNative(CArmCpu& cpu, THle& h)
 		{
 			++guesses;
 			char l[96];
-			snprintf(l, sizeof(l), "[proteus] native signal with no completed noted request: credited to thread %d", who);
+			snprintf(l, sizeof(l), "[proteus] native signal with no completed noted request: credited to thread %d (cur %d)", who, e.iCur);
 			h.iLog(l, h.iLogCtx);
+			for (int k = 0; k < KMaxReqs; ++k)		// the requests still noted, and what they hold now
+			{
+				if (!e.iReqStatus[k]) continue;
+				snprintf(l, sizeof(l), "[proteus]   noted %x thread %d value %x", e.iReqStatus[k], e.iReqThread[k],
+					cpu.Valid(e.iReqStatus[k], 4) ? cpu.Read32(e.iReqStatus[k]) : 0xDEAD);
+				h.iLog(l, h.iLogCtx);
+			}
 		}
 	}
 	SignalThread(e, who, 1);
@@ -867,7 +912,7 @@ static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 		if (!strcmp(name, "EExecTimerAfter") || !strcmp(name, "EExecTimerAt") || !strcmp(name, "EExecTimerLock") || !strcmp(name, "EExecTimerHighRes")
 			|| !strcmp(name, "EExecTimerAgainHighRes") || !strcmp(name, "EExecTimerInactivity") || !strcmp(name, "EExecPropertySubscribe")
 			|| !strcmp(name, "EExecChangeNotifierLogon") || !strcmp(name, "EExecProcessLogon"))
-			NoteRequest(e, r[1]);
+			NoteRequest(h, name, r[1]);
 		if (h.iIpc && h.iIpc->iKernel && (!strncmp(name, "EExecProperty", 13) || !strcmp(name, "EExecOpenObject") || !strcmp(name, "EExecObjectNext") || !strcmp(name, "EExecPlatSecDiagnostic") || !strncmp(name, "EExecChunk", 10)
 			|| !strncmp(name, "EExecMutex", 10) || !strncmp(name, "EExecSemaphore", 14) || !strncmp(name, "EExecChangeNotifier", 19) || !strncmp(name, "EExecTimer", 10) || !strncmp(name, "EExecTimeNow", 12) || !strcmp(name, "EExecTickCount") || !strcmp(name, "EExecHandleClose") || !strcmp(name, "EExecHandleCount")
 			|| !strcmp(name, "EExecProcessDataParameterLength") || !strcmp(name, "EExecProcessGetDataParameter") || !strncmp(name, "EExecProcessCommandLine", 23))
@@ -1083,8 +1128,15 @@ static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 				&& cpu.Read32(e.iSyncSendStatus) == 0x80000001u)
 				sync = false;
 			if (r[3]) cpu.Write32(r[3], 0x80000001u);		// KRequestPending
-			NoteRequest(e, r[3]);
+			NoteRequest(h, name, r[3]);
 			r[0] = (uint32_t)ipc->iSend(ipc->iCtx, r[0], (int)r[1], r[2], r[3], sync);
+			// a send the bridge completed itself (a synchronous one, a connect): the status is written and the signal belongs to this thread --
+			// credited here, not through a native signal that would have to be matched with its status later
+			if (ipc->iSyncDone && ipc->iSyncDone(ipc->iCtx) && r[3])
+			{
+				if (e.iThread) CompleteFor(cpu, e, e.iCur, r[3], (int32_t)cpu.Read32(r[3]));
+				else ipc->iSignal(ipc->iCtx, 1);
+			}
 			if (sync) e.iSyncSendStatus = r[3];
 			return true;
 		}

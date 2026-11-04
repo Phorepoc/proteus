@@ -19,6 +19,8 @@
 #include "proteusrt.h"
 #include "../proteusimg/proteusimg.h"
 
+static void SigTrace(const char* aWhat, TUint aStatus, TInt aValue);
+
 _LIT(KArmDirZ, "z:\\sys\\bin\\arm\\");
 static void ResetDestroy(TAny* aArray);
 _LIT(KDefaultExe, "z:\\sys\\bin\\arm\\proteushello.exe");
@@ -309,7 +311,7 @@ static bool BridgeProperty(void* aCtx, const char* aExec, uint32_t* r)
 		}
 	if (n == _L8("EExecPropertySetB")) { r[0] = (uint32_t)p.Set(TPtrC8((const TUint8*)r[1], (TInt)r[2])); return true; }
 	if (n == _L8("EExecPropertySubscribe")) { p.Subscribe(*(TRequestStatus*)r[1]); return true; }
-	if (n == _L8("EExecPropertyCancel")) { p.Cancel(); return true; }
+	if (n == _L8("EExecPropertyCancel")) { SigTrace("property-cancel", 0, 0); p.Cancel(); SigTrace("property-cancelled", 0, 0); return true; }
 	return false;
 	}
 
@@ -519,9 +521,9 @@ static bool BridgeKernel(void* aCtx, const char* aExec, uint32_t* r, proteus::CA
 		tm.AtUTC(*(TRequestStatus*)r[1], TTime(t));
 		return true;
 		}
-	if (n == _L8("EExecTimerCancel")) { tm.Cancel(); return true; }
+	if (n == _L8("EExecTimerCancel")) { SigTrace("timer-cancel", 0, 0); tm.Cancel(); SigTrace("timer-cancelled", 0, 0); return true; }
 	if (n == _L8("EExecChangeNotifierLogon")) { r[0] = (uint32_t)reinterpret_cast<RChangeNotifier&>(c).Logon(*(TRequestStatus*)r[1]); return true; }
-	if (n == _L8("EExecChangeNotifierLogoff")) { r[0] = (uint32_t)reinterpret_cast<RChangeNotifier&>(c).LogonCancel(); return true; }
+	if (n == _L8("EExecChangeNotifierLogoff")) { SigTrace("notifier-logoff", 0, 0); r[0] = (uint32_t)reinterpret_cast<RChangeNotifier&>(c).LogonCancel(); return true; }
 	if (n == _L8("EExecChunkBase")) { r[0] = (uint32_t)c.Base(); return true; }
 	if (n == _L8("EExecChunkSize")) { r[0] = (uint32_t)c.Size(); return true; }
 	if (n == _L8("EExecChunkMaxSize")) { r[0] = (uint32_t)c.MaxSize(); return true; }
@@ -559,6 +561,26 @@ static int BridgeCreate(void* aCtx, const char* aName, int aSlots)
 
 static void WatchAsync(TInt aFn, TRequestStatus* aSt, const TDesC& aServer);
 static void UnwatchAsync(TRequestStatus* aSt);
+// trace of every source of a native request signal (the next stray-signal investigation): bounded
+static void SigTrace(const char* aWhat, TUint aStatus, TInt aValue)
+	{
+	static TInt lines = 0;
+	if (lines < 4000)
+		{
+		++lines;
+		RDebug::Printf("PH: proteus sig: %s st %x v %d count %d", aWhat, aStatus, aValue, RThread().RequestCount());
+		}
+	}
+// set when CompleteGuest completed a guest status inside the last send: the embedder's executive credits the signal to the sending guest thread
+// itself (TIpcBridge::iSyncDone), exactly -- a native RequestSignal here would be an anonymous signal, to be matched with its status later, by which time the
+// guest may have reused the status for its next call
+static TBool gGuestCompleted = EFalse;
+static TBool BridgeSyncDone(void*)
+	{
+	const TBool done = gGuestCompleted;
+	gGuestCompleted = EFalse;
+	return done;
+	}
 // a synchronous guest send (SessionSendSync, e.g. sessions with 0 async slots) is done synchronously here -- an async native send would
 // need a slot (KErrServerBusy) -- and the guest's TRequestStatus is completed + this thread signalled, as the kernel would
 static void CompleteGuest(TRequestStatus* aStatus, TInt aResult)
@@ -566,7 +588,8 @@ static void CompleteGuest(TRequestStatus* aStatus, TInt aResult)
 	if (!aStatus)
 		return;
 	*aStatus = aResult;
-	RThread().RequestSignal();
+	SigTrace("complete-guest", (TUint)aStatus, aResult);
+	gGuestCompleted = ETrue;
 	}
 
 // the guest's private path on a file-server session (TFsMessage, f32plugin.h). The file server derives it from the client's SecureId,
@@ -854,9 +877,10 @@ static void BridgeWaitAny(void*)
 			}
 		}
 	User::WaitForAnyRequest();
+	SigTrace("took in wait", 0, 0);
 	CheckAsync();
 	}
-static void BridgeSignal(void*, int aCount) { RThread t; while (aCount-- > 0) t.RequestSignal(); }
+static void BridgeSignal(void*, int aCount) { SigTrace("bridge-signal", 0, aCount); RThread t; while (aCount-- > 0) t.RequestSignal(); }
 
 // a guest thread's timed wait: one request signal within aMicroseconds (true, taken) or a timeout (false). Each completion is one signal:
 // the timer's own is taken here either way (Cancel completes a pending timer)
@@ -868,7 +892,9 @@ static bool BridgeWaitAnyFor(void* aCtx, int aMicroseconds)
 	created = ETrue;
 	TRequestStatus st;
 	timer.After(st, aMicroseconds);
+	SigTrace("timed-wait armed", (TUint)&st, aMicroseconds);
 	BridgeWaitAny(aCtx);
+	SigTrace("timed-wait woke", (TUint)&st, st.Int());
 	if (st != KRequestPending) return false;		// (the signal taken was the timer's; a guest request that also completed is still counted)
 	timer.Cancel();
 	User::WaitForRequest(st);
@@ -881,6 +907,7 @@ static bool BridgePoll(void*)
 	if (RThread().RequestCount() <= 0)
 		return EFalse;
 	User::WaitForAnyRequest();
+	SigTrace("took in poll", 0, 0);
 	CheckAsync();
 	return ETrue;
 	}
@@ -1163,7 +1190,7 @@ static TInt MainL()
 		bridge->iObjType[i] = 0;
 		}
 	proteus::TIpcBridge ipc = { bridge, BridgeCreate, BridgeSend, BridgeOwns, BridgeClose, BridgeShare, BridgeWaitAny, BridgeSignal, BridgeKernel, BridgeWaitAnyFor, BridgeNowUs,
-		BridgeNativeExport, BridgePoll };
+		BridgeNativeExport, BridgePoll, BridgeSyncDone };
 	hle.iIpc = &ipc;
 	TBuf8<KMaxFileName + 1> exePath;
 	exePath.Copy(path);

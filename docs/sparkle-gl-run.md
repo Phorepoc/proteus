@@ -26,8 +26,7 @@ softpipe both run under TCG, a few frames in several minutes.
 
 ## Open
 
-- Sparkle is a landscape game (GL viewport 640x360) and the window is 360x640 portrait, so the picture is cropped and at
-  the bottom. A landscape screen mode (or an app-requested orientation change) is needed, not a GL change.
+- (done, see Landscape below) Sparkle is a landscape game (GL viewport 640x360): the PC image has a landscape screen mode now.
 - Speed.
 - P3's verdict is at the end of the 240 s wait; the screendumps (`--linger`, `--shot-at`) provide the display refresh
   Sparkle waits for under `-display none`.
@@ -50,12 +49,48 @@ threads (thread 1 `qtcore+0xe633c`, thread 2 `qtcore+0xe7578`, both created by t
 thread's active scheduler is not starved by another thread; the main thread itself does not return to it. Preemption cannot make
 that thread service its own scheduler; only a faster interpreter, or the load yielding (Qt's processEvents), can.
 
-**What is in the tree.** Time slicing is implemented (`CArmCpu::iOnSlice`, `Preempt` in proteusexec.cpp: native request completions
-taken without blocking through `TIpcBridge::iPoll` = `RThread::RequestCount`, timed waits expire, round robin to the next ready
-thread; the exclusive monitor of LDREX/STREX is real and is cleared by a thread switch), but `KSliceInstructions` is **0**: with
-slicing on, signals are credited between the threads at times the cooperative scheduler never reached, and Sparkle's Qt threads die of a
-stray signal (E32USER-CBase 46 at 84.7 s, QEventDispatcherSymbian::process 0 at 97.9 s guest time; cooperative: first at 358 s). The
-credit decision is `AttributeNative`: 30+ times a native signal arrives that no noted request explains (`native signal with no completed
-noted request` in the log) and is credited by guess. The cause is not found yet (not the guest-completed statuses: `CompleteFor` now
-forgets them; candidates are the native-side requests of the proteus process itself and Qt's RunIfReady, which handles a completed
-request without taking its signal). Next: log each signal's explanation (which noted status) before turning slicing on.
+**What is in the tree.** Time slicing (`CArmCpu::iOnSlice`, `Preempt` in proteusexec.cpp: native request completions taken without
+blocking through `TIpcBridge::iPoll` = `RThread::RequestCount`, timed waits expire, round robin to the next ready thread; the exclusive
+monitor of LDREX/STREX is real and is cleared by a thread switch) is **on** (`KSliceInstructions` = 1 << 17).
+
+## Stray signals: root cause and fix (2026-11-04)
+
+With slicing on, signals are credited between the threads at times the cooperative scheduler never reached, and Sparkle's Qt threads died
+of a stray signal (E32USER-CBase 46 at 84.7 s). `AttributeNative` credited 30+ native signals "by guess" (`native signal with no completed
+noted request`). The log now says, for every signal, which noted request explains it (`sig note` when a guest request goes native,
+`sig credit` when a signal is credited to it, `sig credit: owed`, and `PH: proteus sig:` for each native source in proteus.cpp), and the
+unexplained ones dump the whole noted table. Two causes, both of the bridge's own making:
+
+1. **Synchronous sends completed by the bridge** (`CompleteGuest`: a SessionSendSync, a connect, the file-server private-path
+   answers) wrote the guest's status and then called `RThread().RequestSignal()` on the *native* thread. The signal was anonymous: it was
+   matched with its status later, when the native count was next taken, and by then the guest thread had reused the same stack
+   `TRequestStatus` for its next call (one entry per status address in the noted table) -- two signals, one entry, one signal unexplained.
+   Now the bridge only reports the completion (`TIpcBridge::iSyncDone`) and the executive credits the sending thread at once
+   (`CompleteFor`); no native signal exists for it.
+2. **A status reused before its signal was credited.** Qt's `QEventDispatcherSymbian` runs a completed active object with
+   `CActiveScheduler::RunIfReady`, which does not take the request signal, and the object issues its next request on the same
+   `iStatus`. The earlier request's signal (an asynchronous window-server or CenRep send completing natively) is still owed. A new note
+   for a status that still has an open entry now marks that entry *owed* (`iReqDone`) and adds the new one beside it; an owed entry takes
+   the next signal first.
+
+Result (Sparkle, slicing on, 1 << 17): 0 unexplained signals in 360 s of guest time (was 30+ within the first 100 s); no CBase 46; P0-P3
+PASS (P3 verdict at 240 s, Sparkle still running at 300 s). Real kernel semantics are unchanged: the guest still sees one request
+signal per completion.
+
+## Speed (measured, QEMU TCG, the PC image)
+
+The interpreter runs **6.4-6.9 million ARM instructions per second** (64 M instructions per 9.3-10 s of wall time, steady from 64 M to
+1024 M; one QEMU at a time, no KVM). Sparkle's start-up up to the loading screen is more than 1 G instructions on the main thread (thread 0
+ran 1020 M of 1024 M at 311 s; the Qt threads 1 and 2 are idle: 0 and 3 M). Samples of the pc every 64 M instructions: euser's
+`__e32_atomic_add/cas_acq32` loops (Qt reference counts), `RFastLock::Wait`, `memset`/RHeap, dfpaeabi (soft float), qtcore/qtgui. A
+1 GHz ARM11 retires several hundred million instructions per second, so the same load takes a few seconds on the device: the main thread
+never starves its active scheduler there, and ViewSrv 11 does not arise. Slicing cannot help a thread that does not return to its own
+scheduler; the interpreter's speed is the lever: **next step = interpreter speed** (target 50+ MIPS: the load then fits the view server's
+20 s), starting from a real profile (perf on proteus.exe under the host, not pc samples), with the dispatch loop (decode cache, flag
+laziness), the memory access path (`Valid` + window scan), and euser's atomics (HLE them as one host operation) as candidates.
+
+## Landscape
+
+The PC image has a portrait mode (360x640) and a landscape one (640x360, rotated 90 degrees, software rotation in the OMAP screen driver).
+Sparkle asks for landscape (`SetOrientationL`) and gets mode 1 while it is on top (sgc log: `top wg 35 -> mode 1`), uncropped; the home screen
+returns to mode 0 when it leaves (`top wg 36 -> mode 0`).
