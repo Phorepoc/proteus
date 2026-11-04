@@ -212,3 +212,82 @@ pattern with corner marks, ramp bars, a frame and a diagonal). Checked: phelandt
 picture), the portrait home screen on VirtualBox (`docs/img/home-vbox-portrait-fixed.png`), all 17 apps of the regress list ALIVE in QEMU portrait.
 The 8- and 16-bit OMAP classes have the same flaw and are unused here (the display is 32 bits).
 Sparkle after the fix, VirtualBox: `docs/img/sparkle-vbox-pitch-fixed.png`.
+
+## Playable on VirtualBox (2026-11-04)
+
+Setup: the PC image (adaptation-pc 0298654, the pitch fix), VirtualBox 2 CPUs, 1 GB, VMSVGA, AC97, `SSM_TEST=proteus` ROM (so P0-P3 run and P3 starts the
+installed Sparkle), a C: with Sparkle installed (the SIS removed after the install). Input through the VirtualBox COM API (`PutMouseEventAbsolute` =
+mouse integration; `tools/phorepoc-x86/vbox_mouse.ps1` of the main repo). Screenshots (`VBoxManage controlvm screenshotpng`) are in `docs/img/sparkle-vbox-*.png`.
+
+**It plays.** Cold boot to the Start button takes about 3.5 minutes (4.8 G guest instructions), then: Start -> main menu (animated, particles) ->
+Play -> Play Quest -> Instructions -> OK -> the game (orbs run along the path, taps throw orbs, orbs match and burst, lives, "level failed", back to
+the menu, "About lives" dialog). Several sessions of 7-10 minutes of play with a tap every 5 s, no crash, no halt, no unemulated exec, no `-4`.
+Touch: panel pixel = game pixel in portrait (the game screen), and in the landscape screens (menus, dialogs: 640x360 drawn rotated on the 360x640 panel)
+the taps hit the right buttons too (Start, Play, Play Quest, OK, "OK" of About lives) -- WSERV maps pointer events to the screen mode, nothing in
+Proteus is involved. Note the game itself switches the screen mode: menus and dialogs are landscape, the level is portrait.
+
+### Display lights: the power management is the PC image's, Sparkle does not fight it
+
+SysAp's inactivity timer turns the lights off after ~30 s without input (`HandleInactiveEvent` -> `SetLightsOffL`), and the foreground app then loses focus
+(`Focus lost` -> `moveToBackground` -> `stopAnimating` -> `BackgroundStop`; the frame counter stops). A key press wakes the screen and Sparkle resumes
+(`moveToForeground`, `startAnimating`) -- both directions seen, `GLSTAT` count frozen 103 -> 103 for the idle minute. Sparkle never calls
+`User::ResetInactivityTime`: across all runs no `EExecResetInactivityTime` / `EExecUserInactivityTime` reached the executive (it would have halted the guest
+as "not emulated"). Both are now emulated by forwarding to the native kernel (`BridgeKernel` in proteus.cpp: `User::ResetInactivityTime()` and
+`User::InactivityTime()`; the inactivity time is the system's, so a game that resets it from its frame loop keeps the display on exactly as on a device).
+That path is **not exercised by Sparkle** (no ARM test program calls it either), so it is untested beyond compiling. For test runs the keep-alive is a
+Ctrl key press every 15 s (a modifier alone wakes the lights and does nothing to the app); the proper CenRep setting (display lights timeout, repository
+10200C8C key 6) would be a C: file change -- not needed.
+
+### Sound: end to end, three things were missing
+
+The MMF path is the A3F DevSound: the guest's ARM `mediaclientaudio` / `mmfdevsoundproxy` talk to the native `!MMFAudioServer`, whose DevSound session
+(a session handle handed back in a reply -- adopted already) runs `EMMFDevSoundProxyInitialize4` with **a message queue handle** in an IPC argument and later
+replies with **a chunk handle** (the shared buffer). Before: the queue was a guest-local object, the server's `RMsgQueue::Open(aMessage, 2)` answered
+KErrBadHandle (-8) ("native session handle fn 4 -> -8"), `SoundImp initialized` was logged but nothing played; with the queue fixed the next reply
+handed a chunk handle the guest then used with `RChunk::Base()` -> 0 -> `memcpy` write fault in `mediaclientaudiostream` (guest halted `write32`).
+Fixes (proteus.cpp, proteusexec.cpp):
+1. **Message queues are real kernel queues of the handler process.** `EExecMsgQueueCreate` (local and global) creates a native `RMsgQueueBase`; Send, Receive,
+   NotifySpaceAvailable / NotifyDataAvailable (noted for the signal accounting like timers), the Cancels and Size are the native calls on it. The handle
+   is a bridge object handle. A queue the embedder does not own (the host test has no native side) stays the old local emulation.
+2. **Handle arguments are translated.** `TIpcArgs` types an argument `EHandle`; the real kernel resolves that in the sender's table. `BridgeSend` replaces an
+   `EHandle` argument that is one of the guest's bridge object handles (the queue, a chunk opened by name) by the object's real handle in a copy of the
+   `TIpcArgs`. (Guest-local handles -- chunks, mutexes, semaphores of the emulation -- cannot be passed to a native server; not needed so far.)
+3. **A kernel object handed over in a reply is adopted at its first use as its type** (`AdoptObj`; sessions already were): a chunk (`EExecChunkBase/Size/MaxSize/
+   Bottom/Top` on a handle outside the guest's own ranges) is wrapped with `SetHandle`, the guest keeps the handle's value, and its memory becomes a guest
+   window (`proteus kernel: adopted chunk handle 6ac60019: window 70004000 + 3000`). Close finds it by value. Other types adopt the same way when one is needed.
+Result: the audio reaches the device. VirtualBox's own statistics (`VBoxManage debugvm <vm> statistics --pattern "/Devices/ichac97/Stream1/*"`): the AC97
+PCM-out stream is started and read by the device, `offRead` 8.9 MB (~46 s of 48 kHz stereo) after a minute of play, and a WasAPI output stream is created at
+the host. **Not verified by ear** (headless run, nobody listening): that the samples are the game's music and not silence. A person at the VM has to
+confirm it.
+
+### Frame rate and where the frame time goes
+
+`eglSwapBuffers` is counted in the guest GL trace (`proteusgl.cpp`): every 30 swaps a `GLSTAT` line gives the rate over the last interval and the split of one
+frame into native GL calls, the present (native `eglSwapBuffers`: symgl's bitmap copy + WSERV) and the rest (the interpreter + other native services).
+Each call is timed with the kernel fast counter, extended to 64 bits at every sample (it is 32 bits and wraps in seconds on this PC); the sums are scaled by the
+wall clock from the tick count (the HAL's counter frequency is not the PC's real rate; using it made GL "take" more than the frame). VirtualBox, 2 CPUs:
+
+| phase | fps | frame | native GL (softpipe) | present | rest = interpreter + services |
+|---|---|---|---|---|---|
+| loading screen, menus (first 30 lines) | 14.4 | 101 ms | 59.6 (59%) | 8.6 | 32.8 |
+| level, first minutes | 17.4 | 63 ms | 41.7 (66%) | 8.6 | 13.0 |
+| level / dialogs, later (43 lines) | 13.0 | 82 ms | 54.2 (66%) | 11.3 | 16.6 |
+
+So in the game two thirds of a frame is the native software rasteriser (Mesa softpipe: the PC image has no GPU path), the present is ~10 ms and the
+interpreter and all native services together ~13-17 ms (~20%). The interpreter is no longer the limit on VirtualBox; the next gain is the GL side (softpipe on
+one core: fewer / cheaper draws, or the llvmpipe-style JIT rasteriser, or SVGA3D in the VM). Frames per second are 13-17, the game is playable, not smooth.
+
+### Other findings
+
+- The `Duplicate` of sync-object handles and the fixed guest tables (chunks 64, threads 32, logons 8) were not hit in 10-minute sessions (no `no slot` / `no window slot`
+  lines); the adoption of non-chunk handle types is written for sessions and chunks only.
+- A fresh `docker run` that sits in `Created` (Docker Desktop hung on a bind mount) needed `docker rm` + a Docker Desktop restart; a bind-mounted disk image cannot be
+  used by QEMU (write lock) -- copy it into the container first.
+
+### Regression checks (same day)
+
+- **VirtualBox app regression** on the normal ROM built with the Proteus layer (`phe image rom -O prune=1 -O leave-trace=1`, `/w/proteus` in
+  `PHOREPOC_ADAPTATIONS`, blank C:, the 17 apps of the regress list started one by one by bootui, 20 s each): **17 / 17 ALIVE, no panic, portrait**
+  (`docs/img/regress-vbox-portrait-gsapp.png`). Native apps do not touch the handler; this shows the ROM with the new handler is unharmed.
+- **QEMU** (TCG, the same `SSM_TEST=proteus` ISO as the VirtualBox runs): **P0, P1, P2, P2b, P2c, P2d, P2f, P3 PASS** (440 s; the native queue
+  path runs there too: `EExecMsgQueueNotifyDataAvailable` on the native handle, signal credited).

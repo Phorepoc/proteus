@@ -122,6 +122,48 @@ static uint32_t GlRetPtr(CArmCpu& aCpu, const char* aName, uint32_t aPtr)
 	return aPtr ? GuestString(aCpu, aPtr) : 0;							// glGetString, eglQueryString
 }
 
+// where the time of a frame goes: the native GL calls, the native eglSwapBuffers (the present: symgl's bitmap copy + WSERV), and the rest
+// (the interpreter, the other native services). Each call is timed with the kernel's fast counter. That counter is 32 bits and wraps in seconds, so
+// it is extended to 64 bits at every sample (gaps between GL calls are far shorter than a wrap) and the log line scales the sums by the wall
+// time (the tick count): no counter frequency is needed (the HAL's figure is not the PC's actual counter rate).
+static uint32_t gSwaps, gLastTick, gLastSwaps, gPrevFc;
+static uint64_t gWallFc, gSwapFc, gGlFc, gLastWallFc, gLastSwapFc, gLastGlFc;
+static uint32_t Counter(CArmCpu& aCpu, THle& aHle, const char* aName)
+{
+	uint32_t r[4] = {0, 0, 0, 0};
+	if (aHle.iIpc && aHle.iIpc->iKernel) aHle.iIpc->iKernel(aHle.iIpc->iCtx, aName, r, aCpu);
+	return r[0];
+}
+static uint32_t Sample(CArmCpu& aCpu, THle& aHle)		// the counter now; the extended wall total moves with it
+{
+	const uint32_t fc = Counter(aCpu, aHle, "EFastExecFastCounter");
+	gWallFc += (uint32_t)(fc - gPrevFc);
+	gPrevFc = fc;
+	return fc;
+}
+static void Stats(CArmCpu& aCpu, THle& aHle)
+{
+	const uint32_t tick = Counter(aCpu, aHle, "EFastExecNTickCount");
+	const uint64_t dWall = gWallFc - gLastWallFc;
+	if (gLastTick && dWall)
+	{
+		const uint32_t dtMs = tick - gLastTick, dSw = gSwaps - gLastSwaps;
+		if (dtMs && dSw)
+		{
+			// tenths of a millisecond per frame
+			const uint64_t frT = (uint64_t)dtMs * 10 / dSw, fps10 = (uint64_t)dSw * 10000 / dtMs;
+			const uint64_t glT = frT * (gGlFc - gLastGlFc) / dWall, swT = frT * (gSwapFc - gLastSwapFc) / dWall;
+			const int64_t rest = (int64_t)frT - (int64_t)glT - (int64_t)swT;
+			char line[240];
+			snprintf(line, sizeof(line), "[proteus] GLSTAT frames %u: %u.%u fps over %u ms; per frame %u.%u ms = GL calls %u.%u + present %u.%u + rest (interpreter, services) %d.%u",
+				gSwaps, (unsigned)(fps10 / 10), (unsigned)(fps10 % 10), dtMs, (unsigned)(frT / 10), (unsigned)(frT % 10), (unsigned)(glT / 10), (unsigned)(glT % 10),
+				(unsigned)(swT / 10), (unsigned)(swT % 10), (int)(rest / 10), (unsigned)((rest < 0 ? -rest : rest) % 10));
+			Say(aHle, "%s", line);
+		}
+	}
+	gLastTick = tick; gLastSwaps = gSwaps; gLastSwapFc = gSwapFc; gLastGlFc = gGlFc; gLastWallFc = gWallFc;
+}
+
 static bool Call(CArmCpu& aCpu, THle& aHle, uint32_t aIndex)
 {
 	const TGlThunk& t = KGlThunks[aIndex];
@@ -142,7 +184,12 @@ static bool Call(CArmCpu& aCpu, THle& aHle, uint32_t aIndex)
 	// the trace: the first calls of each function (arguments, result), then every 60th eglSwapBuffers; eglCreate* always
 	static uint32_t seen[KThunkCount];
 	const uint32_t a0 = aCpu.R[0], a1 = aCpu.R[1], a2 = aCpu.R[2], a3 = aCpu.R[3];
+	const bool swap = !strncmp(t.iName, "eglSwap", 7);
+	const uint32_t fc0 = Sample(aCpu, aHle);
 	t.iCall(aCpu, gNative[aIndex], t.iName);
+	const uint32_t fc1 = Sample(aCpu, aHle);
+	(swap ? gSwapFc : gGlFc) += (uint32_t)(fc1 - fc0);
+	if (swap && ++gSwaps % 30 == 0) Stats(aCpu, aHle);
 	const uint32_t n = ++seen[aIndex];
 	if (n <= 2 || (!strncmp(t.iName, "eglSwap", 7) && n % 60 == 0) || !strncmp(t.iName, "eglCreate", 9))
 	{

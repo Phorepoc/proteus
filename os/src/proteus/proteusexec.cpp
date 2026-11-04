@@ -710,6 +710,14 @@ static bool ThreadExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
 		}
 		return true;
 	}
+	// ---- message queues (RMsgQueue): a real kernel queue of this process (the embedder's iKernel), because a guest hands the queue to a native
+	// server in an IPC argument (the A3F DevSound proxy does) and the server writes its events into it; a queue the embedder does not own -- the
+	// host tests have no native side -- stays local to the emulation below ----
+	if (!strncmp(name, "EExecMsgQueue", 13) && h.iIpc && h.iIpc->iKernel && (!strcmp(name, "EExecMsgQueueCreate") || SyncIndex(e, r[0], 4) < 0))
+	{
+		if (!strncmp(name + 13, "Notify", 6)) NoteRequest(h, name, r[1]);		// (the native queue completes the status and signals this thread)
+		if (h.iIpc->iKernel(h.iIpc->iCtx, name, r, cpu)) return true;
+	}
 	// ---- message queues (RMsgQueue): local to the process; a named one is only a name for the same thing here ----
 	if (!strcmp(name, "EExecMsgQueueCreate"))		// (name or NULL, slots, message length, owner type)
 	{
@@ -968,7 +976,7 @@ static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 			|| !strcmp(name, "EExecChangeNotifierLogon") || !strcmp(name, "EExecProcessLogon"))
 			NoteRequest(h, name, r[1]);
 		if (h.iIpc && h.iIpc->iKernel && (!strncmp(name, "EExecProperty", 13) || !strcmp(name, "EExecOpenObject") || !strcmp(name, "EExecObjectNext") || !strcmp(name, "EExecPlatSecDiagnostic") || !strncmp(name, "EExecChunk", 10)
-			|| !strncmp(name, "EExecMutex", 10) || !strncmp(name, "EExecSemaphore", 14) || !strncmp(name, "EExecChangeNotifier", 19) || !strncmp(name, "EExecTimer", 10) || !strncmp(name, "EExecTimeNow", 12) || !strcmp(name, "EExecTickCount") || !strcmp(name, "EExecHandleClose") || !strcmp(name, "EExecHandleCount")
+			|| !strncmp(name, "EExecMutex", 10) || !strncmp(name, "EExecSemaphore", 14) || !strncmp(name, "EExecChangeNotifier", 19) || !strcmp(name, "EExecResetInactivityTime") || !strcmp(name, "EExecUserInactivityTime") || !strncmp(name, "EExecTimer", 10) || !strncmp(name, "EExecTimeNow", 12) || !strcmp(name, "EExecTickCount") || !strcmp(name, "EExecHandleClose") || !strcmp(name, "EExecHandleCount")
 			|| !strcmp(name, "EExecProcessDataParameterLength") || !strcmp(name, "EExecProcessGetDataParameter") || !strncmp(name, "EExecProcessCommandLine", 23))
 			&& h.iIpc->iKernel(h.iIpc->iCtx, name, r, cpu))
 			return true;

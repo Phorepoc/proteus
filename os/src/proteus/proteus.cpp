@@ -9,6 +9,7 @@
 #include <e32debug.h>
 #include <f32file.h>
 #include <e32property.h>
+#include <e32msgqueue.h>
 #include <w32std.h>
 #include <e32rom.h>
 #include <e32svr.h>
@@ -161,6 +162,7 @@ struct TBridge
 	TBool iPropUsed[KMaxBridge];
 	RChunk iObj[KMaxBridge];					// P2: kernel objects opened by name (chunk / mutex / semaphore: all an RHandleBase), KObjHandle0 + i
 	TInt iObjType[KMaxBridge];					// TObjectType, 0 = free slot (EThread is never opened here)
+	TUint32 iObjNative[KMaxBridge];				// a kernel object a server handed the guest in a reply (RMessage2::Complete(handle)): this process's handle, the guest keeps using that value; 0 = opened/created here (KObjHandle0 + i)
 	// the guest's file-server identity: \private\<its SecureId>\ (sessions start there, and the private-path calls answer it --
 	// BridgeFsPrivate; the same as the server's own answers when the loader gave this process the program's SecureId)
 	TUint32 iSid;
@@ -248,7 +250,12 @@ template <class T> static TInt FindNext(const TDesC& aMatch, TFindHandle& aCurso
 static TInt ObjIndex(TBridge& b, uint32_t aHandle)
 	{
 	const TInt i = (TInt)(aHandle & 0x7FFF);
-	return (aHandle & 0xFFFF0000u) == KObjHandle0 && i < KMaxBridge && b.iObjType[i] ? i : -1;
+	if ((aHandle & 0xFFFF0000u) == KObjHandle0 && i < KMaxBridge && b.iObjType[i])
+		return i;
+	for (TInt k = 0; k < KMaxBridge; ++k)		// (adopted kernel handles keep their own value)
+		if (b.iObjType[k] && b.iObjNative[k] == aHandle)
+			return k;
+	return -1;
 	}
 enum { KPropHandle0 = 0x00E10000 };
 
@@ -358,6 +365,29 @@ static bool BridgeProperty(void* aCtx, const char* aExec, uint32_t* r);
 // the guest program's command line: what its creator passed (the loader made this process's "<program> <command line>", MainL splits it)
 static TBuf<KMaxFileName> gGuestCmd;
 
+// a kernel handle the guest was given by a server's reply (RMessage2::Complete(handle) duplicates the server's object into this process): the
+// guest uses it with the calls of the object's type (a chunk: Base, Size, ...). Taken over at its first use as that type; the guest keeps the
+// handle's own value, and a chunk's memory becomes reachable for it (a window), as for a chunk opened by name.
+static TInt AdoptObj(TBridge& b, proteus::CArmCpu& aCpu, uint32_t aHandle, TInt aType)
+	{
+	for (TInt i = 0; i < KMaxBridge; ++i)
+		if (!b.iObjType[i])
+			{
+			b.iObj[i].SetHandle((TInt)aHandle);
+			b.iObjType[i] = aType;
+			b.iObjNative[i] = aHandle;
+			if (aType == 2)		// TObjectType (u32std.h): 2 EChunk
+				{
+				RChunk& c = b.iObj[i];
+				const TBool ok = aCpu.AddWindow((uint32_t)c.Base(), (uint32_t)c.MaxSize());
+				RDebug::Printf("PH: proteus kernel: adopted chunk handle %x: window %x + %x %s", aHandle, (TUint)c.Base(), c.MaxSize(), ok ? "" : "(no window slot!)");
+				}
+			return i;
+			}
+	RDebug::Printf("PH: proteus kernel: no slot to adopt handle %x", aHandle);
+	return -1;
+	}
+
 // kernel objects for the guest: P&S, OpenObject by name, and the calls on the opened chunks / mutexes / semaphores (native, blocking)
 static bool BridgeKernel(void* aCtx, const char* aExec, uint32_t* r, proteus::CArmCpu& aCpu)
 	{
@@ -379,6 +409,10 @@ static bool BridgeKernel(void* aCtx, const char* aExec, uint32_t* r, proteus::CA
 		d.Copy(TPtrC8((const TUint8*)gGuestCmd.Ptr(), Min(gGuestCmd.Size(), d.MaxLength())));
 		return true;
 		}
+	// user activity: the inactivity time is the system's (the lights, screen saver and auto-lock all read it), so a game that calls
+	// User::ResetInactivityTime from its frame loop keeps the display on exactly as it does on the device
+	if (n == _L8("EExecResetInactivityTime")) { User::ResetInactivityTime(); return true; }
+	if (n == _L8("EExecUserInactivityTime")) { r[0] = (uint32_t)User::InactivityTime().Int(); return true; }
 	if (n.Left(13) == _L8("EExecProperty"))
 		return BridgeProperty(aCtx, aExec, r);
 	if (n == _L8("EFastExecGetGlobalUserData"))
@@ -428,6 +462,20 @@ static bool BridgeKernel(void* aCtx, const char* aExec, uint32_t* r, proteus::CA
 		const TInt e = reinterpret_cast<RTimer&>(b.iObj[slot]).CreateLocal();
 		if (e != KErrNone) { r[0] = (uint32_t)e; return true; }
 		b.iObjType[slot] = 6;
+		r[0] = KObjHandle0 + slot;
+		return true;
+		}
+	if (n == _L8("EExecMsgQueueCreate"))		// (const TDesC* name or NULL, slots, message length, owner type): a native RMsgQueue; type 14 = EMsgQueue
+		{
+		TInt slot = -1;
+		for (TInt i = 0; i < KMaxBridge && slot < 0; ++i) if (!b.iObjType[i]) slot = i;
+		if (slot < 0) { r[0] = (uint32_t)KErrNoMemory; return true; }
+		if ((TInt)r[1] <= 0 || (TInt)r[2] < 4 || (r[2] & 3) || r[2] > 256) { r[0] = (uint32_t)KErrArgument; return true; }		// (the kernel panics: KERN-EXEC 49 / 48)
+		RMsgQueueBase& q = reinterpret_cast<RMsgQueueBase&>(b.iObj[slot]);
+		const TOwnerType owner = (TOwnerType)r[3];
+		const TInt e = r[0] ? q.CreateGlobal(*(const TDesC*)r[0], (TInt)r[1], (TInt)r[2], owner) : q.CreateLocal((TInt)r[1], (TInt)r[2], owner);
+		if (e != KErrNone) { r[0] = (uint32_t)e; return true; }
+		b.iObjType[slot] = 14;
 		r[0] = KObjHandle0 + slot;
 		return true;
 		}
@@ -503,11 +551,14 @@ static bool BridgeKernel(void* aCtx, const char* aExec, uint32_t* r, proteus::CA
 		r[0] = KObjHandle0 + slot;
 		return true;
 		}
+	if ((n == _L8("EExecChunkBase") || n == _L8("EExecChunkSize") || n == _L8("EExecChunkMaxSize") || n == _L8("EExecChunkBottom") || n == _L8("EExecChunkTop"))
+		&& ObjIndex(b, r[0]) < 0 && NativeLooking(r[0]))		// a chunk a server's reply handed over
+		AdoptObj(b, aCpu, r[0], 2);
 	const TInt i = ObjIndex(b, r[0]);
 	if (i < 0)
 		return false;
 	RChunk& c = b.iObj[i];
-	if (n == _L8("EExecHandleClose")) { c.Close(); b.iObjType[i] = 0; r[0] = KErrNone; return true; }
+	if (n == _L8("EExecHandleClose")) { c.Close(); b.iObjType[i] = 0; b.iObjNative[i] = 0; r[0] = KErrNone; return true; }
 	// timers: the guest's TRequestStatus is this process's memory; the native kernel completes it and signals this thread
 	RTimer& tm = reinterpret_cast<RTimer&>(c);
 	if (n == _L8("EExecTimerAfter")) { tm.After(*(TRequestStatus*)r[1], TTimeIntervalMicroSeconds32((TInt)r[2])); return true; }
@@ -529,6 +580,17 @@ static bool BridgeKernel(void* aCtx, const char* aExec, uint32_t* r, proteus::CA
 	if (n == _L8("EExecChunkMaxSize")) { r[0] = (uint32_t)c.MaxSize(); return true; }
 	if (n == _L8("EExecChunkBottom")) { r[0] = (uint32_t)c.Bottom(); return true; }
 	if (n == _L8("EExecChunkTop")) { r[0] = (uint32_t)c.Top(); return true; }
+	if (b.iObjType[i] == 14)		// a message queue: the calls are the kernel's own, on this process's queue (guest pointers are this process's memory)
+		{
+		RMsgQueueBase& q = reinterpret_cast<RMsgQueueBase&>(c);
+		if (n == _L8("EExecMsgQueueSend")) { r[0] = (uint32_t)q.Send((const TAny*)r[1], (TInt)r[2]); return true; }
+		if (n == _L8("EExecMsgQueueReceive")) { r[0] = (uint32_t)q.Receive((TAny*)r[1], (TInt)r[2]); return true; }
+		if (n == _L8("EExecMsgQueueNotifySpaceAvailable")) { q.NotifySpaceAvailable(*(TRequestStatus*)r[1]); return true; }
+		if (n == _L8("EExecMsgQueueNotifyDataAvailable")) { q.NotifyDataAvailable(*(TRequestStatus*)r[1]); return true; }
+		if (n == _L8("EExecMsgQueueCancelSpaceAvailable")) { q.CancelSpaceAvailable(); return true; }
+		if (n == _L8("EExecMsgQueueCancelDataAvailable")) { q.CancelDataAvailable(); return true; }
+		if (n == _L8("EExecMsgQueueSize")) { r[0] = (uint32_t)q.MessageSize(); return true; }
+		}
 	if (n == _L8("EExecMutexWait")) { reinterpret_cast<RMutex&>(c).Wait(); r[0] = KErrNone; return true; }
 	if (n == _L8("EExecMutexSignal")) { reinterpret_cast<RMutex&>(c).Signal(); return true; }
 	if (n == _L8("EExecMutexIsHeld")) { r[0] = reinterpret_cast<RMutex&>(c).IsHeld(); return true; }
@@ -651,6 +713,14 @@ static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArg
 	TIpcArgs args;
 	if (aArgs)
 		Mem::Copy(&args, (const TAny*)aArgs, sizeof(TIpcArgs));		// iArgs[4] + iFlags: the guest's own descriptors, in this process
+	// a handle argument (TIpcArgs::EHandle) is resolved by the kernel in the sender's handle table: a guest's handle to a kernel object this
+	// handler holds for it (a message queue, a chunk opened by name) means the object's real handle here
+	for (TInt n = 0; aArgs && n < 4; ++n)
+		if (((args.iFlags >> (3 * n)) & 7) == TIpcArgs::EHandle)
+			{
+			const TInt oi = ObjIndex(b, args.iArgs[n]);
+			if (oi >= 0) args.iArgs[n] = b.iObj[oi].Handle();
+			}
 	// window-server trace (the first 120 messages): function, and for a command buffer (a TDesC8 in arg 0) its size and first opcodes
 	// (each command: TUint16 opcode, TInt16 length, [TInt32 handle if opcode bit 15], data)
 	static TInt wsLines = 0;
@@ -1188,6 +1258,7 @@ static TInt MainL()
 		bridge->iPathSet[i] = EFalse;
 		bridge->iUsed[i] = bridge->iConnected[i] = bridge->iPropUsed[i] = EFalse;
 		bridge->iObjType[i] = 0;
+		bridge->iObjNative[i] = 0;
 		}
 	proteus::TIpcBridge ipc = { bridge, BridgeCreate, BridgeSend, BridgeOwns, BridgeClose, BridgeShare, BridgeWaitAny, BridgeSignal, BridgeKernel, BridgeWaitAnyFor, BridgeNowUs,
 		BridgeNativeExport, BridgePoll, BridgeSyncDone };
