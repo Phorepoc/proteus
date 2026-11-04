@@ -17,8 +17,11 @@ enum { KTrapBase = 0xF0000000u, KTrapEnd = 0xF8000000u, KReturnToHost = 0xF80000
 
 enum THalt { ERunning = 0, EReturned, EExited, EFault, EUndefined, EThumb, EStepLimit, ESvcUnhandled, EHleStop };
 
+struct FastCore;
+
 class CArmCpu
 {
+	friend struct FastCore;
 public:
 	CArmCpu();
 	uint32_t R[16];

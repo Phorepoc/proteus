@@ -1014,25 +1014,6 @@ void CArmCpu::VfpOp(uint32_t ins, uint32_t pc)
 		VfpUndefined(pc, ins);
 	}
 }
+}
 
-void CArmCpu::Run(uint64_t aMaxSteps)
-{
-	const uint64_t start = iSteps;
-	while (iHalt == ERunning)
-	{
-		Step();
-		if (iOnProgress && !(iSteps & ((1u << 26) - 1))) iOnProgress(*this, iBpCtx);
-		if (iSliceSteps && iSteps >= iNextSlice)
-		{
-			iNextSlice = iSteps + iSliceSteps;
-			if (iOnSlice) iOnSlice(*this, iBpCtx);
-			if (iHalt != ERunning) break;
-		}
-		if (iSteps - start >= aMaxSteps)
-		{
-			Halt(EStepLimit);
-			break;
-		}
-	}
-}
-}
+#include "armfast.inc"
