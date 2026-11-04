@@ -176,3 +176,7 @@ the emulated ATA disk loading Sparkle PNGs.
 **Open (speed).** QEMU TCG: a block cache / JIT (see above). VirtualBox: nothing in the interpreter; 150-200 MIPS leaves a Sparkle start well
 inside the view server limits. Sampling the guest with the QEMU monitor (`info registers -a` in a loop) is cheap and needs no instrumentation
 in the guest; it only shows kernel idle when the interesting thread is blocked, so take the samples inside an interpretive window.
+
+Final build on QEMU (P0-P3 PASS): with `AfterHighRes` working Sparkle sleeps and polls through SVCs (`svc=` 118 K per 64 M instructions after the
+load), so the QEMU rate in that phase is ~10 MIPS (64 M per 6-8 s) and 1.47 G instructions at 357 s; the 15-17 MIPS figures above are the
+interpretive phases before it.
