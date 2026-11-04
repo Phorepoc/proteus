@@ -293,6 +293,7 @@ one core: fewer / cheaper draws, or the llvmpipe-style JIT rasteriser, or SVGA3D
   path runs there too: `EExecMsgQueueNotifyDataAvailable` on the native handle, signal credited).
 
 ### Music missing: not the mixer, not an underrun (2026-11-04, audio A0 measurement)
+**Resolved the same day: the next section (the MMF controller hosted natively). Point 3 below named the cause; the fix is not ARM twins of the chain.**
 
 Symptom: effects play, Sparkle's music (MP3 files, `music/main-theme`, ...) is nearly absent. Measured on the PC image in VirtualBox (AC97 via the
 null audio driver with VirtualBox's own WAV capture, `VBoxInternal2/Audio/Debug/Enabled`), with the audio trace switches on (`PHOREPOC_AUDIO_A0`, and the
@@ -314,3 +315,79 @@ mixer's new one-line-a-second summary, `PHMIX_TRACE`).
    (turnaround completion -> next write: median 28-38 ms, p90 110-220 ms, in the traced run). A native GL call that takes long now ends the slice, so the scheduler polls the kernel
    and runs the woken thread at once; wake-up latency is counted per thread (`wakeN=count/avg us/max us/over 10 ms` in the progress line): thread 2 20120 wakes, avg 47 us,
    28 over 10 ms; the stream then carries ~29 KB/s on average. Guest thread priorities are still not honoured (`EExecThreadSetPriority` is logged now, `[proteus] ... priority`).
+
+### Music: the MMF controller runs natively, behind its own private server (2026-11-04)
+
+Decision (user): no ARM copy of the playback chain (slow interpreted decoders, duplicate binaries). The MMF architecture has a boundary of its own for this, and
+Proteus uses it: the **controller thread and the session to it**. Everything below was read from the 2010 source
+(`oss.FCL.sf.os.mmaudio/mmlibs/mmfw/src/ControllerFramework/MMFControllerFramework.cpp`, `mmfcontrollerserver.cpp`, `.../Client/Utility/mmfclientutility.cpp`) and
+`kernelhwsrv/kernel/eka/euser/us_ksvr.cpp`.
+
+**The protocol (the client's side, all in the client's process).** `CMdaAudioPlayerUtility` (and the recorder, the converter, `CVideoPlayerUtility`, the video recorder:
+all five clients in `Client/Audio` and `Client/Video` go through `CMMFFindAndOpenController` -> `RMMFController::Open` -> `RMMFControllerProxy::LoadController`) does:
+1. `CLogonMonitor::NewL` (an `RServer2` member, handle 0), then `DoCreateSubThread`: `RThread::Create(KNullDesC, &CMMFControllerProxyServer::StartThread, stack, ..., &params)` with
+   `params = { RServer2* iServer; TBool iUsingSharedHeap }`, `Rendezvous(status)`, `Logon` (the monitor), `SetPriority`, `Resume`, `User::WaitForRequest(rendezvous)`.
+   `StartThread` renames the thread `MMFControllerProxyServer-<id>`, creates the server (`CMmfIpcServer`, `EGlobalSharableSessions`), writes its handle into `*params->iServer`
+   (`CMMFControllerProxyServer::ConstructL`), rendezvous.
+2. `RSessionBase::CreateSession(RServer2, TVersion(7,1,1), slots)` = `Exec::SessionCreateFromHandle(server handle, ...)` + the EConnect message.
+3. `SendSync(destination, EMMFControllerProxyLoadControllerPluginByUid (0), TMMFUidPckg, KNullDesC8)`: the controller plug-in (ECOM) is created **inside that thread**.
+4. From then on messages only: `AddDataSource` / `Prime` / `Play` / `GetPosition` ... (function numbers of `EMMFController*`, destination = `TMMFMessageDestination` pckg in arg 0),
+   `ReceiveEvents` (an async request the controller completes when it has an event: callbacks are IPC completions, nothing calls back into the client).
+5. `Close`: close the session (the server shuts down), `Logon` on the thread, wait for its exit (20 s, then Kill).
+(`LoadControllerInSecureDRMProcess` -- protected content, a client without DRM -- already is out-of-process IPC to `mmfdrmpluginserver`; it needs nothing.)
+
+**What Proteus does** (`proteus.cpp` "MMF controller threads", `proteusexec.cpp`, `proteusrt.h` `TIpcBridge::iHost*`):
+- `EExecThreadCreate` whose entry function lies in the guest's `mmfcontrollerframework.dll` is **claimed by the bridge** (`iHostThread`): a *natively hosted thread*, never scheduled,
+  never ARM code. (`StartThread` is not exported, so the module of the entry is the key; `mmfcontrollerframework` creates no other thread.)
+- Its first `Resume` (`iHostStart`) starts a native **helper thread** (own heap, cleanup stack, active scheduler) and writes a server handle (`0xE5xxxx`) into the guest's `RServer2`;
+  the rendezvous logons complete (the executive, as the thread's own `Rendezvous` would).
+- `EExecSessionCreateFromHandle` (new) on that handle makes a bridge session of the controller; its EConnect completes at once.
+- The first message (function 0, the UID in arg 1) is handed to the helper, which calls the **native** `RMMFControllerProxy::LoadController(uid, shared)` -- the native
+  mmfcontrollerframework creates the native controller thread, loads the native ECOM plug-in (MP3 controller, codec wrapper, HwDevice, CAF's f32agent) -- then `ShareAuto()` and
+  completes the guest's `TRequestStatus` through `RThread::RequestComplete` on the main thread (a native request like any server's: the executive credits the signal).
+  The helper owns the proxy, so the logon monitor's signals never reach the guest's request accounting.
+- Every later message goes through the ordinary bridge to the proxy's own session handle, descriptors in guest memory as they are (same layout, same address space);
+  `ReceiveEvents` is completed natively into the guest's status. Close of the session: the helper closes the proxy (the native `Close` waits for the controller thread),
+  the guest thread ends (`iHostExit`), its logons complete with the exit reason, and its slot and stack are reused by the next controller (`KMaxThreads` is 32).
+- The controller thread itself is found after the load (`*::MMFControllerProxyServer-<hex id>` of this process, opened by the id in the name) so the guest's `Kill` of it and its
+  death (a panic) reach the guest: `iHostExit` polls it; `RThread::Kill` of the hosted thread kills it.
+- The client ARM libraries stay what they are: `mediaclientaudio`, `mediaclientutility`, `mmfcontrollerframework` (client half), `caf`. **Two small CAF plug-ins are the exception and
+  must be ARM**: `f32agent.dll` and `f32agentui.dll`. CAF's agent is loaded *by the client*, in the client's process, by design (`CMMFUtilityFileInfo`,
+  `CMMFileSourceSink::EvaluateIntentL`, `UseSecureDRMProcessL` call `CData` / `CContent` before any controller exists); there is no server to move them behind. Both are built from the 2010 source
+  (`phe component build -arch arm`) and staged with `proteus_closure.py --extra f32agent.dll,f32agentui.dll`; they only read the file through RFile and are not part of the playback cost
+  (no decoder, no controller, no HwDevice runs as ARM).
+- The controller runs in the handler process, so it has the guest's **capabilities** (the loader gives the handler the program's: an app with none cannot play a file out of
+  another app's `\private\<sid>\`; its own private directory and `\Data` work).
+
+**Test program**: `os/src/proteusmmf` (ARM EXE; `phe component build -arch arm proteusmmf`): `CMdaAudioPlayerUtility::NewFilePlayerL`, volume 1/4, `Play`, `GetPosition` every
+second, `Stop`, close, a second file. Staged as `c:\sys\bin\proteusmmf.exe` + `c:\sisapp.txt` and the MP3s in its own private directory (P3 reports FAIL for it: it is not a GUI app,
+there is no window group; the log lines are the result).
+
+**Results** (VirtualBox 2 CPUs, the PC image, `SSM_TEST=proteus` ROM, AC97 on VirtualBox's debug WAV capture, `PHMIX_TRACE` through `X32_DEFS=mdasoundadapter:PHMIX_TRACE`):
+- `proteusmmf`: both tracks open (`init complete 0`, duration 65848 ms / 59004 ms), play (`GetPosition` follows the clock, 1 s per second), stop, close; the second open reuses the
+  guest thread slot (`thread 1` twice); the mixer shows one stereo 22050 Hz stream, peak 8000-25000, underflow 0 after the first second. Every message of the protocol above (function 0
+  load, 15 / 1 / 11 / 5 / 10 / 6 / 9 / 8, async `ReceiveEvents` = 1) crossed the bridge; `async fn 1 completed -13` at close is the pending `ReceiveEvents` ending with the server.
+- Sparkle: `Switching the music to 'music/main-theme'` now gives `guest thread 3 is hosted natively`, `native LoadController -> 0 (controller thread MMFControllerProxyServer-402)`, then the
+  controller's messages and `RMdaDevSound ... EPlaying`: the controller opens its own DevSound stream. Level music and menu music switch controllers (close, load) without a stall; four loads
+  in one session, every one found its controller thread, closed with `type 0 reason 0`, and the thread slot came back.
+  Mixer, one-second summaries, **217 consecutive seconds of play in a level** (a tap every 5 s): **peak never 0** (min 11927, max 30427), both stream formats present
+  (`fmt 22050/1` = Sparkle's own effects stream, 124 s, `fmt 22050/2` = the controller's stereo stream, 93 s: the second stream), 245 underflowed quanta in all (1.1 a second, 112 of the 217
+  seconds had at least one; the previous measurement of the effects stream alone was 13 a second in silence). Capture: `scratchpad/shots/sparkle-music.wav` of the session (48 kHz stereo, 652 s: loading tune,
+  main theme, map tune, game tunes, with the effects); screenshot of the level it was taken in: `docs/img/sparkle-vbox-music-level.png`.
+- P0, P1, P2, P2b, P2c, P2d, P2f, **P3 PASS** (`Sparkle.exe` running after 240 s with a window group) on the same ISO; Sparkle's effects stream still plays (mono lines above).
+
+**Limits, stated** (nothing is stubbed; these are properties of the design or open work):
+- **A controller message is a synchronous native call**, as every bridged message is (a `SendSync` blocks the one native thread the guest runs on). `Prime` / `AddDataSource` take as long as the native
+  controller takes (file open, first frames: tens of ms); the load itself runs on the helper and does not block the guest. Underflow at that moment is the effects stream's.
+- **A controller thread that dies by itself** (a panic) reaches the guest when the executive next sweeps (`Preempt`, a slice, or a handle close); while every guest thread is blocked
+  in `WaitForAnyRequest` nothing sweeps, and its `ReceiveEvents` (completed by the kernel with `KErrServerTerminated`) is what wakes the client.
+- **Guest thread priorities** are still not applied, to the hosted threads either: the native controller keeps `EPriorityNormal` (the framework's default, `KDefaultMMFControllerThreadPriority`),
+  the guest's `RMMFControllerProxy::SetThreadPriority` is accepted and has no effect.
+- **Message arguments that carry handles** are not translated beyond what `BridgeSend` does for `EHandle` (queues, chunks opened by name). An `RFile` handed to the controller
+  (`OpenFileL(RFile)`, `TMMFFileHandleParams`: the file server and file handles go as plain integers) would name guest-side handles; Sparkle and `proteusmmf` open by file name. Opening by `RFile`
+  needs those two handles resolved to the native ones (`EHandle` arguments are; plain integers cannot be told apart) -- the next step if an app needs it.
+- **Video**: `CVideoPlayerUtility` / the video recorder use exactly this path (same `CMMFFindAndOpenController`), so their controller session is bridged the same way; the PC image has no video
+  controller plug-in, and the window / graphics-surface handles a video controller takes would meet the same handle limit. Not run (no app on hand, no controller to load).
+  The audio recorder and the converter are the same code as the player; the tone player (`CMdaAudioToneUtility`) opens its controller through `RMMFController` too. None was run.
+- A guest thread slot of a *non*-hosted dead thread is still never reused (`KMaxThreads` 32): only the hosted ones are, since the guest closes their handles with the proxy.
+- The two CAF plug-ins above are the only ARM files added; any MMF app's closure needs them (`proteus_closure.py --extra f32agent.dll,f32agentui.dll`).
