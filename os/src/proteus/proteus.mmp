@@ -16,4 +16,4 @@ MW_LAYER_SYSTEMINCLUDE_SYMBIAN
 USERINCLUDE		.
 SOURCEPATH		.
 SOURCE			proteus.cpp armcpu.cpp thumb.cpp proteusrt.cpp e32decomp.cpp proteusexec.cpp proteusgl.cpp
-LIBRARY			euser.lib efsrv.lib libc.lib libm.lib ws32.lib apparc.lib
+LIBRARY			euser.lib efsrv.lib libc.lib libm.lib ws32.lib apparc.lib mmfcontrollerframework.lib

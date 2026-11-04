@@ -37,6 +37,7 @@ COMPONENTS = {
                        **{"def": os.path.join(OS_ROOT, "src/proteusdll/proteusdll.def")}),
     "proteusdllexe": dict(mmp=os.path.join(OS_ROOT, "src/proteusdllexe/proteusdllexe.mmp"), test=True),
     "proteusfs": dict(mmp=os.path.join(OS_ROOT, "src/proteusfs/proteusfs.mmp"), test=True),
+    "proteusmmf": dict(mmp=os.path.join(OS_ROOT, "src/proteusmmf/proteusmmf.mmp"), test=True),
     "proteustrap": dict(mmp=os.path.join(OS_ROOT, "src/proteustrap/proteustrap.mmp"), test=True),
     "proteusheap": dict(mmp=os.path.join(OS_ROOT, "src/proteusheap/proteusheap.mmp"), test=True),
 }

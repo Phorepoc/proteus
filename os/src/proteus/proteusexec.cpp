@@ -515,6 +515,8 @@ static void BlockCurrent(CArmCpu& cpu, THle& h, int aState, int aObj, uint64_t a
 // native server's reply must reach its thread while another one runs -- the main thread's active scheduler answers the view server in time.
 // So: native request completions that have arrived are credited (never waiting for one), timed waits that ran out expire, and when
 // another thread is ready the running one goes to the back of the line (the running thread stays EThreadReady).
+static void HostedSweep(CArmCpu& cpu, THle& h);
+
 void Preempt(CArmCpu& cpu, THle& h)
 {
 	TExecState& e = h.iExec;
@@ -522,6 +524,7 @@ void Preempt(CArmCpu& cpu, THle& h)
 	if (!e.iThread || e.iThreadCount < 1) return;
 	if (h.iIpc && h.iIpc->iPoll)
 		for (int n = 0; n < KMaxReqs && h.iIpc->iPoll(h.iIpc->iCtx); ++n) AttributeNative(cpu, h);
+	HostedSweep(cpu, h);
 	uint64_t now = 0;
 	for (int i = 0; i < e.iThreadCount; ++i)
 	{
@@ -588,8 +591,14 @@ static int CreateThread(CArmCpu& cpu, THle& h, uint32_t aInfo)
 	// stack words upward from sp)
 	const uint32_t total = cpu.Read32(aInfo + 44), stack = ((cpu.Read32(aInfo + 28) + 0xFFF) & ~0xFFFu) + 0x1000;
 	if (total < 48 || total > KMaxThreadCreateInfo || (total & 7) || stack < 2 * KMaxThreadCreateInfo) return KErrArgument;
-	if (e.iThreadCount >= KMaxThreads) return KErrNoMemory;
+	// the slot of a dead natively hosted thread (an MMF controller thread: one per played file, the guest closed its handle when its proxy closed)
+	// is reused with its stack; other dead threads keep theirs (a stale handle to them still answers ExitType)
+	int reuse = -1;
+	for (int i = 1; i < e.iThreadCount && reuse < 0; ++i)
+		if (e.iThread[i].iHosted && e.iThread[i].iState == EThreadDead && e.iThread[i].iStackFree && e.iChunkMax[e.iThread[i].iStackChunk] >= stack) reuse = i;
+	if (reuse < 0 && e.iThreadCount >= KMaxThreads) return KErrNoMemory;
 	int chunk = -1;
+	if (reuse >= 0) { chunk = e.iThread[reuse].iStackChunk; e.iThread[reuse].iStackFree = false; }
 	for (int i = 0; i < e.iThreadCount && chunk < 0; ++i)		// a dead thread's stack, if it is big enough
 		if (e.iThread[i].iStackFree && e.iChunkMax[e.iThread[i].iStackChunk] >= stack) { chunk = e.iThread[i].iStackChunk; e.iThread[i].iStackFree = false; }
 	if (chunk < 0)
@@ -600,7 +609,7 @@ static int CreateThread(CArmCpu& cpu, THle& h, uint32_t aInfo)
 		const int r = CommitPages(cpu, e, chunk, 0, e.iChunkMax[chunk]);
 		if (r < 0) return r;
 	}
-	const int idx = e.iThreadCount++;
+	const int idx = reuse >= 0 ? reuse : e.iThreadCount++;
 	TGuestThread& t = e.iThread[idx];
 	memset(&t, 0, sizeof(t));
 	t.iId = 0x7F000000u + idx;
@@ -630,7 +639,54 @@ static int CreateThread(CArmCpu& cpu, THle& h, uint32_t aInfo)
 		snprintf(l, sizeof(l), "[proteus] thread %d '%s' created by %d, function %s", idx, nm, e.iCur, fn);
 		if (h.iLog) h.iLog(l, h.iLogCtx);
 	}
+	// a thread the system runs natively (the MMF controller thread, in the module mmfcontrollerframework): the bridge claims it by the module
+	// its entry function is in; it is then never scheduled -- its Resume starts the native body (HostedResume)
+	if (h.iIpc && h.iIpc->iHostThread)
+	{
+		const uint32_t fn = cpu.Read32(aInfo + 8) & ~1u;
+		for (int m = 0; m < h.iProcess->iCount; ++m)
+			if (fn >= h.iProcess->iMod[m].iLoadAddr && fn < h.iProcess->iMod[m].iEnd)
+			{
+				if (h.iIpc->iHostThread(h.iIpc->iCtx, h.iProcess->iMod[m].iName, idx, cpu.Read32(aInfo + 12)))
+				{
+					t.iHosted = true;
+					if (h.iLog) { char l[120]; snprintf(l, sizeof(l), "[proteus] thread %d is hosted natively (entry in %s)", idx, h.iProcess->iMod[m].iName); h.iLog(l, h.iLogCtx); }
+				}
+				break;
+			}
+	}
 	return (int)(KHandleThread0 + idx);
+}
+
+// Resume of a natively hosted thread: the first one starts it, and the rendezvous logons complete with the result (as the thread's own
+// RThread::Rendezvous would). Later ones (RMMFControllerProxy::SetThreadPriority: Suspend / SetPriority / Resume) change nothing.
+static void HostedResume(CArmCpu& cpu, THle& h, int i)
+{
+	TExecState& e = h.iExec;
+	TGuestThread& t = e.iThread[i];
+	if (t.iHostStarted || t.iState == EThreadDead) return;
+	t.iHostStarted = true;
+	const int r = h.iIpc->iHostStart(h.iIpc->iCtx, i);
+	for (int k = 0; k < KMaxLogons; ++k)
+		if (t.iLogonStatus[k] && t.iLogonRendezvous[k]) { CompleteFor(cpu, e, t.iLogonOwner[k], t.iLogonStatus[k], r); t.iLogonStatus[k] = 0; }
+	if (r != KErrNone) EndThread(cpu, h, i, 0, r, "");
+}
+
+// the hosted threads that have ended natively (the controller closed with its session, or died): the guest sees them exit
+static void HostedSweep(CArmCpu& cpu, THle& h)
+{
+	TExecState& e = h.iExec;
+	if (!h.iIpc || !h.iIpc->iHostExit) return;
+	for (int i = 0; i < e.iThreadCount; ++i)
+	{
+		TGuestThread& t = e.iThread[i];
+		int type = 0, reason = 0;
+		if (t.iHosted && t.iHostStarted && t.iState != EThreadDead && h.iIpc->iHostExit(h.iIpc->iCtx, i, &type, &reason))
+		{
+			if (h.iLog) { char l[100]; snprintf(l, sizeof(l), "[proteus] hosted thread %d ended: type %d reason %d", i, type, reason); h.iLog(l, h.iLogCtx); }
+			EndThread(cpu, h, i, type, reason, "");
+		}
+	}
 }
 
 // the thread / synchronisation / request-semaphore executive calls; false = not one of them
@@ -800,7 +856,7 @@ static bool ThreadExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
 	}
 	// ---- threads ----
 	if (!strcmp(name, "EExecThreadCreate")) { r[0] = (uint32_t)CreateThread(cpu, h, r[2]); return true; }	// (name, owner, SThreadCreateInfo8&)
-	if (!strcmp(name, "EExecThreadResume")) { const int i = ThreadIndex(e, r[0]); if (i >= 0 && e.iThread[i].iState == EThreadSuspended) e.iThread[i].iState = EThreadReady; return true; }
+	if (!strcmp(name, "EExecThreadResume")) { const int i = ThreadIndex(e, r[0]); if (i >= 0 && e.iThread[i].iHosted) HostedResume(cpu, h, i); else if (i >= 0 && e.iThread[i].iState == EThreadSuspended) e.iThread[i].iState = EThreadReady; return true; }
 	if (!strcmp(name, "EExecThreadSuspend")) { const int i = ThreadIndex(e, r[0]); if (i >= 0 && i != cur && e.iThread[i].iState == EThreadReady) e.iThread[i].iState = EThreadSuspended; return true; }
 	if (!strcmp(name, "EExecThreadId")) { const int i = ThreadIndex(e, r[0]); r[0] = i >= 0 ? e.iThread[i].iId : (uint32_t)KErrBadHandle; return true; }
 	if (!strcmp(name, "EExecThreadOpenById"))		// (id, owner type)
@@ -854,6 +910,7 @@ static bool ThreadExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
 	{
 		const int i = ThreadIndex(e, r[0]);
 		if (i <= 0) return false;			// the main thread (or not ours): the process ends (ExecCall)
+		if (e.iThread[i].iHosted && e.iThread[i].iState != EThreadDead && h.iIpc->iHostKill) h.iIpc->iHostKill(h.iIpc->iCtx, i, (int)r[2]);
 		char cat[17] = "";
 		if (r[3]) GuestDes(cpu, r[3], cat, sizeof(cat));
 		if (h.iLog)
@@ -1094,7 +1151,12 @@ static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 			return true;
 		}
 		TIpcBridge* ipc = h.iIpc;
-		if (!strcmp(name, "EExecHandleClose") && ipc && ipc->iOwns(ipc->iCtx, r[0])) { r[0] = ipc->iClose(ipc->iCtx, r[0]); return true; }
+		if (!strcmp(name, "EExecHandleClose") && ipc && ipc->iOwns(ipc->iCtx, r[0]))
+		{
+			r[0] = ipc->iClose(ipc->iCtx, r[0]);
+			if (e.iThread) HostedSweep(cpu, h);		// (closing a controller's session ends its thread)
+			return true;
+		}
 		{
 			// the close of a mutex, semaphore, condition variable or message queue: its handle count (the slot is free again at none; Duplicate is not emulated)
 			const uint32_t si = r[0] - KHandleObj;
@@ -1210,6 +1272,11 @@ static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 			r[0] = (uint32_t)ipc->iSessionCreate(ipc->iCtx, srv, (int)r[1]);
 			return true;
 		}
+		if (!strcmp(name, "EExecSessionCreateFromHandle"))		// (server handle, slots, policy, type): a session with a server the guest holds a handle of
+		{
+			r[0] = (uint32_t)(ipc && ipc->iSessionFromServer ? ipc->iSessionFromServer(ipc->iCtx, r[0], (int)r[1]) : KErrNotSupported);
+			return true;
+		}
 		if (!strcmp(name, "EExecSessionSendSync") || !strcmp(name, "EExecSessionSend"))	// (handle, function, TIpcArgs*, TRequestStatus*)
 		{
 			if (!ipc || !ipc->iOwns(ipc->iCtx, r[0])) { r[0] = (uint32_t)KErrBadHandle; return true; }
@@ -1249,6 +1316,25 @@ static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 				snprintf(l, sizeof(l), "[proteus] User::Exit(%d) from the guest:", (int)r[0]);
 				h.iLog(l, h.iLogCtx);
 				Backtrace(cpu, h);
+				// the raw stack as well: the heuristic scan above skips what is not in a module's code range
+				if (h.iProcess)
+				{
+					char w[120];
+					snprintf(l, sizeof(l), "[proteus]   sp %08x pc %08x", cpu.R[13], cpu.iLastPc);
+					h.iLog(l, h.iLogCtx);
+					for (int i = 0; i < 64 && cpu.Valid(cpu.R[13] + i * 4, 4); ++i)
+					{
+						const uint32_t v = cpu.Read32(cpu.R[13] + i * 4);
+						for (int m = 0; m < h.iProcess->iCount; ++m)
+							if ((v & ~1u) >= h.iProcess->iMod[m].iLoadAddr && (v & ~1u) < h.iProcess->iMod[m].iEnd)
+							{
+								Where(*h.iProcess, cpu, v & ~1u, w, sizeof(w));
+								snprintf(l, sizeof(l), "[proteus]   sp+%x %08x %s", i * 4, v, w);
+								h.iLog(l, h.iLogCtx);
+								break;
+							}
+					}
+				}
 			}
 			r[0] = KErrNone;
 			return true;

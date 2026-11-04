@@ -1,0 +1,18 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
+// proteusmmf.mmp -- OURS (Proteus): a real ARM EXE that plays files through the MMF client API (CMdaAudioPlayerUtility, mediaclientaudio), the
+// way Sparkle plays its music. The controller runs natively (docs/sparkle-gl-run.md "Music"): ARM client -> bridge session -> native controller.
+// ARM build: phe component build -arch arm proteusmmf. Started like an installed app: c:\sys\bin\proteusmmf.exe + c:\sisapp.txt.
+TARGET			proteusmmf.exe
+TARGETTYPE		exe
+UID				0x1000007a 0xE70157F9
+CAPABILITY		NONE
+VENDORID		0
+
+OS_LAYER_SYSTEMINCLUDE_SYMBIAN
+MW_LAYER_SYSTEMINCLUDE_SYMBIAN
+
+SOURCEPATH		.
+SOURCE			proteusmmf.cpp
+
+LIBRARY			euser.lib efsrv.lib mediaclientaudio.lib

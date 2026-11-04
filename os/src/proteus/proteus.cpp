@@ -15,6 +15,7 @@
 #include <e32svr.h>
 #include <e32hal.h>
 #include <apacmdln.h>
+#include <mmf/common/mmfcontrollerframework.h>
 #include <string.h>
 #include "armcpu.h"
 #include "proteusrt.h"
@@ -167,6 +168,7 @@ struct TBridge
 	// BridgeFsPrivate; the same as the server's own answers when the loader gave this process the program's SecureId)
 	TUint32 iSid;
 	TBool iPathSet[KMaxBridge];
+	TInt iCtl[KMaxBridge];							// a session with a natively hosted MMF controller: its slot in gCtl (-1 = a session of a server by name)
 	RFs* iFs;
 	};
 
@@ -601,8 +603,358 @@ static bool BridgeKernel(void* aCtx, const char* aExec, uint32_t* r, proteus::CA
 	return false;
 	}
 
+// ---- MMF controller threads, hosted natively (docs/sparkle-gl-run.md "Music") ----
+// An MMF client (CMdaAudioPlayerUtility, CVideoPlayerUtility, the recorders: all through RMMFController::Open -> RMMFControllerProxy::LoadController)
+// runs the controller plug-in in a thread of its OWN process behind a private server: it creates the thread (entry
+// CMMFControllerProxyServer::StartThread, argument {RServer2*, shared heap}), waits for its rendezvous, then CreateSession(the server) and talks to
+// the controller by IPC messages only; the first one, function 0 (EMMFControllerProxyLoadControllerPluginByUid), carries the plug-in's UID.
+// The controller chain (framework, ECOM plug-in, codec, HwDevice, CAF) is the NATIVE one, so the guest's thread is hosted here: a thread
+// created with its entry in the guest's mmfcontrollerframework is never run as ARM code. Its Resume gives the guest a server handle (written
+// into the guest's RServer2) and the rendezvous result; the session on that handle is a bridge session whose first message loads the controller,
+// natively, by RMMFControllerProxy::LoadController on a HELPER THREAD of this process: the helper owns the native proxy (its active scheduler, the
+// logon monitor of the controller thread, whose completion signals belong to the helper and not to the guest's request accounting) and completes
+// the guest's TRequestStatus when the load is done. From then on the guest's session is the proxy's own session (shared process-wide), and every
+// message -- AddDataSource, Prime, Play, ReceiveEvents (async, completed natively into the guest's status), custom commands -- goes through the
+// ordinary bridge, descriptors in guest memory as they are. Closing the session closes the proxy (the controller thread exits) and ends the
+// guest's thread: its logons complete.
+enum { KServerHandle0 = 0x00E50000, KMaxCtl = 16 };
+enum { ECtlLoad = 1, ECtlClose = 2 };
+struct TCtlHost
+	{
+	TBool iUsed;
+	TInt iThread;				// the guest thread (the executive's thread number)
+	TUint32 iParams;			// the guest's TControllerProxyServerParams
+	TBool iShared;
+	TBool iStarted;
+	RThread iHelper;			// the helper thread
+	TRequestStatus* volatile iCmdSt;	// its command active object's status (pending)
+	volatile TInt iCmd;
+	TInt32 iUid;				// the controller plug-in (command ECtlLoad)
+	TRequestStatus* iGuestSt;	// the guest's status the load completes
+	RMMFControllerProxy* iProxy;	// owned by the helper
+	volatile TBool iLoaded;		// the load succeeded: iProxy's session is the guest's
+	TBool iBound;				// the bridge session wraps iProxy's handle
+	RThread iCtl;				// the controller thread (found after the load)
+	TThreadId iCtlId;
+	TBool iHaveCtl;
+	RSemaphore iDone;			// signalled by the helper when it has closed the proxy
+	volatile TBool iDead;
+	TBool iSessionOpen;			// the guest holds a session (CtlShutdown clears it)
+	TBool iReported;				// the executive has been told the thread ended (iHostExit)
+	TInt iExitType, iExitReason;
+	};
+static TCtlHost gCtl[KMaxCtl];
+static RThread gMainThread;		// the handler's main thread (where the guest runs): the helper completes the guest's statuses on it
+static RMutex gCtlLock;			// one controller load at a time: the controller thread is found by what is new
+static TBool gCtlInit = EFalse;
+
+static TInt CtlIndexOfServer(uint32_t aHandle) { const TInt i = (TInt)(aHandle - KServerHandle0); return (aHandle & 0xFFFF0000u) == KServerHandle0 && i >= 0 && i < KMaxCtl && gCtl[i].iUsed ? i : -1; }
+
+class CCtlCmd : public CActive
+	{
+public:
+	explicit CCtlCmd(TCtlHost& aHost) : CActive(EPriorityStandard), iHost(aHost) { CActiveScheduler::Add(this); }
+	~CCtlCmd() { Cancel(); }
+	void Arm() { iStatus = KRequestPending; iHost.iCmdSt = &iStatus; SetActive(); }
+	void RunL();
+	void DoCancel() { TRequestStatus* s = &iStatus; User::RequestComplete(s, KErrCancel); }
+private:
+	void FindController();
+	TCtlHost& iHost;
+	};
+
+// The controller thread just created by this helper's LoadController (called under gCtlLock): a live thread of THIS process named
+// "MMFControllerProxyServer-<its id in hex>" (RMMFControllerProxy's CMMFControllerProxyServer::RenameControllerProxyThread) that no other hosted
+// controller has claimed. (The thread is found by its name -- the find handle itself cannot be opened, the thread being owned by the helper --
+// and opened by the id the name carries.)
+void CCtlCmd::FindController()
+	{
+	TFullName self(RThread().FullName());
+	const TInt colons = self.Find(_L("::"));
+	TFindThread find(_L("*::MMFControllerProxyServer-*"));
+	TFullName name;
+	while (!iHost.iHaveCtl && find.Next(name) == KErrNone)
+		{
+		if (colons < 0 || name.Left(colons + 2).Compare(self.Left(colons + 2)) != 0)
+			continue;		// another process's
+		const TInt dash = name.LocateReverse('-');
+		TUint32 id = 0;
+		TLex lex(name.Mid(dash + 1));
+		if (dash < 0 || lex.Val(id, EHex) != KErrNone)
+			continue;
+		TBool taken = EFalse;
+		for (TInt k = 0; k < KMaxCtl && !taken; ++k)
+			if (gCtl[k].iUsed && gCtl[k].iHaveCtl && gCtl[k].iCtlId == TThreadId(id)) taken = ETrue;
+		RThread t;
+		if (taken || t.Open(TThreadId(id)) != KErrNone)
+			continue;
+		if (t.ExitType() != EExitPending)
+			{
+			t.Close();
+			continue;
+			}
+		iHost.iCtl = t;
+		iHost.iCtlId = TThreadId(id);
+		iHost.iHaveCtl = ETrue;
+		}
+	}
+
+void CCtlCmd::RunL()
+	{
+	if (iHost.iCmd == ECtlLoad)
+		{
+		TInt r = KErrNoMemory;
+		iHost.iProxy = new RMMFControllerProxy;
+		if (iHost.iProxy)
+			{
+			gCtlLock.Wait();
+			r = iHost.iProxy->LoadController(TUid::Uid(iHost.iUid), iHost.iShared);
+			if (r == KErrNone)
+				r = iHost.iProxy->ShareAuto();		// the guest's threads use the session (the controller proxy server is globally sharable)
+			if (r == KErrNone)
+				FindController();
+			gCtlLock.Signal();
+			TLog8 cn(iHost.iHaveCtl ? (const TDesC&)iHost.iCtl.Name() : (const TDesC&)KNullDesC());
+			RDebug::Printf("PH: proteus MMF controller %x: native LoadController -> %d (controller thread %S)", iHost.iUid, r, cn.P());
+			if (r != KErrNone)
+				{
+				iHost.iProxy->Close();
+				delete iHost.iProxy;
+				iHost.iProxy = NULL;
+				}
+			}
+		iHost.iLoaded = r == KErrNone;
+		TRequestStatus* g = iHost.iGuestSt;
+		iHost.iGuestSt = NULL;
+		Arm();
+		gMainThread.RequestComplete(g, r);		// (the guest's status; the kernel signals the main thread, which credits the request)
+		}
+	else
+		{
+		if (iHost.iProxy)
+			{
+			iHost.iProxy->Close();		// closes the session: the controller thread shuts down and Close waits for it
+			delete iHost.iProxy;
+			iHost.iProxy = NULL;
+			}
+		iHost.iLoaded = EFalse;
+		iHost.iDone.Signal();
+		CActiveScheduler::Stop();
+		}
+	}
+
+static TInt CtlHelperMain(TAny* aHost)
+	{
+	TCtlHost& h = *(TCtlHost*)aHost;
+	CTrapCleanup* cleanup = CTrapCleanup::New();
+	TInt r = KErrNoMemory;
+	if (cleanup)
+		{
+		CActiveScheduler* sched = new CActiveScheduler;
+		if (sched)
+			{
+			CActiveScheduler::Install(sched);
+			CCtlCmd* cmd = new CCtlCmd(h);
+			if (cmd)
+				{
+				cmd->Arm();
+				RThread::Rendezvous(KErrNone);
+				CActiveScheduler::Start();
+				delete cmd;
+				r = KErrNone;
+				}
+			CActiveScheduler::Install(NULL);
+			delete sched;
+			}
+		delete cleanup;
+		}
+	if (r != KErrNone)
+		RThread::Rendezvous(r);
+	return r;
+	}
+
+static void CtlInit()
+	{
+	if (gCtlInit)
+		return;
+	gCtlInit = ETrue;
+	gMainThread.Open(RThread().Id());
+	gCtlLock.CreateLocal();
+	for (TInt i = 0; i < KMaxCtl; ++i)
+		gCtl[i].iHelper.SetHandle(KNullHandle);
+	}
+
+// TIpcBridge::iHostThread: the guest created a thread whose entry is in mmfcontrollerframework -- an MMF controller thread
+static bool CtlHostThread(void*, const char* aModule, int aThread, uint32_t aArg)
+	{
+	TBuf8<48> m;
+	m.Copy(TPtrC8((const TUint8*)aModule).Left(40));
+	m.LowerCase();
+	if (m.Find(_L8("mmfcontrollerframework")) < 0)
+		return false;
+	CtlInit();
+	for (TInt i = 0; i < KMaxCtl; ++i)
+		if (!gCtl[i].iUsed)
+			{
+			TCtlHost& c = gCtl[i];
+			c.iUsed = ETrue;
+			c.iThread = aThread;
+			c.iParams = aArg;
+			c.iShared = aArg ? ((TUint32*)aArg)[1] != 0 : EFalse;		// TControllerProxyServerParams {RServer2* iServer; TBool iUsingSharedHeap}
+			c.iStarted = c.iLoaded = c.iBound = c.iHaveCtl = c.iDead = c.iSessionOpen = c.iReported = EFalse;
+			c.iProxy = NULL;
+			c.iGuestSt = NULL;
+			c.iCmdSt = NULL;
+			c.iExitType = c.iExitReason = 0;
+			RDebug::Printf("PH: proteus MMF controller thread %d: hosted natively (shared heap %d)", i, c.iShared);
+			return true;
+			}
+	RDebug::Printf("PH: proteus MMF controller thread: no free slot (%d hosted)", (TInt)KMaxCtl);
+	return false;
+	}
+
+
+// the guest's first Resume of the thread: the helper starts (the native thread that will own the proxy), and the guest's RServer2 gets its handle
+static int CtlHostStart(void*, int aThread)
+	{
+	TInt i = -1;
+	for (TInt k = 0; k < KMaxCtl; ++k)
+		if (gCtl[k].iUsed && gCtl[k].iThread == aThread) i = k;
+	if (i < 0)
+		return KErrNotFound;
+	TCtlHost& c = gCtl[i];
+	TInt r = c.iDone.CreateLocal(0);
+	if (r == KErrNone)
+		r = c.iHelper.Create(KNullDesC, CtlHelperMain, 0x14000, 0x8000, 0x1000000, &c, EOwnerProcess);
+	if (r == KErrNone)
+		{
+		TRequestStatus rs;
+		c.iHelper.Rendezvous(rs);
+		c.iHelper.Resume();
+		User::WaitForRequest(rs);
+		r = rs.Int();
+		}
+	if (r != KErrNone)
+		{
+		RDebug::Printf("PH: proteus MMF controller thread %d: helper start -> %d", i, r);
+		return r;
+		}
+	c.iStarted = ETrue;
+	if (c.iParams && ((TUint32*)c.iParams)[0])
+		*(TUint32*)((TUint32*)c.iParams)[0] = KServerHandle0 + i;		// the guest's RServer2 (its iHandle is its only member)
+	RDebug::Printf("PH: proteus MMF controller thread %d: started, server handle %x", i, (TUint)(KServerHandle0 + i));
+	return KErrNone;
+	}
+
+// the slot is free again once the executive has been told the thread ended and the guest has closed its session
+static void CtlMaybeFree(TCtlHost& c) { if (c.iReported && !c.iSessionOpen) c.iUsed = EFalse; }
+
+static bool CtlHostExit(void*, int aThread, int* aType, int* aReason)
+	{
+	for (TInt k = 0; k < KMaxCtl; ++k)
+		if (gCtl[k].iUsed && gCtl[k].iThread == aThread)
+			{
+			TCtlHost& c = gCtl[k];
+			if (!c.iDead && c.iHaveCtl && c.iCtl.ExitType() != EExitPending)		// the controller thread ended by itself (a panic, a kill)
+				{
+				c.iDead = ETrue;
+				c.iExitType = c.iCtl.ExitType();
+				c.iExitReason = c.iCtl.ExitReason();
+				RDebug::Printf("PH: proteus MMF controller thread %d: ended type %d reason %d", k, c.iExitType, c.iExitReason);
+				}
+			if (!c.iDead)
+				return false;
+			*aType = c.iExitType;
+			*aReason = c.iExitReason;
+			c.iReported = ETrue;
+			CtlMaybeFree(c);
+			return true;
+			}
+	return false;
+	}
+
+// the guest's RThread::Kill of the controller thread (Close's last resort when it does not exit in time): the controller thread, natively
+static void CtlHostKill(void*, int aThread, int aReason)
+	{
+	for (TInt k = 0; k < KMaxCtl; ++k)
+		if (gCtl[k].iUsed && gCtl[k].iThread == aThread && gCtl[k].iHaveCtl && gCtl[k].iCtl.ExitType() == EExitPending)
+			{
+			RDebug::Printf("PH: proteus MMF controller thread %d: killed by the guest (%d)", k, aReason);
+			gCtl[k].iCtl.Kill(aReason);
+			}
+	}
+
+// SessionCreateFromHandle on a server handle CtlHostStart handed out: a bridge session that is the controller's, bound to the native proxy's
+// session when the load has completed
+static int CtlSessionFromServer(void* aCtx, uint32_t aServerHandle, int aSlots)
+	{
+	TBridge& b = *(TBridge*)aCtx;
+	const TInt c = CtlIndexOfServer(aServerHandle);
+	if (c < 0)
+		return KErrBadHandle;
+	for (TInt i = 0; i < KMaxBridge; ++i)
+		if (!b.iUsed[i])
+			{
+			b.iUsed[i] = ETrue;
+			b.iConnected[i] = EFalse;
+			b.iNative[i] = EFalse;
+			b.iCtl[i] = c;
+			gCtl[c].iSessionOpen = ETrue;
+			b.iName[i] = _L("MMFControllerProxy");
+			b.iSlots[i] = aSlots;
+			RDebug::Printf("PH: proteus IPC: guest session %d -> MMF controller %d (%d slots)", i, c, aSlots);
+			return KBridgeHandle0 + i;
+			}
+	return KErrNoMemory;
+	}
+
+// the native proxy's session, once the load has completed, is this bridge session's
+static void CtlBind(TBridge& b, TInt i)
+	{
+	TCtlHost& c = gCtl[b.iCtl[i]];
+	if (!c.iBound && c.iLoaded && c.iProxy)
+		{
+		b.iSession[i].SetHandle(c.iProxy->Handle());
+		c.iBound = ETrue;
+		}
+	}
+
+// the guest closed the controller's session: the helper closes the native proxy (the controller thread shuts down, Close waits for it) and ends;
+// the guest's thread is dead (its logons complete when the executive next looks: TIpcBridge::iHostExit)
+static void CtlShutdown(TBridge& b, TInt i)
+	{
+	TCtlHost& c = gCtl[b.iCtl[i]];
+	if (c.iBound)
+		b.iSession[i].SetHandle(0);		// the proxy's, not ours to close
+	if (c.iStarted && c.iHelper.Handle())
+		{
+		c.iCmd = ECtlClose;
+		TRequestStatus* s = c.iCmdSt;
+		c.iHelper.RequestComplete(s, KErrNone);
+		c.iDone.Wait();
+		TRequestStatus ls;
+		c.iHelper.Logon(ls);
+		User::WaitForRequest(ls);
+		c.iHelper.Close();
+		c.iDone.Close();
+		}
+	if (!c.iDead)
+		{
+		c.iDead = ETrue;
+		c.iExitType = c.iHaveCtl ? (TInt)c.iCtl.ExitType() : 0;
+		c.iExitReason = c.iHaveCtl ? c.iCtl.ExitReason() : 0;
+		}
+	if (c.iHaveCtl)
+		c.iCtl.Close();
+	RDebug::Printf("PH: proteus MMF controller %d: closed (controller thread type %d reason %d)", b.iCtl[i], c.iExitType, c.iExitReason);
+	c.iStarted = c.iLoaded = c.iBound = c.iHaveCtl = EFalse;
+	c.iSessionOpen = EFalse;
+	b.iCtl[i] = -1;
+	CtlMaybeFree(c);
+	}
+
 // (a handle outside the guest's own ranges is a kernel handle the guest was given: a server's reply handed it a session)
-static bool BridgeOwns(void* aCtx, uint32_t aHandle) { return BridgeIndex(*(TBridge*)aCtx, aHandle) >= 0 || PropIndex(*(TBridge*)aCtx, aHandle) >= 0 || NativeLooking(aHandle); }
+static bool BridgeOwns(void* aCtx, uint32_t aHandle) { return BridgeIndex(*(TBridge*)aCtx, aHandle) >= 0 || PropIndex(*(TBridge*)aCtx, aHandle) >= 0 || CtlIndexOfServer(aHandle) >= 0 || NativeLooking(aHandle); }
 
 static int BridgeCreate(void* aCtx, const char* aName, int aSlots)
 	{
@@ -755,6 +1107,29 @@ static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArg
 			RDebug::Printf("PH: proteus WS: fn %x len %d%S", aFunction, len, &ops);
 			}
 		}
+	// file-server trace (the first 300 messages of the guest's file sessions): the function and the names it carries (a 16-bit descriptor
+	// argument), so a guest that exits on a file error can be followed to the file
+	static TInt fsLines = 0;
+	if (aArgs && fsLines < 300 && b.iName[i] == _L("!FileServer") && b.iConnected[i])
+		{
+		++fsLines;
+		TBuf8<200> nm;
+		for (TInt n = 0; n < 4; ++n)
+			{
+			const TUint f = (args.iFlags >> (3 * n)) & 7;
+			if ((f & 4) && (f & 1) && args.iArgs[n])		// a 16-bit descriptor
+				{
+				const TDesC16* d = (const TDesC16*)args.iArgs[n];
+				if (d->Length() > 0 && d->Length() < 100)
+					{
+					TBuf8<100> n8;
+					n8.Copy(d->Left(80));
+					nm.AppendFormat(_L8(" a%d='%S'"), n, &n8);
+					}
+				}
+			}
+		RDebug::Printf("PH: proteus FS: session %d fn %d flags %x args %x %x %x %x%S", i, aFunction, args.iFlags, args.iArgs[0], args.iArgs[1], args.iArgs[2], args.iArgs[3], &nm);
+		}
 	// CDL server trace (Avkon's layout server; bounded): every request with its arguments (flags, the four words, a 16-bit name in arg 1)
 	static TInt cdlLines = 0;
 	if (b.iName[i] == _L("CdlServer") && cdlLines < 60)
@@ -779,6 +1154,40 @@ static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArg
 				args.iArgs[0], args.iArgs[1], args.iArgs[2], args.iArgs[3], aSync ? " sync" : st ? " async" : " blind");
 			}
 	}
+	if (b.iCtl[i] >= 0)		// a natively hosted MMF controller (see CtlHostThread)
+		{
+		TCtlHost& c = gCtl[b.iCtl[i]];
+		if (aFunction == RMessage2::EConnect && !b.iConnected[i])		// the version check is the native proxy's own, at its CreateSession
+			{
+			b.iConnected[i] = ETrue;
+			CompleteGuest(st, KErrNone);
+			return KErrNone;
+			}
+		CtlBind(b, i);
+		if (!c.iBound)
+			{
+			// the first message loads the controller (EMMFControllerProxyLoadControllerPluginByUid: arg 0 the destination, arg 1 the plug-in's UID);
+			// the helper thread does it natively and completes the guest's status
+			TInt err = KErrNotReady;
+			if (aFunction == 0 && st && aArgs && c.iStarted && !c.iGuestSt && !c.iLoaded && ((args.iFlags >> 3) & 7) >= 4 && args.iArgs[1])
+				{
+				const TDesC8& d = *(const TDesC8*)args.iArgs[1];
+				if (d.Length() >= (TInt)sizeof(TInt32))
+					{
+					c.iUid = *(const TInt32*)d.Ptr();
+					c.iGuestSt = st;
+					c.iCmd = ECtlLoad;
+					TRequestStatus* cs = c.iCmdSt;
+					c.iHelper.RequestComplete(cs, KErrNone);
+					return KErrNone;
+					}
+				err = KErrArgument;
+				}
+			RDebug::Printf("PH: proteus IPC: MMF controller %d: message %d before the load -> %d", b.iCtl[i], aFunction, err);
+			CompleteGuest(st, err);
+			return st ? KErrNone : err;
+			}
+		}
 	if (aFunction == RMessage2::EConnect && !b.iConnected[i] && b.iName[i] == _L("!Windowserver") && gWsIndex < 0)
 		{
 		b.iConnected[i] = ETrue;
@@ -850,6 +1259,8 @@ static int BridgeSend(void* aCtx, uint32_t aHandle, int aFunction, uint32_t aArg
 static int BridgeClose(void* aCtx, uint32_t aHandle)
 	{
 	TBridge& b = *(TBridge*)aCtx;
+	if (CtlIndexOfServer(aHandle) >= 0)		// the guest's RServer2 of a hosted controller thread: nothing to release
+		return KErrNone;
 	const TInt pi = PropIndex(b, aHandle);
 	if (pi >= 0)
 		{
@@ -864,6 +1275,13 @@ static int BridgeClose(void* aCtx, uint32_t aHandle)
 		return KErrBadHandle;
 	if (aHandle & 0x8000)		// KHandleNoClose
 		return KErrNone;
+	if (b.iCtl[i] >= 0)
+		{
+		CtlShutdown(b, i);
+		b.iUsed[i] = EFalse;
+		b.iConnected[i] = EFalse;
+		return KErrNone;
+		}
 	if (b.iConnected[i] && i == gWsIndex)		// the window-server session is gWs's (BridgeWsConnect)
 		{
 		b.iSession[i].SetHandle(0);
@@ -883,6 +1301,8 @@ static int BridgeShare(void* aCtx, uint32_t aHandle, int)
 	TInt i = BridgeIndex(b, aHandle);
 	if (i < 0 && NativeLooking(aHandle))
 		i = AdoptNative(b, aHandle);
+	if (i >= 0 && b.iCtl[i] >= 0)
+		return KErrNone;		// (the native proxy's session is shared already)
 	return i >= 0 && b.iConnected[i] ? b.iSession[i].ShareAuto() : KErrNone;
 	}
 
@@ -1256,12 +1676,13 @@ static TInt MainL()
 	for (TInt i = 0; i < KMaxBridge; ++i)
 		{
 		bridge->iPathSet[i] = EFalse;
+		bridge->iCtl[i] = -1;
 		bridge->iUsed[i] = bridge->iConnected[i] = bridge->iPropUsed[i] = EFalse;
 		bridge->iObjType[i] = 0;
 		bridge->iObjNative[i] = 0;
 		}
 	proteus::TIpcBridge ipc = { bridge, BridgeCreate, BridgeSend, BridgeOwns, BridgeClose, BridgeShare, BridgeWaitAny, BridgeSignal, BridgeKernel, BridgeWaitAnyFor, BridgeNowUs,
-		BridgeNativeExport, BridgePoll, BridgeSyncDone };
+		BridgeNativeExport, BridgePoll, BridgeSyncDone, CtlHostThread, CtlHostStart, CtlHostExit, CtlHostKill, CtlSessionFromServer };
 	hle.iIpc = &ipc;
 	TBuf8<KMaxFileName + 1> exePath;
 	exePath.Copy(path);

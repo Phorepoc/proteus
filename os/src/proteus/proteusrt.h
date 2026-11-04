@@ -88,6 +88,16 @@ struct TIpcBridge
 	uint32_t (*iNativeExport)(void* aCtx, const char* aDll, int aOrdinal);	// a native DLL's export (the GL thunks), 0 = none
 	bool (*iPoll)(void* aCtx);		// a request signal that has already arrived: taken (true), or none pending (false); never blocks
 	bool (*iSyncDone)(void* aCtx);	// the last iSend completed the guest's status itself (CompleteGuest), no native signal pending for it: true once, then cleared
+	// native-hosted threads: a guest thread whose body the system runs on the native side (the MMF controller thread: the client creates it
+	// in its own process and talks to it only through a private server's session). iHostThread is asked at the thread's creation with the module
+	// its entry function lies in and the creation argument (a guest address); true = hosted: it is never scheduled. iHostStart is its first
+	// Resume (the thread "runs": the result is what the thread rendezvous with, KErrNone = up); iHostExit says whether it has ended (type, reason);
+	// iHostKill is a Kill of it. iSessionFromServer is SessionCreateFromHandle on the server handle iHostStart handed the guest.
+	bool (*iHostThread)(void* aCtx, const char* aModule, int aThread, uint32_t aArg);
+	int (*iHostStart)(void* aCtx, int aThread);
+	bool (*iHostExit)(void* aCtx, int aThread, int* aType, int* aReason);
+	void (*iHostKill)(void* aCtx, int aThread, int aReason);
+	int (*iSessionFromServer)(void* aCtx, uint32_t aServerHandle, int aSlots);
 };
 
 // P2: the executive state of a guest that runs the real ARM euser (proteusexec.cpp)
@@ -129,6 +139,7 @@ struct TGuestThread
 	bool iLogonRendezvous[KMaxLogons];
 	int iStackChunk;			// the chunk holding its stack (-1 = the main thread's region stack)
 	bool iStackFree;			// dead: the stack chunk may be reused by a new thread
+	bool iHosted, iHostStarted;	// the body runs on the native side (TIpcBridge::iHostThread): never scheduled
 };
 struct TSyncObj
 {
