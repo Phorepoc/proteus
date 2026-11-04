@@ -86,6 +86,7 @@ struct TIpcBridge
 	bool (*iWaitAnyFor)(void* aCtx, int aMicroseconds);
 	uint64_t (*iNowUs)(void* aCtx);
 	uint32_t (*iNativeExport)(void* aCtx, const char* aDll, int aOrdinal);	// a native DLL's export (the GL thunks), 0 = none
+	bool (*iPoll)(void* aCtx);		// a request signal that has already arrived: taken (true), or none pending (false); never blocks
 };
 
 // P2: the executive state of a guest that runs the real ARM euser (proteusexec.cpp)
@@ -114,6 +115,7 @@ struct TGuestThread
 	int32_t iWaitResult;		// the result a wait returns once the mutex is taken back (a timed-out condvar wait: KErrTimedOut)
 	uint32_t iWaitSeq;			// FIFO order of the waiters of one object
 	uint64_t iDeadline;			// timed wait: host microseconds (TIpcBridge::iNowUs), 0 = none
+	uint64_t iRan;				// instructions it has executed (accounted when it stops running)
 	int iExitType, iExitReason;
 	char iExitCategory[17];
 	uint32_t iLogonStatus[KMaxLogons];
@@ -150,6 +152,7 @@ struct TExecState
 	// the requests guest threads handed to native servers / timers: a native signal belongs to the thread whose TRequestStatus completed
 	uint32_t iReqStatus[KMaxReqs];
 	int iReqThread[KMaxReqs];
+	uint64_t iSliceStart;		// CArmCpu::iSteps when the running thread started its turn
 	uint32_t iSyncSendStatus;	// the outstanding SessionSendSync (the native thread has one synchronous message slot for all guest threads)
 };
 struct THle
@@ -173,8 +176,18 @@ bool ExecCall(CArmCpu& aCpu, THle& aHle, uint32_t aImm);
 // log lr + a heuristic stack backtrace (module+offset)
 void Backtrace(CArmCpu& aCpu, THle& aHle);
 
-// install the HLE hooks on aCpu (trap + svc)
+// install the HLE hooks on aCpu (trap + svc, and the time slice)
 void InstallHle(CArmCpu& aCpu, THle& aHle);
+
+// instructions of a time slice: after that many the running guest thread yields to the next ready one; 0 = cooperative scheduling only.
+// OFF until native request signals are credited to the right thread: with slicing on, Sparkle's Qt threads die of a stray signal
+// (E32USER-CBase 46, QEventDispatcherSymbian::process 0) at 85-98 s guest time instead of 358 s -- see docs/sparkle-gl-run.md
+static const uint64_t KSliceInstructions = 0;
+// the end of a time slice (CArmCpu::iOnSlice): native request completions that arrived are credited to their threads, timed waits that
+// ran out expire, and the next ready thread (round robin) runs
+void Preempt(CArmCpu& aCpu, THle& aHle);
+// "cur=i ran(M): i:n ..." (instructions each guest thread has executed), into aOut
+void ThreadStats(CArmCpu& aCpu, THle& aHle, char* aOut, int aMax);
 
 // the name of an euser ordinal in the ARM EABI export table ("" if unknown)
 const char* EuserName(uint32_t aOrdinal);

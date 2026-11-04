@@ -1,0 +1,9 @@
+PASS proteus P0 PASS
+PASS proteus P1 PASS
+PASS proteus P2 PASS
+PASS proteus P2b PASS
+PASS proteus P2c (real ARM euser) PASS
+PASS proteus P2d (ARM efsrv over the IPC bridge) PASS
+PASS proteus P2f (ARM images through the image broker) PASS
+PASS proteus P3 (installed ARM app) PASS
+730 s

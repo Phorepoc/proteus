@@ -1,0 +1,12 @@
+PASS proteus P0 PASS
+PASS proteus P1 PASS
+PASS proteus P2 PASS
+PASS proteus P2b PASS
+PASS proteus P2c (real ARM euser) PASS
+PASS proteus P2d (ARM efsrv over the IPC bridge) PASS
+PASS proteus P2f (ARM images through the image broker) PASS
+MISS proteus P3 (installed ARM app) PASS
+FAIL 0:PH: proteus guest run FAIL
+FAIL 0:PH: proteus leave -2 FAIL
+FAIL 0:PH: proteus P3 (installed ARM app) FAIL
+531 s

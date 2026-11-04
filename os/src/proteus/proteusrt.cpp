@@ -373,6 +373,9 @@ void InstallHle(CArmCpu& cpu, THle& h)
 	cpu.iTrap = OnTrap;
 	cpu.iSvc = OnSvc;
 	cpu.iCtx = &h;
+	cpu.iOnSlice = [](CArmCpu& c, void*) { Preempt(c, *(THle*)c.iCtx); };
+	cpu.iSliceSteps = h.iProcess && h.iProcess->iRealEuser ? KSliceInstructions : 0;
+	cpu.iNextSlice = cpu.iSteps + cpu.iSliceSteps;
 }
 
 // what the kernel does for a user thread (kernel/arm/ckernel.cia, __USERSIDE_THREAD_DATA__): the TLocalThreadData block at the very top of the

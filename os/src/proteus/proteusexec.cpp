@@ -169,6 +169,8 @@ static void LoadThread(CArmCpu& c, TExecState& e, const TGuestThread& t)
 	c.iN = t.iN; c.iZ = t.iZ; c.iC = t.iC; c.iV = t.iV; c.iT = t.iT; c.iGE = t.iGE;
 	c.iTpidrurw = t.iTpidrurw; c.iTpidruro = t.iTpidruro; c.iFpscr = t.iFpscr; c.iFpexc = t.iFpexc;
 	memcpy(c.iD, t.iD, sizeof(c.iD));
+	c.iExcl = false;		// a thread switch clears the exclusive monitor
+	e.iSliceStart = c.iSteps;
 	e.iHeap = t.iHeap; e.iTrapHandler = t.iTrapHandler; e.iActiveScheduler = t.iActiveScheduler; e.iTrapFrame = t.iTrapFrame;
 	memcpy(e.iTlsKey, t.iTlsKey, sizeof(e.iTlsKey)); memcpy(e.iTlsVal, t.iTlsVal, sizeof(e.iTlsVal)); e.iTlsCount = t.iTlsCount;
 }
@@ -209,6 +211,10 @@ static void CompleteFor(CArmCpu& cpu, TExecState& e, int aThread, uint32_t aStat
 {
 	if (!aStatus) return;
 	cpu.Write32(aStatus, (uint32_t)aValue);
+	// a guest-completed status is no outstanding native request: left noted, a later native signal would be credited to it (AttributeNative
+	// takes the first noted status that is no longer pending) and its owner would see a stray signal
+	for (int k = 0; k < KMaxReqs; ++k)
+		if (e.iReqStatus[k] == aStatus) e.iReqStatus[k] = 0;
 	SignalThread(e, aThread, 1);
 }
 
@@ -332,6 +338,14 @@ static void AttributeNative(CArmCpu& cpu, THle& h)
 		int waiting = -1, n = 0;
 		for (int i = 0; i < e.iThreadCount; ++i) if (e.iThread[i].iState == EThreadWaitAny) { if (waiting < 0) waiting = i; ++n; }
 		who = n == 1 ? waiting : (e.iThread[0].iState == EThreadWaitAny || waiting < 0) ? 0 : waiting;
+		static int guesses = 0;
+		if (h.iLog && guesses < 30)		// trace: a native signal no noted request explains (credited by guess)
+		{
+			++guesses;
+			char l[96];
+			snprintf(l, sizeof(l), "[proteus] native signal with no completed noted request: credited to thread %d", who);
+			h.iLog(l, h.iLogCtx);
+		}
 	}
 	SignalThread(e, who, 1);
 }
@@ -341,6 +355,7 @@ static void AttributeNative(CArmCpu& cpu, THle& h)
 static void Reschedule(CArmCpu& cpu, THle& h)
 {
 	TExecState& e = h.iExec;
+	e.iThread[e.iCur].iRan += cpu.iSteps - e.iSliceStart;
 	SaveThread(cpu, e, e.iThread[e.iCur]);
 	for (;;)
 	{
@@ -395,6 +410,47 @@ static void BlockCurrent(CArmCpu& cpu, THle& h, int aState, int aObj, uint64_t a
 {
 	Block(h.iExec, h.iExec.iCur, aState, aObj, aDeadline);
 	Reschedule(cpu, h);
+}
+
+// The end of a time slice. The kernel is preemptive: a thread that never blocks (a loader decoding data) must not starve the others, and a
+// native server's reply must reach its thread while another one runs -- the main thread's active scheduler answers the view server in time.
+// So: native request completions that have arrived are credited (never waiting for one), timed waits that ran out expire, and when
+// another thread is ready the running one goes to the back of the line (the running thread stays EThreadReady).
+void Preempt(CArmCpu& cpu, THle& h)
+{
+	TExecState& e = h.iExec;
+	if (!e.iThread || e.iThreadCount < 1) return;
+	if (h.iIpc && h.iIpc->iPoll)
+		for (int n = 0; n < KMaxReqs && h.iIpc->iPoll(h.iIpc->iCtx); ++n) AttributeNative(cpu, h);
+	uint64_t now = 0;
+	for (int i = 0; i < e.iThreadCount; ++i)
+	{
+		TGuestThread& t = e.iThread[i];
+		if (!t.iDeadline || (t.iState != EThreadWaitMutex && t.iState != EThreadWaitSem && t.iState != EThreadWaitCond)) continue;
+		if (!now) now = NowUs(h);
+		if (now && t.iDeadline <= now) Expire(e, i);
+	}
+	for (int k = 1; k < e.iThreadCount; ++k)
+	{
+		const int i = (e.iCur + k) % e.iThreadCount;
+		if (e.iThread[i].iState != EThreadReady) continue;
+		e.iThread[e.iCur].iRan += cpu.iSteps - e.iSliceStart;
+		SaveThread(cpu, e, e.iThread[e.iCur]);
+		e.iCur = i;
+		LoadThread(cpu, e, e.iThread[i]);
+		return;
+	}
+}
+
+void ThreadStats(CArmCpu& cpu, THle& h, char* aOut, int aMax)
+{
+	TExecState& e = h.iExec;
+	int n = snprintf(aOut, aMax, "cur=%d ran(M):", e.iCur);
+	for (int i = 0; i < e.iThreadCount && n > 0 && n < aMax - 16; ++i)
+	{
+		const uint64_t ran = e.iThread[i].iRan + (i == e.iCur ? cpu.iSteps - e.iSliceStart : 0);
+		n += snprintf(aOut + n, aMax - n, " %d:%u%s", i, (unsigned)(ran >> 20), e.iThread[i].iState == EThreadDead ? "x" : "");
+	}
 }
 
 // a thread ends (ExecHandler::ThreadKill): logons complete with the exit reason, mutexes it held go to their waiters
@@ -453,6 +509,17 @@ static int CreateThread(CArmCpu& cpu, THle& h, uint32_t aInfo)
 	t.iT = entry & 1;
 	t.iTpidrurw = tld;
 	t.iState = EThreadSuspended;
+	{
+		char fn[120], nm[40];
+		Where(*h.iProcess, cpu, cpu.Read32(aInfo + 8), fn, sizeof(fn));
+		const uint32_t nl = cpu.Read32(aInfo + 36) & 0xFFFFFF, np = cpu.Read32(aInfo + 40);
+		int k = 0;
+		for (; k < (int)sizeof(nm) - 1 && (uint32_t)k < nl && cpu.Valid(np + k, 1); ++k) { const uint8_t c = cpu.Read8(np + k); nm[k] = c >= 32 && c < 127 ? (char)c : '?'; }
+		nm[k] = 0;
+		char l[240];
+		snprintf(l, sizeof(l), "[proteus] thread %d '%s' created by %d, function %s", idx, nm, e.iCur, fn);
+		if (h.iLog) h.iLog(l, h.iLogCtx);
+	}
 	return (int)(KHandleThread0 + idx);
 }
 

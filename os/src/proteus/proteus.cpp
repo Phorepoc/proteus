@@ -875,6 +875,16 @@ static bool BridgeWaitAnyFor(void* aCtx, int aMicroseconds)
 	return true;
 	}
 
+// a request signal that has already arrived (the guest's thread is preempted, not waiting): taken, or none -- never blocks
+static bool BridgePoll(void*)
+	{
+	if (RThread().RequestCount() <= 0)
+		return EFalse;
+	User::WaitForAnyRequest();
+	CheckAsync();
+	return ETrue;
+	}
+
 // microseconds on the system tick: monotonic, unlike the UTC clock (which SNTP moves)
 static uint64_t BridgeNowUs(void*)
 	{
@@ -953,7 +963,9 @@ static void Progress(proteus::CArmCpu& aCpu, void* aHleP)
 	char pc[120], lr[120];
 	proteus::Where(*hle.iProcess, aCpu, aCpu.iLastPc, pc, sizeof(pc));
 	proteus::Where(*hle.iProcess, aCpu, aCpu.R[14], lr, sizeof(lr));
-	RDebug::Printf("PH: proteus progress %u M instructions: pc %s, lr %s", (TUint)(aCpu.iSteps >> 20), pc, lr);
+	char th[160] = "";
+	proteus::ThreadStats(aCpu, const_cast<proteus::THle&>(hle), th, sizeof(th));
+	RDebug::Printf("PH: proteus progress %u M instructions: pc %s, lr %s; %s", (TUint)(aCpu.iSteps >> 20), pc, lr, th);
 	}
 
 // CArmCpu::iOnForeignPc: the guest called native code -- in practice a virtual function of a native object it shares, like the
@@ -1151,7 +1163,7 @@ static TInt MainL()
 		bridge->iObjType[i] = 0;
 		}
 	proteus::TIpcBridge ipc = { bridge, BridgeCreate, BridgeSend, BridgeOwns, BridgeClose, BridgeShare, BridgeWaitAny, BridgeSignal, BridgeKernel, BridgeWaitAnyFor, BridgeNowUs,
-		BridgeNativeExport };
+		BridgeNativeExport, BridgePoll };
 	hle.iIpc = &ipc;
 	TBuf8<KMaxFileName + 1> exePath;
 	exePath.Copy(path);

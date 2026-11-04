@@ -422,10 +422,12 @@ void CArmCpu::Step()
 		}
 		if ((ins & 0x0FC000F0) == 0x00000090 || (ins & 0x0F8000F0) == 0x00800090) { Multiply(ins); return; }
 		if ((ins & 0x0E000090) == 0x00000090 && (ins & 0x60) != 0) { HalfwordTransfer(ins); return; }
-		// LDREX/STREX (ARMv6, word/byte/half: the real euser's atomics): one guest thread, so the exclusive monitor always succeeds
+		// LDREX/STREX (ARMv6, word/byte/half: the real euser's atomics): the local monitor is one flag, cleared when the guest switches
+		// thread (a store-exclusive after a switch fails and the guest's loop retries)
 		if ((ins & 0x0F900FFF) == 0x01900F9F)
 		{
 			const uint32_t a = R[(ins >> 16) & 0xF], sz = (ins >> 21) & 3, rt = (ins >> 12) & 0xF;
+			iExcl = true;
 			if (sz == 1)				// LDREXD Rt, Rt+1
 			{
 				const uint32_t lo = Read32(a), hi = Read32(a + 4);
@@ -439,6 +441,8 @@ void CArmCpu::Step()
 		if ((ins & 0x0F900FF0) == 0x01800F90)
 		{
 			const uint32_t a = R[(ins >> 16) & 0xF], rt = ins & 0xF, v = R[rt], sz = (ins >> 21) & 3;
+			if (!iExcl) { R[(ins >> 12) & 0xF] = 1; return; }		// the monitor was lost: no store, status 1
+			iExcl = false;
 			if (sz == 0) Write32(a, v); else if (sz == 2) Write8(a, (uint8_t)v); else if (sz == 3) Write16(a, (uint16_t)v);
 			else { Write32(a, v); Write32(a + 4, R[(rt + 1) & 0xF]); }		// STREXD Rt, Rt+1
 			R[(ins >> 12) & 0xF] = 0;
@@ -1018,6 +1022,12 @@ void CArmCpu::Run(uint64_t aMaxSteps)
 	{
 		Step();
 		if (iOnProgress && !(iSteps & ((1u << 26) - 1))) iOnProgress(*this, iBpCtx);
+		if (iSliceSteps && iSteps >= iNextSlice)
+		{
+			iNextSlice = iSteps + iSliceSteps;
+			if (iOnSlice) iOnSlice(*this, iBpCtx);
+			if (iHalt != ERunning) break;
+		}
 		if (iSteps - start >= aMaxSteps)
 		{
 			Halt(EStepLimit);

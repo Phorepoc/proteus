@@ -41,3 +41,21 @@ copy of the older working directory `prot-pc` (`protgl-pc2`): boots, SysAp at 15
 A/B on the bad directory: GL in the ROM (a ROM without it restarts the same), core at d18ee94 (restarts), pdk at
 24b64e8c (restarts), screen scale (SCALE=2 restarts). The ROM's file list is the same as the working one's; the
 difference is in the build directory's binaries or data. Not chased further.
+
+## ViewSrv 11 / time slicing (2026-11-04)
+
+**Which thread is busy.** With per-thread instruction counts in the progress line (`cur=0 ran(M): 0:1275 1:0 2:4` at 335 s), the
+busy thread is thread 0, **the main thread**, running Sparkle's Qt start-up and data load (`qtgui`, `qtcore`, `User::Alloc`). The Qt
+threads (thread 1 `qtcore+0xe633c`, thread 2 `qtcore+0xe7578`, both created by thread 0) are idle: 0 and 4 M instructions. So the main
+thread's active scheduler is not starved by another thread; the main thread itself does not return to it. Preemption cannot make
+that thread service its own scheduler; only a faster interpreter, or the load yielding (Qt's processEvents), can.
+
+**What is in the tree.** Time slicing is implemented (`CArmCpu::iOnSlice`, `Preempt` in proteusexec.cpp: native request completions
+taken without blocking through `TIpcBridge::iPoll` = `RThread::RequestCount`, timed waits expire, round robin to the next ready
+thread; the exclusive monitor of LDREX/STREX is real and is cleared by a thread switch), but `KSliceInstructions` is **0**: with
+slicing on, signals are credited between the threads at times the cooperative scheduler never reached, and Sparkle's Qt threads die of a
+stray signal (E32USER-CBase 46 at 84.7 s, QEventDispatcherSymbian::process 0 at 97.9 s guest time; cooperative: first at 358 s). The
+credit decision is `AttributeNative`: 30+ times a native signal arrives that no noted request explains (`native signal with no completed
+noted request` in the log) and is credited by guess. The cause is not found yet (not the guest-completed statuses: `CompleteFor` now
+forgets them; candidates are the native-side requests of the proteus process itself and Qt's RunIfReady, which handles a completed
+request without taking its signal). Next: log each signal's explanation (which noted status) before turning slicing on.

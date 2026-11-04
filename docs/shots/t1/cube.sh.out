@@ -1,0 +1,36 @@
+x32 rc=0
+rom rc=0
+ROM ok (# x32_rom_args: 1588 images get their mmp capabilities (/w/build/rom/caps.tsv))
+kernel rc=0
+disk rc=0
+1:[gles1tri] start
+0:[gles1tri] EGL 1.4 '1.4 Phorepoc'
+0:[symgl] eglInitialize: softpipe screen up
+1:PH: symgl window surface 360x640 at (0,0) x3: no SurfaceManager -- bitmap blit (r=-1)
+1:[gles1tri] GL_RENDERER 'softpipe' GL_VERSION 'OpenGL ES-CM 1.1 Mesa 26.2.4 (git-96cb431210)'
+0:[gles1tri] 20 frames in 2015 ms (glGetError 0x0)
+1:[gles1tri] 19 frames in 2073 ms (glGetError 0x0)
+1:[gles1tri] 17 frames in 2040 ms (glGetError 0x0)
+0:[gles1tri] 21 frames in 2027 ms (glGetError 0x0)
+1:PH: [menuwarm] grid warmed: held 4845 ms, 19 probes (worst WSERV round trip 0 ms); icon cache files wserv 37 -> 37, matrixmenu 0 -> 0
+0:[gles1tri] 20 frames in 2096 ms (glGetError 0x0)
+0:[gles1tri] 22 frames in 2074 ms (glGetError 0x0)
+0:[gles1tri] 20 frames in 2030 ms (glGetError 0x0)
+1:[gles1tri] 18 frames in 2006 ms (glGetError 0x0)
+0:[gles1tri] 20 frames in 2088 ms (glGetError 0x0)
+1:[gles1tri] 18 frames in 2014 ms (glGetError 0x0)
+0:[gles1tri] 19 frames in 2071 ms (glGetError 0x0)
+0:[gles1tri] 17 frames in 2041 ms (glGetError 0x0)
+1:[gles1tri] 19 frames in 2039 ms (glGetError 0x0)
+1:[gles1tri] 15 frames in 2017 ms (glGetError 0x0)
+0:[gles1tri] 18 frames in 2002 ms (glGetError 0x0)
+1:[gles1tri] 23 frames in 2084 ms (glGetError 0x0)
+0:[gles1tri] 23 frames in 2005 ms (glGetError 0x0)
+0:[gles1tri] 23 frames in 2054 ms (glGetError 0x0)
+1:[gles1tri] 22 frames in 2026 ms (glGetError 0x0)
+0:[gles1tri] 23 frames in 2043 ms (glGetError 0x0)
+0:[gles1tri] 23 frames in 2047 ms (glGetError 0x0)
+0:[gles1tri] 21 frames in 2008 ms (glGetError 0x0)
+0:[gles1tri] 23 frames in 2058 ms (glGetError 0x0)
+0:[gles1tri] 23 frames in 2053 ms (glGetError 0x0)
+RUNDONE
