@@ -7,6 +7,7 @@
 // region, handles as small integers, RDebug output to the log. Unknown calls stop the guest with their name (the next thing to emulate).
 #include "proteusrt.h"
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -710,14 +711,38 @@ static bool ThreadExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
 	// ---- mutexes, semaphores, condition variables (local ones; the IPC bridge took any native handle) ----
 	if (!strcmp(name, "EExecMutexCreate") || !strcmp(name, "EExecSemaphoreCreate") || !strcmp(name, "EExecCondVarCreate"))	// (name, [count,] owner)
 	{
+		const int wantType = name[5] == 'M' ? 1 : name[5] == 'S' ? 2 : 3;
+		char gname[48] = "";
+		if (r[0] && GuestDes(cpu, r[0], gname, sizeof(gname)) > 0)		// a global object: its name is unique among those of its type (KErrAlreadyExists)
+		{
+			for (int k = 0; k < e.iSyncCount; ++k)
+				if (e.iSync[k].iType == wantType && !strcasecmp(e.iSync[k].iName, gname)) { r[0] = (uint32_t)-11; return true; }
+		}
 		const int ni = NewSync(e);
 		if (ni < 0) { r[0] = (uint32_t)KErrNoMemory; return true; }
 		TSyncObj& s = e.iSync[ni];
-		s.iType = name[5] == 'M' ? 1 : name[5] == 'S' ? 2 : 3;
+		strncpy(s.iName, gname, sizeof(s.iName) - 1);
+		s.iType = wantType;
 		s.iCount = s.iType == 2 ? (int)r[1] : 0;
 		s.iHolder = -1;
 		r[0] = KHandleObj + ni;
 		return true;
+	}
+	if (!strcmp(name, "EExecOpenObject") && (r[0] == 4 || r[0] == 5 || r[0] == 16))		// (TObjectType, name, owner): a global semaphore / mutex / condition variable of this process
+	{
+		char gname[48];
+		if (GuestDes(cpu, r[1], gname, sizeof(gname)) > 0)
+		{
+			const int wantType = r[0] == 5 ? 1 : r[0] == 4 ? 2 : 3;
+			for (int k = 0; k < e.iSyncCount; ++k)
+				if (e.iSync[k].iType == wantType && e.iSync[k].iName[0] && !strcasecmp(e.iSync[k].iName, gname))
+				{
+					++e.iSync[k].iRefs;
+					r[0] = (uint32_t)(KHandleObj + k);
+					return true;
+				}
+		}
+		return false;		// not ours: the native kernel's objects (the bridge)
 	}
 	if (!strcmp(name, "EExecAfter") || !strcmp(name, "EExecAfterHighRes"))		// (interval us, status): the thread's own timer, ExecHandler::After
 	{
@@ -953,6 +978,291 @@ void Backtrace(CArmCpu& cpu, THle& h)
 	}
 }
 
+// ---- servers and sessions inside the guest process ----
+// A program may run a server of its own in one of its threads (Let's Golf 2's sound engine: CServer2 / CSession2 in a thread, the game's threads
+// its clients). The kernel does this with DServer / DSession / RMessageK (kernel/sipc.cpp); the same process, so every pointer in a message is
+// valid for both ends and a descriptor copy is a memory copy. Servers, sessions and messages are guest-side objects here, named by handles in
+// ranges of their own (nothing else uses them; the bridge's native sessions are other servers). A session create by name tries these servers
+// first; a name that is none of them goes to the native servers as before.
+enum { KGMaxSrv = 16, KGMaxSess = 128, KGMaxMsg = 512, KGHandleSrv0 = 0x00F40000, KGHandleSess0 = 0x00F50000, KGHandleMsg0 = 0x00F60000,
+	KGConnect = -1, KGDisconnect = -2, KGErrDied = -13, KGErrOverflow = -9, KGErrArgument = -6, KGErrBadHandle = -8, KGErrCancel = -3,
+	KGErrServerTerminated = -15, KGErrAlreadyExists = -11, KGErrBadDescriptor = -38 };
+struct TGMsg { bool iUsed; int iSess, iFn; uint32_t iArgs[4], iFlags; int iClient; uint32_t iStatus; };
+struct TGSess { bool iUsed; int iSrv; uint32_t iCookie; bool iClosing; };
+struct TGSrv { bool iUsed; char iName[64]; int iRecvThread; uint32_t iRecvStatus, iRecvMsg; int iQ[KGMaxMsg]; int iQHead, iQCount; };
+static TGMsg gGMsg[KGMaxMsg];
+static TGSess gGSess[KGMaxSess];
+static TGSrv gGSrv[KGMaxSrv];
+
+static int GSrvOf(uint32_t aHandle) { const uint32_t i = aHandle - KGHandleSrv0; return aHandle >= KGHandleSrv0 && i < KGMaxSrv && gGSrv[i].iUsed ? (int)i : -1; }
+static int GSessOf(uint32_t aHandle) { const uint32_t i = aHandle - KGHandleSess0; return aHandle >= KGHandleSess0 && i < KGMaxSess && gGSess[i].iUsed ? (int)i : -1; }
+static int GMsgOf(uint32_t aHandle) { const uint32_t i = aHandle - KGHandleMsg0; return aHandle >= KGHandleMsg0 && i < KGMaxMsg && gGMsg[i].iUsed ? (int)i : -1; }
+
+static void GFillMessage(CArmCpu& cpu, uint32_t aBuf, int aMsg)		// RMessage2: iHandle, iFunction, iArgs[4], iSpare1, iSessionPtr, iFlags, iSpare3
+{
+	const TGMsg& g = gGMsg[aMsg];
+	cpu.Write32(aBuf, (uint32_t)(KGHandleMsg0 + aMsg));
+	cpu.Write32(aBuf + 4, (uint32_t)g.iFn);
+	for (int k = 0; k < 4; ++k) cpu.Write32(aBuf + 8 + 4 * k, g.iArgs[k]);
+	cpu.Write32(aBuf + 24, 0);
+	cpu.Write32(aBuf + 28, gGSess[g.iSess].iCookie);
+	cpu.Write32(aBuf + 32, 0);
+	cpu.Write32(aBuf + 36, 0);
+}
+
+// DServer::Deliver: the oldest queued message goes to the server's pending Receive
+static void GDeliver(CArmCpu& cpu, TExecState& e, int aSrv)
+{
+	TGSrv& v = gGSrv[aSrv];
+	if (!v.iRecvStatus || v.iQCount == 0) return;
+	const int m = v.iQ[v.iQHead];
+	v.iQHead = (v.iQHead + 1) % KGMaxMsg;
+	--v.iQCount;
+	GFillMessage(cpu, v.iRecvMsg, m);
+	const uint32_t st = v.iRecvStatus;
+	v.iRecvStatus = 0;
+	CompleteFor(cpu, e, v.iRecvThread, st, KErrNone);
+}
+
+// DSession::Send: a message to the session's server; aStatus is the client's request (0 = blind, and the disconnect message)
+static int GSend(CArmCpu& cpu, TExecState& e, int aSess, int aFn, uint32_t aArgs, uint32_t aStatus, int aClient)
+{
+	TGSess& s = gGSess[aSess];
+	if (s.iSrv < 0 || !gGSrv[s.iSrv].iUsed) return KGErrServerTerminated;
+	int m = 0;
+	while (m < KGMaxMsg && gGMsg[m].iUsed) ++m;
+	if (m == KGMaxMsg) return KErrNoMemory;
+	TGMsg& g = gGMsg[m];
+	memset(&g, 0, sizeof(g));
+	g.iUsed = true; g.iSess = aSess; g.iFn = aFn; g.iClient = aClient; g.iStatus = aStatus;
+	if (aArgs)
+	{
+		for (int k = 0; k < 4; ++k) g.iArgs[k] = cpu.Read32(aArgs + 4 * k);
+		g.iFlags = cpu.Read32(aArgs + 16);
+	}
+	if (aStatus) cpu.Write32(aStatus, (uint32_t)KRequestPending);
+	TGSrv& v = gGSrv[s.iSrv];
+	v.iQ[(v.iQHead + v.iQCount) % KGMaxMsg] = m;
+	++v.iQCount;
+	GDeliver(cpu, e, s.iSrv);
+	return KErrNone;
+}
+
+// the descriptor argument aParam of a message: its guest address, the TIpcArgs flag bits (4 = descriptor, 1 = 16-bit, 2 = read-only), or 0
+static uint32_t GArgDes(const TGMsg& g, int aParam, uint32_t& aFlags)
+{
+	aFlags = aParam >= 0 && aParam < 4 ? (g.iFlags >> (3 * aParam)) & 7 : 0;
+	return (aFlags & 4) ? g.iArgs[aParam] : 0;
+}
+// a TDesC's data pointer, length and (a TDes) maximum length, as GuestDes lays them out
+static bool GDesInfo(CArmCpu& cpu, uint32_t aDes, uint32_t& aPtr, uint32_t& aLen, uint32_t& aMax, bool& aWritable)
+{
+	if (!cpu.Valid(aDes, 8)) return false;
+	const uint32_t w = cpu.Read32(aDes), type = w >> 28;
+	aLen = w & 0x0FFFFFFF;
+	aWritable = type >= 2;
+	aMax = aLen;
+	switch (type)
+	{
+	case 0: aPtr = aDes + 4; break;
+	case 1: aPtr = cpu.Read32(aDes + 4); break;
+	case 2: aPtr = cpu.Read32(aDes + 8); aMax = cpu.Read32(aDes + 4); break;
+	case 3: aPtr = aDes + 8; aMax = cpu.Read32(aDes + 4); break;
+	case 4: aPtr = cpu.Read32(aDes + 8) + 4; aMax = cpu.Read32(aDes + 4); break;
+	default: return false;
+	}
+	return true;
+}
+
+static void GFreeServer(CArmCpu& cpu, TExecState& e, int aSrv)
+{
+	TGSrv& v = gGSrv[aSrv];
+	for (int q = 0; q < v.iQCount; ++q)		// the messages nobody received: their clients learn the server is gone
+	{
+		TGMsg& g = gGMsg[v.iQ[(v.iQHead + q) % KGMaxMsg]];
+		if (g.iStatus) CompleteFor(cpu, e, g.iClient, g.iStatus, KGErrServerTerminated);
+		g.iUsed = false;
+	}
+	for (int k = 0; k < KGMaxSess; ++k)
+		if (gGSess[k].iUsed && gGSess[k].iSrv == aSrv) gGSess[k].iSrv = -1;
+	memset(&v, 0, sizeof(v));
+}
+
+// the executive calls of guest servers / sessions / messages; false = not one of ours (the bridge's or another handler's)
+static bool GuestIpcExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
+{
+	TExecState& e = h.iExec;
+	if (!e.iThread || strncmp(name, "EExec", 5)) return false;
+	const int cur = e.iCur;
+	if (!strcmp(name, "EExecServerCreateWithOptions") || !strcmp(name, "EExecServerCreate"))		// (TDesC8* name, mode, role, options)
+	{
+		char nm[64];
+		if (GuestDes(cpu, r[0], nm, sizeof(nm)) < 0) { r[0] = (uint32_t)KGErrBadDescriptor; return true; }
+		int fr = -1;
+		for (int k = 0; k < KGMaxSrv; ++k)
+		{
+			if (gGSrv[k].iUsed && nm[0] && !strcmp(gGSrv[k].iName, nm)) { r[0] = (uint32_t)KGErrAlreadyExists; return true; }
+			if (!gGSrv[k].iUsed && fr < 0) fr = k;
+		}
+		if (fr < 0) { r[0] = (uint32_t)KErrNoMemory; return true; }
+		memset(&gGSrv[fr], 0, sizeof(TGSrv));
+		gGSrv[fr].iUsed = true;
+		strncpy(gGSrv[fr].iName, nm, sizeof(gGSrv[fr].iName) - 1);
+		Say(h, "[proteus] guest server '%s' created", nm);
+		r[0] = (uint32_t)(KGHandleSrv0 + fr);
+		return true;
+	}
+	if (!strcmp(name, "EExecServerReceive"))		// (server handle, TRequestStatus&, RMessage2*)
+	{
+		const int s = GSrvOf(r[0]);
+		if (s < 0) return false;
+		TGSrv& v = gGSrv[s];
+		if (v.iRecvStatus) { strncpy(cpu.iNote, "ServerReceive with a receive already pending", sizeof(cpu.iNote) - 1); cpu.Halt(EHleStop); return true; }
+		cpu.Write32(r[1], (uint32_t)KRequestPending);
+		v.iRecvStatus = r[1]; v.iRecvMsg = r[2]; v.iRecvThread = cur;
+		GDeliver(cpu, e, s);
+		return true;
+	}
+	if (!strcmp(name, "EExecServerCancel"))
+	{
+		const int s = GSrvOf(r[0]);
+		if (s >= 0 && gGSrv[s].iRecvStatus)
+		{
+			const uint32_t st = gGSrv[s].iRecvStatus;
+			gGSrv[s].iRecvStatus = 0;
+			CompleteFor(cpu, e, gGSrv[s].iRecvThread, st, KGErrCancel);
+		}
+		return s >= 0;
+	}
+	if (!strcmp(name, "EExecSessionCreate") || !strcmp(name, "EExecSessionCreateFromHandle"))
+	{
+		int srv = -1;
+		if (!strcmp(name, "EExecSessionCreate"))		// (TDesC8& name, slots, policy, type)
+		{
+			char nm[64];
+			if (GuestDes(cpu, r[0], nm, sizeof(nm)) < 0) return false;
+			for (int k = 0; k < KGMaxSrv && srv < 0; ++k) if (gGSrv[k].iUsed && !strcmp(gGSrv[k].iName, nm)) srv = k;
+		}
+		else
+			srv = GSrvOf(r[0]);
+		if (srv < 0) return false;
+		int s = 0;
+		while (s < KGMaxSess && gGSess[s].iUsed) ++s;
+		if (s == KGMaxSess) { r[0] = (uint32_t)KErrNoMemory; return true; }
+		memset(&gGSess[s], 0, sizeof(TGSess));
+		gGSess[s].iUsed = true; gGSess[s].iSrv = srv;
+		r[0] = (uint32_t)(KGHandleSess0 + s);
+		return true;
+	}
+	const int sess = GSessOf(r[0]);
+	if (sess >= 0 && (!strcmp(name, "EExecSessionSendSync") || !strcmp(name, "EExecSessionSend")))		// (handle, function, TIpcArgs*, TRequestStatus*)
+	{
+		const int rc = GSend(cpu, e, sess, (int)r[1], r[2], r[3], cur);
+		if (rc != KErrNone && r[3]) CompleteFor(cpu, e, cur, r[3], rc);
+		r[0] = r[3] ? KErrNone : (uint32_t)rc;
+		return true;
+	}
+	if (!strcmp(name, "EExecSessionShare"))		// (TInt& handle, mode)
+	{
+		if (GSessOf(cpu.Read32(r[0])) < 0) return false;
+		r[0] = KErrNone;
+		return true;
+	}
+	if (!strcmp(name, "EExecHandleClose"))
+	{
+		if (sess >= 0)
+		{
+			TGSess& s = gGSess[sess];
+			if (s.iCookie && s.iSrv >= 0 && gGSrv[s.iSrv].iUsed && !s.iClosing)		// the server hears of it (DSession::Close -> __SendDiscMsg) and frees the session when it completes it
+			{
+				s.iClosing = true;
+				if (GSend(cpu, e, sess, KGDisconnect, 0, 0, -1) == KErrNone) { r[0] = KErrNone; return true; }
+			}
+			memset(&s, 0, sizeof(s));
+			r[0] = KErrNone;
+			return true;
+		}
+		const int srv = GSrvOf(r[0]);
+		if (srv >= 0) { GFreeServer(cpu, e, srv); r[0] = KErrNone; return true; }
+		return false;
+	}
+	// ---- messages (the server's side) ----
+	if (strncmp(name, "EExecMessage", 12) && strcmp(name, "EExecSetSessionPtr") && strcmp(name, "EExecTransferSession")) return false;
+	const int m = GMsgOf(r[0]);
+	if (m < 0) return false;		// (a bridge message handle: none are handed out -- the native servers' messages never reach the guest)
+	TGMsg& g = gGMsg[m];
+	if (!strcmp(name, "EExecMessageComplete"))		// (handle, reason)
+	{
+		TGSess& s = gGSess[g.iSess];
+		const int fn = g.iFn;
+		if (g.iStatus) CompleteFor(cpu, e, g.iClient, g.iStatus, (int32_t)r[1]);
+		g.iUsed = false;
+		if (fn == KGDisconnect) memset(&s, 0, sizeof(s));
+		else if (fn == KGConnect && (int32_t)r[1] != KErrNone) s.iCookie = 0;
+		return true;
+	}
+	if (!strcmp(name, "EExecSetSessionPtr")) { gGSess[g.iSess].iCookie = r[1]; return true; }		// (handle, cookie)
+	if (!strcmp(name, "EExecMessageConstructFromPtr")) { GFillMessage(cpu, r[1], m); return true; }		// (handle, RMessage2*)
+	if (!strcmp(name, "EExecMessageClientStatus")) { r[0] = g.iStatus; return true; }
+	if (!strcmp(name, "EExecMessageClient")) { r[0] = g.iClient >= 0 ? (uint32_t)(KHandleThread0 + g.iClient) : (uint32_t)KGErrDied; return true; }	// (handle, owner type): this process's thread
+	if (!strcmp(name, "EExecMessageClientProcessFlags") || !strcmp(name, "EExecMessageClientThreadFlags")) { r[0] = 0; return true; }
+	if (!strcmp(name, "EExecMessageSetProcessPriority")) { r[0] = KErrNone; return true; }
+	if (!strcmp(name, "EExecMessageSecurityInfo"))		// (handle, SSecurityInfo&): the program's own, it is the client
+	{
+		const TLoaded* mod = h.iProcess ? &h.iProcess->iMod[0] : NULL;
+		cpu.Write32(r[1], mod ? mod->iSecureId : 0);
+		cpu.Write32(r[1] + 4, mod ? mod->iVendorId : 0);
+		cpu.Write32(r[1] + 8, mod ? mod->iCaps[0] : 0);
+		cpu.Write32(r[1] + 12, mod ? mod->iCaps[1] : 0);
+		return true;
+	}
+	if (!strcmp(name, "EExecMessageGetDesLength") || !strcmp(name, "EExecMessageGetDesMaxLength"))		// (handle, param)
+	{
+		uint32_t f, ptr, len, max; bool w;
+		if ((int)r[1] < 0 || (int)r[1] >= 4) { r[0] = (uint32_t)KGErrArgument; return true; }
+		const uint32_t d = GArgDes(g, (int)r[1], f);
+		if (!d || !GDesInfo(cpu, d, ptr, len, max, w)) { r[0] = (uint32_t)KGErrBadDescriptor; return true; }
+		if (!strcmp(name, "EExecMessageGetDesMaxLength") && !w) { r[0] = (uint32_t)KGErrBadDescriptor; return true; }
+		r[0] = !strcmp(name, "EExecMessageGetDesLength") ? len : max;
+		return true;
+	}
+	if (!strcmp(name, "EExecMessageIpcCopy"))		// (handle, param, SIpcCopyInfo&, offset): the server reads the client's descriptor, or writes into it
+	{
+		uint32_t f, ptr, len, max; bool w;
+		const int param = (int)r[1];
+		const uint32_t info = r[2];
+		const int off = (int)r[3];
+		const uint32_t lptr = cpu.Read32(info), llen = cpu.Read32(info + 4), fl = cpu.Read32(info + 8);
+		const int shift = (fl & 0x80000000u) ? 1 : 0;
+		const bool write = (fl & 0x10000000u) != 0;
+		if (param < 0 || param >= 4 || off < 0) { r[0] = (uint32_t)KGErrArgument; return true; }
+		const uint32_t d = GArgDes(g, param, f);
+		if (!d || !GDesInfo(cpu, d, ptr, len, max, w) || (int)(f & 1) != shift) { r[0] = (uint32_t)KGErrBadDescriptor; return true; }
+		if (!write)
+		{
+			if ((uint32_t)off > len) { r[0] = (uint32_t)KGErrArgument; return true; }
+			const uint32_t n = len - (uint32_t)off;
+			const uint32_t c = n < llen ? n : llen;
+			if (c && (!cpu.Valid(ptr + ((uint32_t)off << shift), c << shift) || !cpu.Valid(lptr, c << shift))) { r[0] = (uint32_t)KGErrBadDescriptor; return true; }
+			if (c) memmove((void*)(uintptr_t)lptr, (const void*)(uintptr_t)(ptr + ((uint32_t)off << shift)), c << shift);
+			r[0] = n > llen ? (uint32_t)KGErrOverflow : c;		// the number of elements read (the caller sets its length from it)
+			return true;
+		}
+		if (!w || (f & 2)) { r[0] = (uint32_t)KGErrBadDescriptor; return true; }
+		if ((uint32_t)off + llen > max) { r[0] = (uint32_t)KGErrOverflow; return true; }
+		if (llen && (!cpu.Valid(ptr + ((uint32_t)off << shift), llen << shift) || !cpu.Valid(lptr, llen << shift))) { r[0] = (uint32_t)KGErrBadDescriptor; return true; }
+		if (llen) memmove((void*)(uintptr_t)(ptr + ((uint32_t)off << shift)), (const void*)(uintptr_t)lptr, llen << shift);
+		cpu.Write32(d, (cpu.Read32(d) & 0xF0000000u) | ((uint32_t)off + llen));		// the client's descriptor length
+		r[0] = KErrNone;
+		return true;
+	}
+	char l[120];
+	snprintf(l, sizeof(l), "guest message call %s is not emulated", name);
+	strncpy(cpu.iNote, l, sizeof(cpu.iNote) - 1);
+	cpu.Halt(EHleStop);
+	return true;
+}
+
 static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm);
 
 // trace: an executive call that answers an error the app may turn into its exit (bounded), with the caller
@@ -1010,6 +1320,7 @@ static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 		snprintf(l, sizeof(l), "[proteus] qexec %s r0 %x r1 %x r2 %x r3 %x lr %s", name, r[0], r[1], r[2], r[3], w);
 		h.iLog(l, h.iLogCtx);
 	}
+	if (GuestIpcExec(cpu, h, name, r)) return true;
 	if (ThreadExec(cpu, h, name, r)) return true;
 	if (fast)
 	{

@@ -147,6 +147,7 @@ struct TSyncObj
 	int iRefs;			// handles to it (RHandleBase::Duplicate adds one, Close removes one; none left = the slot is free: iType 0)
 	// a message queue (type 4: iCount = messages queued, iHolder = the head slot); the requests of NotifySpaceAvailable / NotifyDataAvailable
 	uint8_t* iData; int iSlots, iLen; uint32_t iSpaceStatus, iDataStatus; int iSpaceThread, iDataThread;
+	char iName[48];		// a global object's name (RSemaphore::CreateGlobal ...), empty = anonymous
 };		// 1 mutex (iCount = hold count, iHolder = thread), 2 semaphore (iCount), 3 condition variable, 4 message queue
 struct TExecState
 {
