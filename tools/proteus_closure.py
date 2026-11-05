@@ -73,7 +73,7 @@ def thumb_stats(img):
 # silent failure (`RLibrary::Load f32agent.dll -> -1` = no music; no ICL plug-ins = no images; a stale stub of iaupdateapi/drtrvct2_2
 # = `proteus wait 1`, no window group). The GL DLLs are not listed on purpose: they run natively (NATIVE_GL).
 APP_EXTRAS = {
-    "common": [],
+    "common": ["scdv.dll"],		# the ARM screen driver the window server loads (the OMAP draw devices; the generic one refuses the rotation)
     "sparkle": ["f32agent.dll", "f32agentui.dll"],
     "letsgolf2": ["akninit.dll", "2001e2b1.dll", "eikcdlg.dll", "bitmaptransformsrefplugin.dll", "avkonfep.dll", "aknfepuiavkonplugin.dll",
                   "bmpcodec.dll", "gifcodec.dll", "icocodec.dll", "jpegcodec.dll", "mbmcodec.dll", "pngcodec.dll", "wbmpcodec.dll",
@@ -81,6 +81,8 @@ APP_EXTRAS = {
     "pys60": ["iaupdateapi.dll", "drtrvct2_2.dll"],
     "calculator": [],
 }
+# euser/efsrv/hal come with the ROM (proteus/arm: the device builds P2c/P2d run), never from the run disk
+ROM_ARM = {"euser.dll", "efsrv.dll", "hal.dll"}
 NATIVE_GL = {"libegl.dll", "libglesv2.dll", "libglesv1_cm.dll", "libgles_cm.dll"}
 
 
@@ -157,7 +159,7 @@ def main():
             shutil.copyfile(found[name], os.path.join(a.out, name))
     print(f"closure: {len(order)} modules ({len(order) - 1} DLLs), unresolved {len(missing)}: {', '.join(sorted(missing)) or '-'}")
     rc = 0
-    if a.strict and missing:
+    if a.strict and missing - ROM_ARM:
         print("STRICT: unresolved DLLs -- build them for ARM (a stale ARM build directory has the 2010 stubs / lacks newer components)", file=sys.stderr)
         rc = 2
     if native:

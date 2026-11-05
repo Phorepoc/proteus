@@ -9,23 +9,24 @@
 #   proteus_stage.sh NAME APP sis DIR        DIR in protgl-in holds *.sis and sisapp.txt; the closure root is the EXE sisapp.txt names, extracted from the packages
 #   proteus_stage.sh NAME APP exe DIR/FILE   a loose EXE in protgl-in
 #   EXE=/in/path/app.exe  closure root for the sis mode          OUT=<dir>  where compat-NAME.img lands (default: .)
+#   BASE=lg-base.img      the blank run disk in protgl-pc2 (default sparkle-inst.img, 256 MB with the Qt stack; a big package needs the 1 GB lg-base.img)
 set -eu
 export MSYS_NO_PATHCONV=1
 NAME=$1; APP=$2; MODE=$3; ARG=$4
 OUT=$(cd "${OUT:-.}" && pwd -W 2>/dev/null || pwd)
 C=protreg2-stage-$NAME
 docker rm -f "$C" >/dev/null 2>&1 || true
-docker create --name "$C" -e MODE="$MODE" -e ARG="$ARG" -e APP="$APP" -e NAME="$NAME" -e EXE="${EXE:-}" \
+docker create --name "$C" -e MODE="$MODE" -e ARG="$ARG" -e APP="$APP" -e NAME="$NAME" -e EXE="${EXE:-}" -e BASE="${BASE:-}" \
   -v protgl-pc2:/b -v protgl-in:/in -v protgl-src:/w -v protgl-arm:/armb ghcr.io/phorepoc/base:latest bash -c '
-set -e; export MTOOLS_SKIP_CHECK=1; P=1048576; D=/b/compat-$NAME.img; cp /b/sparkle-inst.img $D; I=$D@@$P
+set -e; export MTOOLS_SKIP_CHECK=1; P=1048576; D=/b/compat-$NAME.img; cp /b/${BASE:-sparkle-inst.img} $D; I=$D@@$P
+mmd -i $I ::sis ::sys ::sys/bin ::sys/bin/arm 2>/dev/null || true
 for f in $(mdir -b -i $I ::sis | grep -i "\.sis$"); do mdel -i $I "$f"; done
 rm -rf /tmp/cl
 if [ "$MODE" = sis ]; then
   for f in /in/$ARG/*.sis; do mcopy -o -i $I $f ::sis/; done
   mcopy -o -i $I /in/$ARG/sisapp.txt ::sisapp.txt
   mkdir -p /tmp/x; for f in /in/$ARG/*.sis; do python3 /w/proteus/tools/sis_extract.py $f /tmp/x >/dev/null; done
-  APPX=$(tr -d "
-" < /in/$ARG/sisapp.txt)
+  APPX=$(head -n1 /in/$ARG/sisapp.txt | sed "s/[[:space:]]*$//")
   ROOT=${EXE:-$(find /tmp/x -iname "$APPX" | head -1)}; test -n "$ROOT" || { echo "no $APPX in the packages"; exit 1; }
 else
   mcopy -o -i $I /in/$ARG ::sys/bin/$(basename $ARG)
