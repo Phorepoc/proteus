@@ -78,6 +78,7 @@ def main():
     ap.add_argument("--dirs")
     ap.add_argument("--out")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--strict", action="store_true", help="exit 2 when a DLL stays unresolved (a stale or incomplete ARM build: the app then fails at run time, e.g. drtrvct2_2 ordinal 28 not emulated)")
     ap.add_argument("--extra", help="comma-separated DLLs the app loads at run time (RLibrary::Load: ECOM/CDL plug-ins), with their closure")
     ap.add_argument("--cdl", action="store_true", help="add every CDL layout instance (<8 hex digits>.dll) in --dirs, with its closure")
     a = ap.parse_args()
@@ -140,12 +141,18 @@ def main():
             os.makedirs(a.out, exist_ok=True)
             shutil.copyfile(found[name], os.path.join(a.out, name))
     print(f"closure: {len(order)} modules ({len(order) - 1} DLLs), unresolved {len(missing)}: {', '.join(sorted(missing)) or '-'}")
+    rc = 0
+    if a.strict and missing:
+        print("STRICT: unresolved DLLs -- build them for ARM (a stale ARM build directory has the 2010 stubs / lacks newer components)", file=sys.stderr)
+        rc = 2
     if native:
         print(f"native (not staged, run on the native GL): {', '.join(sorted(native))}")
     print(f"thumb: {len(thumb_mods)} mostly-Thumb modules ({', '.join(thumb_mods) or '-'}); {tot_te} Thumb exports, {tot_pairs} Thumb BL pairs in all")
     if a.out:
         print(f"copied to {a.out}  (boot: DISKFILES={a.out}=proteus)")
 
+    return rc
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
