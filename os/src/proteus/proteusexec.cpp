@@ -567,6 +567,8 @@ void ThreadStats(CArmCpu& cpu, THle& h, char* aOut, int aMax)
 				(unsigned)e.iThread[i].iWakeMax, e.iThread[i].iWakeSlow);
 }
 
+static void GThreadDied(CArmCpu& cpu, TExecState& e, int aThread);		// the guest servers a thread owns (below)
+
 // a thread ends (ExecHandler::ThreadKill): logons complete with the exit reason, mutexes it held go to their waiters
 static void EndThread(CArmCpu& cpu, THle& h, int i, int aType, int aReason, const char* aCategory)
 {
@@ -581,6 +583,7 @@ static void EndThread(CArmCpu& cpu, THle& h, int i, int aType, int aReason, cons
 		if (t.iLogonStatus[k]) { CompleteFor(cpu, e, t.iLogonOwner[k], t.iLogonStatus[k], aReason); t.iLogonStatus[k] = 0; }
 	for (int m = 0; m < e.iSyncCount; ++m)
 		if (e.iSync[m].iType == 1 && e.iSync[m].iHolder == i) { e.iSync[m].iHolder = -1; e.iSync[m].iCount = 0; HandOffMutex(e, m); }
+	GThreadDied(cpu, e, i);
 }
 
 // ExecHandler::ThreadCreate: a new thread with its own stack chunk, suspended; it starts as the kernel starts a user thread (ckernel.cia):
@@ -986,10 +989,16 @@ void Backtrace(CArmCpu& cpu, THle& h)
 // first; a name that is none of them goes to the native servers as before.
 enum { KGMaxSrv = 16, KGMaxSess = 128, KGMaxMsg = 512, KGHandleSrv0 = 0x00F40000, KGHandleSess0 = 0x00F50000, KGHandleMsg0 = 0x00F60000,
 	KGConnect = -1, KGDisconnect = -2, KGErrDied = -13, KGErrOverflow = -9, KGErrArgument = -6, KGErrBadHandle = -8, KGErrCancel = -3,
-	KGErrServerTerminated = -15, KGErrAlreadyExists = -11, KGErrBadDescriptor = -38 };
-struct TGMsg { bool iUsed; int iSess, iFn; uint32_t iArgs[4], iFlags; int iClient; uint32_t iStatus; };
-struct TGSess { bool iUsed; int iSrv; uint32_t iCookie; bool iClosing; };
-struct TGSrv { bool iUsed; char iName[64]; int iRecvThread; uint32_t iRecvStatus, iRecvMsg; int iQ[KGMaxMsg]; int iQHead, iQCount; };
+	KGErrServerTerminated = -15, KGErrAlreadyExists = -11, KGErrBadDescriptor = -38, KGErrSessionClosed = -36,
+	KGMsgQueued = 1, KGMsgAccepted = 2,		// RMessageK states: delivered to the server's queue / accepted by a Receive
+	KGRoleStandalone = 1, KGRoleMaster = 2, KGRoleSlave = 3,		// TIpcSessionRole EServerRole_* (Default = 0 means Standalone)
+	KGPanicBadHandle = 0, KGPanicNullCookie = 58, KGPanicInvalidCookieMsg = 60,		// KERN-EXEC (e32kpan.h: EBadHandle, ESessionNullCookie, ESessionInvalidCookieMsg)
+	KGObjThread = 0, KGObjChunk = 2, KGObjSemaphore = 4, KGObjMutex = 5, KGObjMsgQueue = 14, KGObjCondVar = 16, KGObjAny = -1,		// TObjectType (u32std.h)
+	KGExitPanic = 2 };
+struct TGMsg { bool iUsed; int iSess, iFn; uint32_t iArgs[4], iFlags; int iClient; uint32_t iStatus; int iState; uint32_t iSeq; };
+struct TGSess { bool iUsed; int iSrv; uint32_t iCookie; bool iClosing, iDiscSent; };
+struct TGSrv { bool iUsed; char iName[64]; int iRole, iCreator, iOwner; int iRecvThread; uint32_t iRecvStatus, iRecvMsg; int iQ[KGMaxMsg]; int iQHead, iQCount; };
+static uint32_t gGSeq;
 static TGMsg gGMsg[KGMaxMsg];
 static TGSess gGSess[KGMaxSess];
 static TGSrv gGSrv[KGMaxSrv];
@@ -1018,6 +1027,7 @@ static void GDeliver(CArmCpu& cpu, TExecState& e, int aSrv)
 	const int m = v.iQ[v.iQHead];
 	v.iQHead = (v.iQHead + 1) % KGMaxMsg;
 	--v.iQCount;
+	gGMsg[m].iState = KGMsgAccepted;
 	GFillMessage(cpu, v.iRecvMsg, m);
 	const uint32_t st = v.iRecvStatus;
 	v.iRecvStatus = 0;
@@ -1034,7 +1044,7 @@ static int GSend(CArmCpu& cpu, TExecState& e, int aSess, int aFn, uint32_t aArgs
 	if (m == KGMaxMsg) return KErrNoMemory;
 	TGMsg& g = gGMsg[m];
 	memset(&g, 0, sizeof(g));
-	g.iUsed = true; g.iSess = aSess; g.iFn = aFn; g.iClient = aClient; g.iStatus = aStatus;
+	g.iUsed = true; g.iSess = aSess; g.iFn = aFn; g.iClient = aClient; g.iStatus = aStatus; g.iState = KGMsgQueued; g.iSeq = ++gGSeq;
 	if (aArgs)
 	{
 		for (int k = 0; k < 4; ++k) g.iArgs[k] = cpu.Read32(aArgs + 4 * k);
@@ -1074,18 +1084,116 @@ static bool GDesInfo(CArmCpu& cpu, uint32_t aDes, uint32_t& aPtr, uint32_t& aLen
 	return true;
 }
 
+static bool GAlive(TExecState& e, int aThread)		// a guest thread that has not died (the kernel: iMState != EDead)
+{
+	return aThread >= 0 && aThread < e.iThreadCount && e.iThread[aThread].iState != EThreadDead && e.iThread[aThread].iState != EThreadFree;
+}
+
+// a message leaves its server's queue (iServerLink.Deque)
+static void GUnqueue(TGSrv& v, int aMsg)
+{
+	int keep[KGMaxMsg], n = 0;
+	for (int q = 0; q < v.iQCount; ++q) { const int m = v.iQ[(v.iQHead + q) % KGMaxMsg]; if (m != aMsg) keep[n++] = m; }
+	v.iQHead = 0; v.iQCount = n;
+	for (int q = 0; q < n; ++q) v.iQ[q] = keep[q];
+}
+
+// DSession::Detach: the session's messages that the server was given (queued or accepted) complete with aReason -- unless the client has closed
+// the session (IsClosing) or died -- and every message returns to the pool. The disconnect message is only freed.
+static void GDetach(CArmCpu& cpu, TExecState& e, int aSess, int aReason)
+{
+	TGSess& s = gGSess[aSess];
+	for (int m = 0; m < KGMaxMsg; ++m)
+	{
+		TGMsg& g = gGMsg[m];
+		if (!g.iUsed || g.iSess != aSess) continue;
+		if (g.iState == KGMsgQueued && s.iSrv >= 0) GUnqueue(gGSrv[s.iSrv], m);
+		if (g.iFn != KGDisconnect && g.iStatus && !s.iClosing && GAlive(e, g.iClient)) CompleteFor(cpu, e, g.iClient, g.iStatus, aReason);
+		g.iUsed = false;
+	}
+}
+
+// DServer::Close (its last handle): a pending Receive completes with KErrCancel, every session is detached with KErrServerTerminated
 static void GFreeServer(CArmCpu& cpu, TExecState& e, int aSrv)
 {
 	TGSrv& v = gGSrv[aSrv];
-	for (int q = 0; q < v.iQCount; ++q)		// the messages nobody received: their clients learn the server is gone
-	{
-		TGMsg& g = gGMsg[v.iQ[(v.iQHead + q) % KGMaxMsg]];
-		if (g.iStatus) CompleteFor(cpu, e, g.iClient, g.iStatus, KGErrServerTerminated);
-		g.iUsed = false;
-	}
+	if (v.iRecvStatus && GAlive(e, v.iRecvThread)) CompleteFor(cpu, e, v.iRecvThread, v.iRecvStatus, KGErrCancel);
+	v.iRecvStatus = 0;
 	for (int k = 0; k < KGMaxSess; ++k)
-		if (gGSess[k].iUsed && gGSess[k].iSrv == aSrv) gGSess[k].iSrv = -1;
+		if (gGSess[k].iUsed && gGSess[k].iSrv == aSrv)
+		{
+			GDetach(cpu, e, k, KGErrServerTerminated);
+			gGSess[k].iSrv = -1;
+			if (gGSess[k].iClosing) memset(&gGSess[k], 0, sizeof(TGSess));		// the client has gone: the session object is deleted with its last access
+		}
 	memset(&v, 0, sizeof(v));
+}
+
+// a guest thread ended: the servers it owns (a named server's handle is thread-owned) are closed with it
+static void GThreadDied(CArmCpu& cpu, TExecState& e, int aThread)
+{
+	for (int k = 0; k < KGMaxSrv; ++k)
+		if (gGSrv[k].iUsed && gGSrv[k].iOwner == aThread) GFreeServer(cpu, e, k);
+}
+
+// the running thread ends with a KERN-EXEC panic (K::PanicCurrentThread); the main thread's panic ends the process
+static void GPanic(CArmCpu& cpu, THle& h, int aReason)
+{
+	TExecState& e = h.iExec;
+	char l[120];
+	snprintf(l, sizeof(l), "[proteus] guest thread %d panics: KERN-EXEC %d", e.iCur, aReason);
+	if (h.iLog) h.iLog(l, h.iLogCtx);
+	if (e.iCur == 0) { cpu.Halt(EExited, aReason); return; }
+	EndThread(cpu, h, e.iCur, KGExitPanic, aReason, "KERN-EXEC");
+	Reschedule(cpu, h);
+}
+
+// ExecHandler::MessageComplete
+static void GComplete(CArmCpu& cpu, TExecState& e, int aMsg, int32_t aReason)
+{
+	TGMsg& g = gGMsg[aMsg];
+	const int sess = g.iSess, fn = g.iFn;
+	TGSess& s = gGSess[sess];
+	if (fn == KGDisconnect)		// DSession::CloseFromDisconnect: the session is detached (nothing completes: the client has closed it) and freed
+	{
+		GDetach(cpu, e, sess, KGErrSessionClosed);
+		g.iUsed = false;
+		memset(&s, 0, sizeof(s));
+		return;
+	}
+	const uint32_t status = g.iStatus;
+	const int client = g.iClient;
+	g.iUsed = false;
+	if (fn == KGConnect && aReason != KErrNone) s.iCookie = 0;
+	if (!s.iClosing && GAlive(e, client)) CompleteFor(cpu, e, client, status, aReason);
+	else if (fn == KGConnect && !s.iCookie && !s.iDiscSent && s.iSrv >= 0 && gGSrv[s.iSrv].iUsed)
+	{
+		s.iDiscSent = true;		// the connect message of a session closed meanwhile: no user-side session was created, so its disconnect message goes now
+		GSend(cpu, e, sess, KGDisconnect, 0, 0, -1);
+	}
+}
+
+// a handle for MessageOpenObject / MessageCompleteWithHandle: 1 = names an object of aType (KGObjAny = any), 0 = invalid or another type,
+// -1 = not a handle of this module (the native kernel's)
+static int GObject(TExecState& e, uint32_t aHandle, int aType)
+{
+	if (aHandle == (uint32_t)KCurrentThreadHandle || (aHandle & 0xFFFF0000u) == KHandleThread0)
+		return ThreadIndex(e, aHandle) >= 0 && (aType == KGObjThread || aType == KGObjAny) ? 1 : 0;
+	if (ChunkIndex(e, aHandle) >= 0) return aType == KGObjChunk || aType == KGObjAny ? 1 : 0;
+	const uint32_t si = aHandle - KHandleObj;
+	if (si < (uint32_t)KMaxSync)		// this module's sync object handles: a closed or never made one names nothing
+	{
+		if (!e.iSync || si >= (uint32_t)e.iSyncCount || !e.iSync[si].iType) return 0;
+		const int t = e.iSync[si].iType == 1 ? KGObjMutex : e.iSync[si].iType == 2 ? KGObjSemaphore : e.iSync[si].iType == 3 ? KGObjCondVar : KGObjMsgQueue;
+		return aType == t || aType == KGObjAny ? 1 : 0;
+	}
+	return -1;
+}
+// DObject::Open + MakeHandle in the process that holds the object already: one more handle on it, naming the same object
+static void GOpenHandle(TExecState& e, uint32_t aHandle)
+{
+	const uint32_t si = aHandle - KHandleObj;
+	if (e.iSync && si < (uint32_t)e.iSyncCount && e.iSync[si].iType) ++e.iSync[si].iRefs;
 }
 
 // the executive calls of guest servers / sessions / messages; false = not one of ours (the bridge's or another handler's)
@@ -1107,6 +1215,11 @@ static bool GuestIpcExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
 		if (fr < 0) { r[0] = (uint32_t)KErrNoMemory; return true; }
 		memset(&gGSrv[fr], 0, sizeof(TGSrv));
 		gGSrv[fr].iUsed = true;
+		const int mode = (int)r[1], role = !strcmp(name, "EExecServerCreateWithOptions") ? (int)r[2] : 0;
+		if (mode < 0 || mode > 2 || role < 0 || role > 3) { gGSrv[fr].iUsed = false; r[0] = (uint32_t)KErrArgument; return true; }		// (ExecHandler::ServerCreateWithOptions)
+		gGSrv[fr].iRole = role == 0 ? KGRoleStandalone : role;
+		gGSrv[fr].iCreator = cur;
+		gGSrv[fr].iOwner = nm[0] ? cur : -1;		// K::MakeHandle(nameLen ? EOwnerThread : EOwnerProcess): a named server dies with its thread
 		strncpy(gGSrv[fr].iName, nm, sizeof(gGSrv[fr].iName) - 1);
 		Say(h, "[proteus] guest server '%s' created", nm);
 		r[0] = (uint32_t)(KGHandleSrv0 + fr);
@@ -1172,13 +1285,29 @@ static bool GuestIpcExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
 	{
 		if (sess >= 0)
 		{
+			// DSession::Close (the client's last access): the disconnect message is sent unless a connect message is still undecided
 			TGSess& s = gGSess[sess];
-			if (s.iCookie && s.iSrv >= 0 && gGSrv[s.iSrv].iUsed && !s.iClosing)		// the server hears of it (DSession::Close -> __SendDiscMsg) and frees the session when it completes it
+			if (s.iClosing) { r[0] = KErrNone; return true; }
+			s.iClosing = true;
+			const bool live = s.iSrv >= 0 && gGSrv[s.iSrv].iUsed;
+			int conn = -1;
+			for (int m = 0; m < KGMaxMsg; ++m) if (gGMsg[m].iUsed && gGMsg[m].iSess == sess && gGMsg[m].iFn == KGConnect) conn = m;
+			if (live && (s.iCookie || conn < 0))
 			{
-				s.iClosing = true;
-				if (GSend(cpu, e, sess, KGDisconnect, 0, 0, -1) == KErrNone) { r[0] = KErrNone; return true; }
+				s.iDiscSent = true;
+				GSend(cpu, e, sess, KGDisconnect, 0, 0, -1);
 			}
-			memset(&s, 0, sizeof(s));
+			else if (live && gGMsg[conn].iState == KGMsgQueued)		// not accepted yet: it is withdrawn and completed (the disconnect goes with its completion)
+			{
+				GUnqueue(gGSrv[s.iSrv], conn);
+				GComplete(cpu, e, conn, KGErrSessionClosed);
+			}
+			else if (!live)
+			{
+				GDetach(cpu, e, sess, KGErrServerTerminated);
+				memset(&s, 0, sizeof(s));
+			}
+			// else: an accepted connect message: SetSessionPtr / its completion sends the disconnect message
 			r[0] = KErrNone;
 			return true;
 		}
@@ -1191,17 +1320,87 @@ static bool GuestIpcExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
 	const int m = GMsgOf(r[0]);
 	if (m < 0) return false;		// (a bridge message handle: none are handed out -- the native servers' messages never reach the guest)
 	TGMsg& g = gGMsg[m];
-	if (!strcmp(name, "EExecMessageComplete"))		// (handle, reason)
+	if (!strcmp(name, "EExecMessageComplete")) { GComplete(cpu, e, m, (int32_t)r[1]); return true; }		// (handle, reason)
+	if (!strcmp(name, "EExecSetSessionPtr"))		// (handle, cookie): ExecHandler::SetSessionPtr
 	{
+		if (!r[1]) { GPanic(cpu, h, KGPanicNullCookie); return true; }
+		if (g.iFn != KGConnect) { GPanic(cpu, h, KGPanicInvalidCookieMsg); return true; }
 		TGSess& s = gGSess[g.iSess];
-		const int fn = g.iFn;
-		if (g.iStatus) CompleteFor(cpu, e, g.iClient, g.iStatus, (int32_t)r[1]);
-		g.iUsed = false;
-		if (fn == KGDisconnect) memset(&s, 0, sizeof(s));
-		else if (fn == KGConnect && (int32_t)r[1] != KErrNone) s.iCookie = 0;
+		if (s.iCookie) { GPanic(cpu, h, 59); return true; }		// ESessionCookieAlreadySet
+		s.iCookie = r[1];
+		if (s.iClosing && !s.iDiscSent && s.iSrv >= 0 && gGSrv[s.iSrv].iUsed) { s.iDiscSent = true; GSend(cpu, e, g.iSess, KGDisconnect, 0, 0, -1); }
 		return true;
 	}
-	if (!strcmp(name, "EExecSetSessionPtr")) { gGSess[g.iSess].iCookie = r[1]; return true; }		// (handle, cookie)
+	if (!strcmp(name, "EExecMessageCompleteWithHandle"))		// (msg, handle): ExecHandler::MessageCompleteWithHandle -- a handle on the server's object, made in the client's thread
+	{
+		const int o = GObject(e, r[1], KGObjAny);
+		if (o < 0) { strncpy(cpu.iNote, "MessageCompleteWithHandle of a handle that is not this process's (not emulated)", sizeof(cpu.iNote) - 1); cpu.Halt(EHleStop); return true; }
+		if (!o) { GPanic(cpu, h, KGPanicBadHandle); return true; }		// (the kernel looks the handle up unchecked; a bad one faults the server)
+		int32_t res;
+		if (GAlive(e, g.iClient)) { GOpenHandle(e, r[1]); res = (int32_t)r[1]; }		// pT->MakeHandleAndOpen(EOwnerThread, ...): the handle value
+		else res = KGErrDied;		// pT->Open() of a dead thread
+		GComplete(cpu, e, m, res);
+		return true;
+	}
+	if (!strcmp(name, "EExecMessageOpenObject"))		// (msg, TObjectType, param, TOwnerType): ExecHandler::MessageOpenObject -- a handle in the server's process on the client's handle argument
+	{
+		if (r[2] >= 4u) { r[0] = (uint32_t)KGErrArgument; return true; }
+		if (((g.iFlags >> (3 * r[2])) & 7) != 1) { r[0] = (uint32_t)KErrBadHandle; return true; }		// TIpcArgs::EHandle
+		const uint32_t hnd = g.iArgs[r[2]];
+		const int o = GObject(e, hnd, (int)r[1]);
+		if (o < 0) { strncpy(cpu.iNote, "MessageOpenObject of a handle that is not this process's (not emulated)", sizeof(cpu.iNote) - 1); cpu.Halt(EHleStop); return true; }
+		if (!o) { r[0] = (uint32_t)KErrBadHandle; return true; }
+		GOpenHandle(e, hnd);
+		r[0] = hnd;		// one process, one handle table: the new handle names the same object
+		return true;
+	}
+	if (!strcmp(name, "EExecMessageKill"))		// (msg, TExitType, reason, const TDesC* category): ExecHandler::MessageKill -- the client thread dies
+	{
+		const int t = g.iClient;
+		if (t < 0) { strncpy(cpu.iNote, "MessageKill of a message without a client thread (disconnect)", sizeof(cpu.iNote) - 1); cpu.Halt(EHleStop); return true; }
+		if (!GAlive(e, t)) return true;		// DThread::Die on a dead thread does nothing
+		char cat[17] = "";
+		if (r[1] == KGExitPanic && r[3]) GuestDes(cpu, r[3], cat, sizeof(cat));
+		if (h.iLog)
+		{
+			char l[120];
+			snprintf(l, sizeof(l), "[proteus] guest thread %d killed by its server: type %d %s %d", t, (int)r[1], cat, (int)r[2]);
+			h.iLog(l, h.iLogCtx);
+		}
+		if (t == 0) { cpu.Halt(EExited, (int32_t)r[2]); return true; }		// the main thread ends the process
+		if (e.iThread[t].iHosted && h.iIpc && h.iIpc->iHostKill) h.iIpc->iHostKill(h.iIpc->iCtx, t, (int)r[2]);
+		EndThread(cpu, h, t, (int)r[1], (int)r[2], cat);
+		if (t == cur) Reschedule(cpu, h);
+		return true;
+	}
+	if (!strcmp(name, "EExecTransferSession"))		// (msg, server handle): ExecHandler::TransferSession / DSession::Transfer -- the session moves from a master server to a slave
+	{
+		if (g.iFn != KGConnect) { GPanic(cpu, h, KGPanicInvalidCookieMsg); return true; }
+		TGSess& s = gGSess[g.iSess];
+		if (!s.iCookie) { GPanic(cpu, h, KGPanicNullCookie); return true; }
+		const int ns = GSrvOf(r[1]);
+		if (ns < 0) { GPanic(cpu, h, KGPanicBadHandle); return true; }
+		const int os = s.iSrv;
+		if (os < 0 || !gGSrv[os].iUsed || gGSrv[os].iRole != KGRoleMaster || gGSrv[ns].iRole != KGRoleSlave		// the current server a master, the new one a slave
+			|| !GAlive(e, gGSrv[os].iCreator) || !GAlive(e, gGSrv[ns].iCreator))		// (same process: always; neither server's thread may be dead)
+		{ GPanic(cpu, h, KGPanicInvalidCookieMsg); return true; }
+		s.iSrv = ns;
+		// every message of the session the old server has not accepted goes to the new one, in the order they were sent (the connect message is accepted)
+		int mv[KGMaxMsg], n = 0;
+		for (int k = 0; k < KGMaxMsg; ++k)
+			if (gGMsg[k].iUsed && gGMsg[k].iSess == g.iSess && gGMsg[k].iState == KGMsgQueued) mv[n++] = k;
+		for (int a2 = 1; a2 < n; ++a2)
+			for (int b2 = a2; b2 > 0 && gGMsg[mv[b2 - 1]].iSeq > gGMsg[mv[b2]].iSeq; --b2) { const int t = mv[b2]; mv[b2] = mv[b2 - 1]; mv[b2 - 1] = t; }
+		for (int k = 0; k < n; ++k)
+		{
+			GUnqueue(gGSrv[os], mv[k]);
+			gGSrv[ns].iQ[(gGSrv[ns].iQHead + gGSrv[ns].iQCount) % KGMaxMsg] = mv[k];
+			++gGSrv[ns].iQCount;
+		}
+		GComplete(cpu, e, m, KErrNone);		// "This call also completes the original message with no error"
+		GDeliver(cpu, e, ns);
+		return true;
+	}
 	if (!strcmp(name, "EExecMessageConstructFromPtr")) { GFillMessage(cpu, r[1], m); return true; }		// (handle, RMessage2*)
 	if (!strcmp(name, "EExecMessageClientStatus")) { r[0] = g.iStatus; return true; }
 	if (!strcmp(name, "EExecMessageClient")) { r[0] = g.iClient >= 0 ? (uint32_t)(KHandleThread0 + g.iClient) : (uint32_t)KGErrDied; return true; }	// (handle, owner type): this process's thread
