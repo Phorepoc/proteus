@@ -77,4 +77,51 @@ Evidence trail (one VM, `golf-compat`, VirtualBox):
 - Video: the PC image already carries the MMF video controller `phevidctl` (ECOM 0xE70157D1; MP4 demux, DevVideo, DSA bitmap path) and the hosted controller design carried it without change: the ARM `CVideoPlayerUtility` (window, DSA) talks to the same native WS session, so the window/region handles the controller receives are native ones. What the ROM lacks is the decoder: `phevdecsw` + `pheffmpeg` ship in the codec pack (LGPL / patents: never in an image). Format of the clips (`\private3B2CBideo`): ISO MP4, MPEG-4 Part 2 Simple Profile L1 640x360 ~24 fps + AAC-LC 48 kHz stereo; the 701 decodes them in hardware. With `codecpack-x32.sis` in `\sis` (installed by `sisinst` before the app) both play; without it `FindDecodersL` fails and the game skips to Input Name.
 - Run recipe: closure from the EXE (no GL DLLs) + `scdv`, `f32agent`, `f32agentui` in `\sysinrm`; `\sis\codecpack-x32.sis`; keep-alive key every 15 s; coordinates for VirtualBox absolute mouse are framebuffer pixels (360x640, the landscape UI is rotated 90 degrees clockwise on it).
 
-Open: swing gesture timing at 3 fps (the meter runs; no ball flight captured yet), steady-state speed (2.5-11 fps), screenshots are taken from the portrait framebuffer. Guest servers (`GuestIpcExec` in `proteusexec.cpp`, checked by `tests/proteus/guest_servers.cpp`, 82 checks): `MessageComplete`, `MessageCompleteWithHandle`, `MessageKill`, `MessageOpenObject`, `TransferSession` and `SetSessionPtr` follow `kernel/sipc.cpp`; a named server dies with its thread (`DServer::Close`: pending Receive -> KErrCancel, every session detached, queued and accepted requests -> KErrServerTerminated, none for a session the client closed or a dead client), an unnamed one with the process. Open: the handle space is one table per process, so a handle "opened" in the server is the client's value with one more reference (mutexes, semaphores, condition variables, message queues, threads, chunks; chunks and threads are not reference counted here); a native-kernel handle halts loudly ("not emulated"); `ELocal` handle protection does not exist; sessions have no message-slot limit (`KErrOverflow`) and no security policy; the P0-P3 VM regression was not re-run for this change.
+Open: swing gesture timing at 3 fps (the meter runs; no ball flight captured yet), steady-state speed (2.5-11 fps), screenshots are taken from the portrait framebuffer. Guest servers (`GuestIpcExec` in `proteusexec.cpp`, checked by `tests/proteus/guest_servers.cpp`, 82 checks): `MessageComplete`, `MessageCompleteWithHandle`, `MessageKill`, `MessageOpenObject`, `TransferSession` and `SetSessionPtr` follow `kernel/sipc.cpp`; a named server dies with its thread (`DServer::Close`: pending Receive -> KErrCancel, every session detached, queued and accepted requests -> KErrServerTerminated, none for a session the client closed or a dead client), an unnamed one with the process. Open: the handle space is one table per process, so a handle "opened" in the server is the client's value with one more reference (mutexes, semaphores, condition variables, message queues, threads, chunks; chunks and threads are not reference counted here); a native-kernel handle halts loudly ("not emulated"); `ELocal` handle protection does not exist; sessions have no message-slot limit (`KErrOverflow`) and no security policy; the P0-P3 VM regression of this change is the next section.
+
+
+## Regression after the guest-server rework (2026-11-05, aaefc21, VirtualBox)
+
+PC image built with the Proteus of aaefc21 (`SSM_TEST=proteus`), sources of the PC layers as of the morning of 2026-11-04 (the `protgl-src` volume's core is that old; the newest adaptation-pc phgl needs a Mesa svga build the volume does not have), VirtualBox 2 CPUs, 1 GB, VMSVGA, AC97 with the WAV capture, key every 15 s. P0, P1, P2, P2b, P2c, P2d, P2f PASS on every disk.
+
+| App | Result on aaefc21 | Notes |
+|---|---|---|
+| Sparkle | **P3 PASS** (`Sparkle.exe` running after 240 s, window group `20030f70`); **music plays**: the controller is hosted natively (`thread 3 is hosted natively`, `native LoadController -> 0`), the AC97 capture's one-second peaks stay 3203..29083 through 60 s of play in a level, no `not emulated`, no guest panic, no `KErrServerTerminated` seen. Shot: `img/compat-sparkle-reg-20261105.png` | the old run disk lacked `f32agent.dll`/`f32agentui.dll` in `\sysinrm` (`RLibrary::Load f32agent.dll -> -1`, the Switching-the-music line and then silence): a stale disk, not the change; staged from the ARM build, music back |
+| Let's Golf 2 (codec pack) | **P3 PASS** (window group `2003b2cb`), the intro clip plays to its end (`vc done: fed 1459 delivered 1459 drawn 1438`, audio 60650 ms, `err 0`) and the game reaches Input Name (`img/compat-letsgolf2-reg-20261105.png`); its sound server (sessions in game threads) ran with no panic, no `KErrServerTerminated`, no unemulated exec. Not driven past Input Name in this run (menu and hole not re-checked) | stale disk again: the Nov 4 closure lacked `2001e2b1.dll`, `akninit` and the ICL set; staged with `proteus_closure.py --extra` for the ARM build dir; the ARM `libEGL`/`libGLES*` the extras pulled in must be removed (they run natively) |
+| Calculator | not re-run: the staged ARM `avkon.dll` of the run disk (and of the `protgl-arm` volume, Oct 23) lacks ordinal 4611 (`load failed: ordinal 4611 not exported by avkon`), the fix of the Calculator row; an ARM rebuild of avkon from current core failed in `cpp` inside the container (not chased) | stale ARM build, not Proteus |
+| PyS60 | see the result line below | |
+
+Conclusion: no regression found for Sparkle and Let's Golf 2 from aaefc21; every failure on the way was a stale staged ARM file on an old run disk. Left: Let's Golf 2 menu to a hole, the Calculator re-run (needs a current ARM avkon), a clean build of the current phgl (Mesa svga archive) in `protgl-pc2`.
+
+## Guest thread priorities (2026-11-05)
+
+Guest threads are scheduled with the EKA2 priority model (proteusexec.cpp, "priorities" section; test `tests/proteus/priorities.cpp`). Before this the calls were only logged.
+
+**Mapping.** A thread's absolute priority (0..63) = `ThreadPriorityTable[(process priority << 3) + (thread priority + 8)]` for the relative thread priorities (`DThread::CalcDefaultThreadPriority`,
+kernel/eka/kernel/sthread.cpp:442, table at :429); an absolute thread priority (`EPriorityAbsolute*`, kernel value >= 0) is used as is (capped at 63). Without the ProtServ capability (bit 10 of the
+EXE header's first capability word) the result is capped at 24 (`KPrioritySystemServerMore`, sthread.cpp:422). `RThread::SetPriority` -> `DThread::SetPriority` (sthread.cpp:1009) converts
+`TThreadPriority` to the kernel's `TThrdPriority` (kern_priv.h:484); an invalid value panics the caller KERN-EXEC 14 (`EBadPriority`). `RProcess::SetPriority` / `RThread::SetProcessPriority`
+-> `ExecHandler::ProcessSetPriority` (sexec.cpp:436): only Low / Background / Foreground / High are valid (else KERN-EXEC 14), and every thread of the process is recomputed
+(`DProcess::SetPriority`, sprocess.cpp:268). `RMessagePtr2::SetProcessPriority` accepts Background / Foreground only (sipc.cpp:2026; the PriorityControl process flag is not modelled), else
+`KErrPermissionDenied`. The getters answer from the same state (`ConvertThreadPriority`, sexec.cpp:367). The process priority starts as the EXE header's `iProcessPriority`
+(0x78, `DProcess::Create`: `ConvertPriority`; Foreground when the header has none); the main thread and every created thread start at `EThrdPriorityNormal` (sexec.cpp:1938:
+the priority field of the creation info is overwritten by the kernel, so Proteus ignores it too). Not modelled: the ProtServ check on `RThread::SetPriority(EPriorityAbsoluteRealTime*)`,
+the cross-process rules (one guest process), priority inheritance through mutexes and the cleanup-queue boost (`TThreadCleanup`).
+
+**Scheduler.** `PickNext`: the ready thread with the highest absolute priority; among equals the first after the running thread in index order (the running one counts last), i.e. round robin by
+time slice as before. Used by `Reschedule` (the running thread blocked or died) and `Preempt` (end of a time slice, `KSliceInstructions` = 1 << 17: the running thread stays a candidate, so a
+woken higher-priority thread takes over here and a lower one does not run). New: after every executive call, `ExecCall` ends the slice at once (`iNextSlice = iSteps`, the mechanism the long
+GL call already used) when a thread of higher priority than the running one is ready (a signal, a resume, a mutex hand-off, a priority change), so the preemption happens at the next
+instruction, not at the slice end. A request completed by a native server is credited in `Preempt` / `Reschedule` (`AttributeNative`) as before, so it too preempts at the next slice end (or at
+once after a long native GL call, which ends the slice).
+
+**Hosted native threads** (the MMF controller helper) are not in the guest scheduler: they run concurrently on the native side at the native thread's normal priority, whatever the guest asks.
+`SetPriority` on them changes only the guest-visible value. So a guest thread can no longer starve them, and they cannot be starved by the guest.
+
+**Starvation.** None added or removed: like EKA2, a ready thread of higher priority that never blocks starves every lower one (the slice only rotates equals). In the kernel the idle thread and
+the timer/DFC machinery sit around it; in Proteus the native requests and timers are polled at every slice end and by `Reschedule`, so a busy guest thread cannot stop timed waits or native
+completions from being credited, only lower-priority guest threads from running. If an app depends on a lower-priority thread running while a higher one spins (it would hang on a device too,
+but Proteus slices are coarser than a device's 1 ms tick), look at `[proteus] ... abs priorities` lines in the log first. Nothing known depends on this yet.
+
+**Re-run after this change** (the app regression, on the PC image in VirtualBox): Sparkle P0-P3 including music and the effects stream rate, Let's Golf 2 to a hole, the Calculator, the
+SIS installer flow, About. Watch for hangs after the first UI frame (a thread that used to share the processor now waits on a higher one) and for the wake-up latency numbers (`ThreadStats`).

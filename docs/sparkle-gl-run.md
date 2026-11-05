@@ -314,7 +314,7 @@ mixer's new one-line-a-second summary, `PHMIX_TRACE`).
    native reply only at the end of the current slice, which a long GL call (softpipe, tens of ms) stretches: the effects stream ran at ~13 KB/s of the 44 KB/s it needs
    (turnaround completion -> next write: median 28-38 ms, p90 110-220 ms, in the traced run). A native GL call that takes long now ends the slice, so the scheduler polls the kernel
    and runs the woken thread at once; wake-up latency is counted per thread (`wakeN=count/avg us/max us/over 10 ms` in the progress line): thread 2 20120 wakes, avg 47 us,
-   28 over 10 ms; the stream then carries ~29 KB/s on average. Guest thread priorities are still not honoured (`EExecThreadSetPriority` is logged now, `[proteus] ... priority`).
+   28 over 10 ms; the stream then carries ~29 KB/s on average. Guest thread priorities are honoured since the "priorities" commit (compat.md, "Guest thread priorities").
 
 ### Music: the MMF controller runs natively, behind its own private server (2026-11-04)
 
@@ -381,8 +381,8 @@ there is no window group; the log lines are the result).
   controller takes (file open, first frames: tens of ms); the load itself runs on the helper and does not block the guest. Underflow at that moment is the effects stream's.
 - **A controller thread that dies by itself** (a panic) reaches the guest when the executive next sweeps (`Preempt`, a slice, or a handle close); while every guest thread is blocked
   in `WaitForAnyRequest` nothing sweeps, and its `ReceiveEvents` (completed by the kernel with `KErrServerTerminated`) is what wakes the client.
-- **Guest thread priorities** are still not applied, to the hosted threads either: the native controller keeps `EPriorityNormal` (the framework's default, `KDefaultMMFControllerThreadPriority`),
-  the guest's `RMMFControllerProxy::SetThreadPriority` is accepted and has no effect.
+- **Guest thread priorities** are applied to guest-scheduled threads (compat.md, "Guest thread priorities"). The hosted native controller thread is not scheduled by Proteus and keeps
+  the native `EPriorityNormal` (the framework's default, `KDefaultMMFControllerThreadPriority`); the guest's `RMMFControllerProxy::SetThreadPriority` sets the guest-visible priority of its thread slot (what `RThread::Priority` answers) and nothing else.
 - **Message arguments that carry handles** are not translated beyond what `BridgeSend` does for `EHandle` (queues, chunks opened by name). An `RFile` handed to the controller
   (`OpenFileL(RFile)`, `TMMFFileHandleParams`: the file server and file handles go as plain integers) would name guest-side handles; Sparkle and `proteusmmf` open by file name. Opening by `RFile`
   needs those two handles resolved to the native ones (`EHandle` arguments are; plain integers cannot be told apart) -- the next step if an app needs it.

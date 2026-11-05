@@ -17,7 +17,7 @@ namespace proteus
 #include "exec_names.inc"
 
 enum { KFast = 0x800000 };
-enum { KErrNone = 0, KErrNotFound = -1, KErrNotSupported = -5, KErrNoMemory = -4, KErrArgument = -6, KErrBadHandle = -8, KErrCancel = -3, KErrOverflow = -9, KErrUnderflow = -10 };
+enum { KErrNone = 0, KErrNotFound = -1, KErrNotSupported = -5, KErrNoMemory = -4, KErrArgument = -6, KErrBadHandle = -8, KErrCancel = -3, KErrOverflow = -9, KErrUnderflow = -10, KErrPermissionDenied = -46 };
 
 static uint32_t& Slot(TExecState& e, uint32_t aKey)
 {
@@ -441,6 +441,99 @@ static void AttributeNative(CArmCpu& cpu, THle& h)
 	SignalThread(e, who, 1);
 }
 
+// ---- priorities (kernel/eka/kernel/sthread.cpp, sprocess.cpp, sexec.cpp; kernel/eka/include/kernel/kern_priv.h) ----
+// A thread's absolute priority 0..63 comes from its thread priority (DThread::iThreadPriority) and its process's (DProcess::iPriority) through
+// ThreadPriorityTable (sthread.cpp:429, DThread::CalcDefaultThreadPriority). Higher runs first; equal = round robin (PickNext).
+static const int KThrdNormal = -5;				// EThrdPriorityNormal: every user thread starts here (ExecHandler::ThreadCreate, sexec.cpp:1938)
+static const int KNumPriorities = 64;
+static const int KPriorityMaxWithoutProtServ = 24;	// KPrioritySystemServerMore without SYMBIAN_CURB_SYSTEMSERVER_PRIORITIES (sthread.cpp:422)
+static const uint8_t KPriorityTable[64] =
+{
+	1, 1, 2, 3, 4, 5, 22, 0,			// Low:      Idle MuchLess Less Normal More MuchMore RealTime
+	3, 5, 6, 7, 8, 9, 22, 0,			// Background
+	3, 10, 11, 12, 13, 14, 22, 0,		// Foreground
+	3, 17, 18, 19, 20, 22, 23, 0,		// High
+	9, 15, 16, 21, 24, 25, 28, 0,		// SystemServer1
+	9, 15, 16, 21, 24, 25, 28, 0,		// SystemServer2
+	9, 15, 16, 21, 24, 25, 28, 0,		// SystemServer3
+	18, 26, 27, 28, 29, 30, 31, 0		// RealTimeServer
+};
+// TProcessPriority (e32const.h) <-> TProcPriority (DProcess::ConvertPriority, sprocess.cpp:299; procPriorityConvertTable, sexec.cpp:355)
+static const uint32_t KProcPriUser[8] = { 150, 250, 350, 450, 650, 750, 950, 850 };
+static int ProcPriKernel(uint32_t aUser) { for (int i = 0; i < 8; ++i) if (KProcPriUser[i] == aUser) return i; return -1; }
+// TThreadPriority (e32const.h) -> TThrdPriority (DThread::SetPriority, sthread.cpp:1009); false = EBadPriority (a panic of the caller)
+static bool ThreadPriKernel(int aUser, int& aOut)
+{
+	switch (aUser)
+	{
+	case -20: aOut = -7; return true;		// MuchLess
+	case -10: aOut = -6; return true;		// Less
+	case 0: aOut = -5; return true;			// Normal
+	case 10: aOut = -4; return true;		// More
+	case 20: aOut = -3; return true;		// MuchMore
+	case 30: aOut = -2; return true;		// RealTime
+	case 100: aOut = 1; return true;	case 150: aOut = 3; return true;	case 200: aOut = 5; return true;
+	case 250: aOut = 7; return true;	case 300: aOut = 10; return true;	case 350: aOut = 12; return true;
+	case 400: aOut = 15; return true;	case 450: aOut = 19; return true;	case 500: aOut = 23; return true;
+	}
+	if (aUser >= 810 && aUser <= 880 && aUser % 10 == 0) { aOut = 24 + (aUser - 810) / 10; return true; }		// AbsoluteRealTime1..8
+	return false;
+}
+// TThrdPriority -> TThreadPriority (ConvertThreadPriority, sexec.cpp:367)
+static int ThreadPriUser(int aKernel)
+{
+	static const int absK[17] = { 1, 3, 5, 7, 10, 12, 15, 19, 23, 24, 25, 26, 27, 28, 29, 30, 31 };
+	static const int absU[17] = { 100, 150, 200, 250, 300, 350, 400, 450, 500, 810, 820, 830, 840, 850, 860, 870, 880 };
+	static const int relU[8] = { -20, -20, -10, 0, 10, 20, 30, 30 };		// thrdPriorityConvertTable
+	for (int i = 0; i < 17; ++i) if (absK[i] == aKernel) return absU[i];
+	return aKernel >= -8 && aKernel < 0 ? relU[aKernel + 8] : 0;
+}
+// DThread::CalcDefaultThreadPriority (sthread.cpp:442). aProtServ: the process holds ProtServ (the relative range above 24 is capped without it)
+static int CalcAbsPriority(int aThreadPri, int aProcPri, bool aProtServ)
+{
+	if (aThreadPri >= 0) return aThreadPri < KNumPriorities ? aThreadPri : KNumPriorities - 1;
+	int tp = aThreadPri + 8;
+	if (tp < 0) tp = 0;
+	int r = KPriorityTable[((aProcPri & 7) << 3) + (tp & 7)];
+	if (r > KPriorityMaxWithoutProtServ && !aProtServ) r = KPriorityMaxWithoutProtServ;
+	return r;
+}
+static void RecalcPriorities(THle& h)
+{
+	TExecState& e = h.iExec;
+	const bool prot = h.iProcess && h.iProcess->iCount > 0 && (h.iProcess->iMod[0].iCaps[0] & (1u << 10));		// ECapabilityProtServ
+	for (int i = 0; i < e.iThreadCount; ++i) e.iThread[i].iAbsPri = CalcAbsPriority(e.iThread[i].iThreadPri, e.iProcPri, prot);
+}
+void InitPriorities(THle& h)
+{
+	TExecState& e = h.iExec;
+	// the process's priority is the EXE header's (DProcess::Create: ConvertPriority(aInfo.iPriority)); a header without one runs as the default (Foreground)
+	const TLoaded* m = h.iProcess && h.iProcess->iCount > 0 ? &h.iProcess->iMod[0] : h.iImage;
+	const int p = m ? ProcPriKernel(m->iProcPriority) : -1;
+	e.iProcPri = p >= 0 ? p : 2;
+	if (e.iThread && e.iThreadCount > 0) { e.iThread[0].iThreadPri = KThrdNormal; RecalcPriorities(h); }
+}
+// the next thread to run: the highest absolute priority among the ready ones; of equal priority the first after aFrom in index order (round
+// robin: aFrom itself comes last, so a thread that used its slice goes behind its equals). -1 = none ready.
+static int PickNext(TExecState& e, int aFrom)
+{
+	int best = -1;
+	for (int k = 1; k <= e.iThreadCount; ++k)
+	{
+		const int i = (aFrom + k) % e.iThreadCount;
+		if (e.iThread[i].iState != EThreadReady) continue;
+		if (best < 0 || e.iThread[i].iAbsPri > e.iThread[best].iAbsPri) best = i;
+	}
+	return best;
+}
+// is a ready thread more urgent than the running one? (then the slice ends now: ExecCall)
+static bool HigherReady(TExecState& e)
+{
+	for (int i = 0; i < e.iThreadCount; ++i)
+		if (i != e.iCur && e.iThread[i].iState == EThreadReady && e.iThread[i].iAbsPri > e.iThread[e.iCur].iAbsPri) return true;
+	return false;
+}
+
 // the running thread no longer runs (blocked / dead): run the next ready one, round robin; with none ready, expire timed waits or wait for
 // the native kernel (a server / timer completing a request). All blocked with nothing to wait for = a deadlock: the guest stops.
 static void Reschedule(CArmCpu& cpu, THle& h)
@@ -451,13 +544,14 @@ static void Reschedule(CArmCpu& cpu, THle& h)
 	SaveThread(cpu, e, e.iThread[e.iCur]);
 	for (;;)
 	{
-		for (int k = 1; k <= e.iThreadCount; ++k)
 		{
-			const int i = (e.iCur + k) % e.iThreadCount;
-			if (e.iThread[i].iState != EThreadReady) continue;
-			e.iCur = i;
-			LoadThread(cpu, e, e.iThread[i]);
-			return;
+			const int i = PickNext(e, e.iCur);		// the highest priority ready; equals in round robin
+			if (i >= 0)
+			{
+				e.iCur = i;
+				LoadThread(cpu, e, e.iThread[i]);
+				return;
+			}
 		}
 		const uint64_t now = NowUs(h);
 		uint64_t next = 0;
@@ -540,15 +634,15 @@ void Preempt(CArmCpu& cpu, THle& h)
 			if (!now) now = NowUs(h);
 			if (now) FireAfter(cpu, e, i, now);
 		}
-	for (int k = 1; k < e.iThreadCount; ++k)
+	// the highest priority ready thread runs; the running one is a candidate too (it stays ready) and comes last among its equals, so equal
+	// priorities share the processor round robin, and a woken thread of higher priority takes it over here
+	const int i = PickNext(e, e.iCur);
+	if (i >= 0 && i != e.iCur)
 	{
-		const int i = (e.iCur + k) % e.iThreadCount;
-		if (e.iThread[i].iState != EThreadReady) continue;
 		e.iThread[e.iCur].iRan += cpu.iSteps - e.iSliceStart;
 		SaveThread(cpu, e, e.iThread[e.iCur]);
 		e.iCur = i;
 		LoadThread(cpu, e, e.iThread[i]);
-		return;
 	}
 }
 
@@ -632,6 +726,8 @@ static int CreateThread(CArmCpu& cpu, THle& h, uint32_t aInfo)
 	t.iT = entry & 1;
 	t.iTpidrurw = tld;
 	t.iState = EThreadSuspended;
+	t.iThreadPri = KThrdNormal;								// every user thread starts at EThrdPriorityNormal of its process (sexec.cpp:1938), whatever the creation info says
+	RecalcPriorities(h);
 	{
 		char fn[120], nm[40];
 		Where(*h.iProcess, cpu, cpu.Read32(aInfo + 8), fn, sizeof(fn));
@@ -694,11 +790,66 @@ static void HostedSweep(CArmCpu& cpu, THle& h)
 }
 
 // the thread / synchronisation / request-semaphore executive calls; false = not one of them
+static void GPanic(CArmCpu& cpu, THle& h, int aReason);
+
+// the priority executive calls (ExecHandler::ThreadPriority / ThreadSetPriority / ThreadProcessPriority / ThreadSetProcessPriority /
+// ProcessPriority / ProcessSetPriority / MessageSetProcessPriority: sexec.cpp:436-698, sipc.cpp:2026). One guest process, so every process
+// handle names the same process. Nothing is checked beyond what the kernel checks of a process acting on itself.
+static void ApplyPriorities(CArmCpu& cpu, THle& h, const char* aWhat, int aThread, int aValue)
+{
+	RecalcPriorities(h);
+	static int n = 0;
+	if (h.iLog && n < 60)
+	{
+		++n;
+		char l[120];
+		snprintf(l, sizeof(l), "[proteus] %s thread %d (cur %d) -> %d; abs priorities now %d/%d (thread/current)", aWhat, aThread, h.iExec.iCur, aValue,
+			aThread >= 0 ? h.iExec.iThread[aThread].iAbsPri : -1, h.iExec.iThread[h.iExec.iCur].iAbsPri);
+		h.iLog(l, h.iLogCtx);
+	}
+	(void)cpu;
+}
+static bool PriorityExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
+{
+	TExecState& e = h.iExec;
+	if (!strcmp(name, "EExecThreadPriority")) { const int i = ThreadIndex(e, r[0]); r[0] = (uint32_t)(i >= 0 ? ThreadPriUser(e.iThread[i].iThreadPri) : 0); return true; }
+	if (!strcmp(name, "EExecThreadProcessPriority") || !strcmp(name, "EExecProcessPriority")) { r[0] = KProcPriUser[e.iProcPri & 7]; return true; }
+	if (!strcmp(name, "EExecThreadSetPriority"))		// (handle, TThreadPriority)
+	{
+		const int i = ThreadIndex(e, r[0]);
+		int tp;
+		if (!ThreadPriKernel((int)r[1], tp)) { GPanic(cpu, h, 14); return true; }		// EBadPriority
+		if (i >= 0) { e.iThread[i].iThreadPri = tp; ApplyPriorities(cpu, h, name, i, (int)r[1]); }
+		r[0] = KErrNone;
+		return true;
+	}
+	if (!strcmp(name, "EExecThreadSetProcessPriority") || !strcmp(name, "EExecProcessSetPriority"))		// (handle, TProcessPriority)
+	{
+		// ProcessPriorityValid (sexec.cpp:412): Low, Background, Foreground, High only; any other value panics the caller (EBadPriority)
+		const int p = ProcPriKernel(r[1]);
+		if (p < 0 || p > 3) { GPanic(cpu, h, 14); return true; }
+		e.iProcPri = p;
+		ApplyPriorities(cpu, h, name, -1, (int)r[1]);
+		r[0] = KErrNone;
+		return true;
+	}
+	if (!strcmp(name, "EExecMessageSetProcessPriority"))		// (message, TProcessPriority): the client's process, only Background / Foreground (sipc.cpp:2026)
+	{
+		if (r[1] != 250 && r[1] != 350) { r[0] = (uint32_t)KErrPermissionDenied; return true; }
+		e.iProcPri = ProcPriKernel(r[1]);
+		ApplyPriorities(cpu, h, name, -1, (int)r[1]);
+		r[0] = KErrNone;
+		return true;
+	}
+	return false;
+}
+
 int gExecTraceWindow;
 static bool ThreadExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
 {
 	TExecState& e = h.iExec;
 	if (!e.iThread) return false;
+	if (PriorityExec(cpu, h, name, r)) return true;
 	const int cur = e.iCur;
 	if (!strcmp(name, "EFastExecWaitForAnyRequest"))
 	{
@@ -1405,7 +1556,6 @@ static bool GuestIpcExec(CArmCpu& cpu, THle& h, const char* name, uint32_t* r)
 	if (!strcmp(name, "EExecMessageClientStatus")) { r[0] = g.iStatus; return true; }
 	if (!strcmp(name, "EExecMessageClient")) { r[0] = g.iClient >= 0 ? (uint32_t)(KHandleThread0 + g.iClient) : (uint32_t)KGErrDied; return true; }	// (handle, owner type): this process's thread
 	if (!strcmp(name, "EExecMessageClientProcessFlags") || !strcmp(name, "EExecMessageClientThreadFlags")) { r[0] = 0; return true; }
-	if (!strcmp(name, "EExecMessageSetProcessPriority")) { r[0] = KErrNone; return true; }
 	if (!strcmp(name, "EExecMessageSecurityInfo"))		// (handle, SSecurityInfo&): the program's own, it is the client
 	{
 		const TLoaded* mod = h.iProcess ? &h.iProcess->iMod[0] : NULL;
@@ -1470,6 +1620,9 @@ bool ExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 	const uint32_t lr = cpu.R[14];
 	const int cur = h.iExec.iCur;
 	const bool done = DoExecCall(cpu, h, imm);
+	// a call that made a thread of higher priority ready (a signal, a resume, a mutex hand-off, a priority change) ends the slice now: the scheduler
+	// (Preempt) runs it at the next instruction instead of at the end of the time slice
+	if (cpu.iSliceSteps && h.iExec.iThread && h.iExec.iThreadCount > 1 && HigherReady(h.iExec)) cpu.iNextSlice = cpu.iSteps;
 	static int errLines = 0, nomemLines = 0;
 	const int32_t res = (int32_t)cpu.R[0];
 	if (h.iLog && h.iProcess && h.iExec.iCur == cur && ((errLines < 100 && (res == -16 || res == -12 || res == -28))	// KErrBadName / KErrPathNotFound / KErrBadDescriptor

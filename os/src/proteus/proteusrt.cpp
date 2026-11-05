@@ -94,6 +94,7 @@ static bool LoadE32At(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at,
 	o.iCpu = f[122] | (f[123] << 8);
 	if (o.iCpu < 0x2000 || o.iCpu > 0x2002) { Err(o, "not an ARM image (CPU id)"); return false; }
 	o.iUid1 = U32(f + 0);
+	o.iProcPriority = f[120] | (f[121] << 8);		// E32ImageHeaderV::iProcessPriority (0x78)
 	o.iHeapMin = U32(f + 56);
 	o.iHeapMax = U32(f + 60);
 	o.iStackSize = U32(f + 64);
@@ -406,6 +407,7 @@ void RunExe(CArmCpu& cpu, THle& h, uint64_t maxSteps)
 			h.iExec.iThread[0].iState = EThreadReady;
 			h.iExec.iThread[0].iId = h.iThreadId ? h.iThreadId : 0x100;
 			h.iExec.iThread[0].iStackChunk = -1;
+			InitPriorities(h);
 		}
 		else { free(h.iExec.iThread); free(h.iExec.iSync); h.iExec.iThread = 0; h.iExec.iSync = 0; }
 	}

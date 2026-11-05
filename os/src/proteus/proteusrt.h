@@ -26,6 +26,7 @@ struct TLoaded
 	char iDrive;				// the drive the file was found on (RLibrary::FileName), 0 = unknown
 	uint32_t iUid1;
 	uint32_t iSecureId, iVendorId, iCaps[2];	// the header's SSecurityInfo (what the program declares)
+	uint32_t iProcPriority;		// the EXE header's iProcessPriority (a TProcessPriority value, 0 = not set)
 	uint32_t iHeapMin, iHeapMax, iStackSize;	// EXE header (real euser: the SStdEpocThreadCreateInfo on the initial stack)
 	uint32_t iExportDir, iExportCount;	// guest address of the (relocated) export directory
 	uint32_t iExceptionDescriptor;	// guest address of the C++ unwinder's exception descriptor (E32ImageHeaderV::iExceptionDescriptor), 0 = none
@@ -139,6 +140,8 @@ struct TGuestThread
 	bool iLogonRendezvous[KMaxLogons];
 	int iStackChunk;			// the chunk holding its stack (-1 = the main thread's region stack)
 	bool iStackFree;			// dead: the stack chunk may be reused by a new thread
+	int iThreadPri;				// the kernel's DThread::iThreadPriority: -8..-2 relative to the process priority, >= 0 absolute (TThrdPriority, kern_priv.h)
+	int iAbsPri;				// the absolute priority 0..63 the scheduler runs by (DThread::CalcDefaultThreadPriority); higher runs first
 	bool iHosted, iHostStarted;	// the body runs on the native side (TIpcBridge::iHostThread): never scheduled
 };
 struct TSyncObj
@@ -174,6 +177,7 @@ struct TExecState
 	bool iReqDone[KMaxReqs];		// the request completed and its guest status was reused for a newer request before the signal was credited: it is owed one signal
 	uint64_t iWaitUs;			// microseconds spent blocked natively (Reschedule: nothing ready)
 	uint64_t iSliceStart;		// CArmCpu::iSteps when the running thread started its turn
+	int iProcPri;				// DProcess::iPriority (TProcPriority 0..7, kern_priv.h): the row of the priority table
 	uint32_t iSyncSendStatus;	// the outstanding SessionSendSync (the native thread has one synchronous message slot for all guest threads)
 };
 struct THle
@@ -206,6 +210,8 @@ static const uint64_t KSliceInstructions = 1u << 17;
 // the end of a time slice (CArmCpu::iOnSlice): native request completions that arrived are credited to their threads, timed waits that
 // ran out expire, and the next ready thread (round robin) runs
 void Preempt(CArmCpu& aCpu, THle& aHle);
+// the absolute priorities (DThread::CalcDefaultThreadPriority): the process priority from the EXE header, thread 0 at Normal. Call once the thread table exists.
+void InitPriorities(THle& aHle);
 // "cur=i ran(M): i:n ..." (instructions each guest thread has executed), into aOut
 void ThreadStats(CArmCpu& aCpu, THle& aHle, char* aOut, int aMax);
 
