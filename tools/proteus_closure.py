@@ -69,6 +69,18 @@ def thumb_stats(img):
     return sum(1 for e in ex if e & 1), len(ex), pairs, arm
 
 
+# Run-time loads (RLibrary::Load / ECOM / CDL) that no import names, per app. Found by the run-disk regressions: each missing one cost a
+# silent failure (`RLibrary::Load f32agent.dll -> -1` = no music; no ICL plug-ins = no images; a stale stub of iaupdateapi/drtrvct2_2
+# = `proteus wait 1`, no window group). The GL DLLs are not listed on purpose: they run natively (NATIVE_GL).
+APP_EXTRAS = {
+    "common": [],
+    "sparkle": ["f32agent.dll", "f32agentui.dll"],
+    "letsgolf2": ["akninit.dll", "2001e2b1.dll", "eikcdlg.dll", "bitmaptransformsrefplugin.dll", "avkonfep.dll", "aknfepuiavkonplugin.dll",
+                  "bmpcodec.dll", "gifcodec.dll", "icocodec.dll", "jpegcodec.dll", "mbmcodec.dll", "pngcodec.dll", "wbmpcodec.dll",
+                  "imageconversionresolver.dll", "f32agent.dll", "f32agentui.dll"],
+    "pys60": ["iaupdateapi.dll", "drtrvct2_2.dll"],
+    "calculator": [],
+}
 NATIVE_GL = {"libegl.dll", "libglesv2.dll", "libglesv1_cm.dll", "libgles_cm.dll"}
 
 
@@ -80,6 +92,7 @@ def main():
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--strict", action="store_true", help="exit 2 when a DLL stays unresolved (a stale or incomplete ARM build: the app then fails at run time, e.g. drtrvct2_2 ordinal 28 not emulated)")
     ap.add_argument("--extra", help="comma-separated DLLs the app loads at run time (RLibrary::Load: ECOM/CDL plug-ins), with their closure")
+    ap.add_argument("--app", choices=sorted(APP_EXTRAS), help="add the app's known run-time loads (APP_EXTRAS) to --extra")
     ap.add_argument("--cdl", action="store_true", help="add every CDL layout instance (<8 hex digits>.dll) in --dirs, with its closure")
     a = ap.parse_args()
     dirs = a.dirs.split(",") if a.dirs else [os.path.dirname(os.path.abspath(a.exe)), os.path.join(REPO, "emitter")]
@@ -93,6 +106,8 @@ def main():
         return os.path.join(d, f) if f else None
     todo = [(os.path.basename(a.exe).lower(), a.exe)]
     extra = a.extra.split(",") if a.extra else []
+    if a.app:
+        extra += APP_EXTRAS["common"] + APP_EXTRAS[a.app]
     if a.cdl:		# the CDL layout instances (<uid>.dll): the CDL engine loads them by UID for every Avkon app, no import names them
         extra += sorted({f for d in dirs if os.path.isdir(d) for f in os.listdir(d) if re.fullmatch(r"[0-9a-f]{8}\.dll", f)})
     for x in extra:
