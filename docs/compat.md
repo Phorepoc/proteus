@@ -125,3 +125,34 @@ but Proteus slices are coarser than a device's 1 ms tick), look at `[proteus] ..
 
 **Re-run after this change** (the app regression, on the PC image in VirtualBox): Sparkle P0-P3 including music and the effects stream rate, Let's Golf 2 to a hole, the Calculator, the
 SIS installer flow, About. Watch for hangs after the first UI frame (a thread that used to share the processor now waits on a higher one) and for the wake-up latency numbers (`ThreadStats`).
+
+## Regression after the guest priorities (2026-11-05, a5c3fb9, VirtualBox)
+
+PC image of Proteus a5c3fb9 (`SSM_TEST=proteus`, PC layers as of the morning of 2026-11-04 as before), VirtualBox 2 CPUs, 1 GB, VMSVGA, AC97 with the WAV capture, key every 15 s. P0-P2f PASS (the QEMU board run too).
+
+**Run-disk staging, fixed in the tools (no hand staging).** `tools/proteus_closure.py --app sparkle|letsgolf2|pys60|calculator` adds the run-time loads no import names (`APP_EXTRAS`: Sparkle `f32agent`/`f32agentui`;
+Let's Golf 2 `akninit`, `2001e2b1`, `eikcdlg`, `avkonfep`, `aknfepuiavkonplugin`, the ICL codecs + resolver, `bitmaptransformsrefplugin`, `f32agent*`; PyS60 `iaupdateapi`, `drtrvct2_2`; all: `scdv`), the ARM `libEGL`/`libGLES*` stay out (`NATIVE_GL`),
+`euser`/`efsrv`/`hal` are the ROM's (`ROM_ARM`), and `--strict` fails the staging on any other unresolved DLL. `tools/proteus_stage.sh NAME APP sis|installed|exe DIR` builds the run disk from the docker volumes
+(base disk + packages + the closure of the EXE, taken out of the SIS with `sis_extract.py`; `BASE=` a blank/installed base, `DATA=` a tree for ROM-app registrations). Sparkle's base disk is the installed state, so it takes `installed` (a SIS
+on it fails with -30478: already installed).
+
+| App | Result on a5c3fb9 | `EExecThreadSetPriority` lines (request -> absolute priority now, thread/current) |
+|---|---|---|
+| Sparkle | **P3 PASS** (`Sparkle.exe` running after 240 s, window group `20030f70`); driven Start -> Play -> Play Quest -> OK -> menu; **music plays**: AC97 capture one-second peaks 3082..14749 over 350 s, no `not emulated`, no guest panic, no hang after the first UI frame. `img/compat-sparkle-pri-20261105.png` | `thread 2 (cur 0) -> 20; abs 14/12`; `thread 3 (cur 2) -> 0; abs 12/14` (nothing else) |
+| Let's Golf 2 (codec pack) | **P3 PASS** (window group `2003b2cb`) on the installed disk; both clips play (`vc done`: 220 pictures/6.8 s and 1459 fed, 1440 drawn/69.9 s), Input Name reached (`img/compat-letsgolf2-pri-20261105.png`), no panic, no `not emulated`, no `KErrServerTerminated`. **Not driven to a hole**: on Input Name the screen shows only the left 360 px of the 640x360 UI, keys (Enter, F6) and taps at the visible keys did not change it, a tap at the rotated OK position blanked the screen for ~30 s and returned to Input Name. Open | `thread 1 (cur 0) -> 0; abs 12/12` (twice, once per CPU) |
+| PyS60 | **P3 PASS** (window group `20022eec PythonScriptShell`, `img/compat-pys60-pri-20261105.png`); the install of both SISes through the real installer passes | none |
+| SIS installer flow | PyS60's two packages and the codec pack install (`create 0 exit type 0 reason 0`). Let's Golf 2's own 167 MB package did **not** finish inside P3's 600 s install limit on this run (`exit type 3`, then the app step FAIL); not compared with aaefc21 (no time), so whether the priorities slowed it is **unknown**: to A/B on `reg.iso` (aaefc21) | n/a |
+| About | not run | |
+| Calculator | **FAIL, not priority related**: the ARM `avkon.dll` now rebuilt from current core exports 4631 (ordinal 4611 present, `proteus_ordcheck` shows nothing missing), but the app panics `USER 23` (`lr=euser.dll+0x1e990 User::StringLength`, in `bafl` TDes8::Copy under `eikcoctl`/`avkon`) right after its `EikAppUiServer` message (`fn 10, 8 args`). The same panic with the aaefc21 ISO (`reg.iso`), so it is neither the priorities nor the guest-server rework; a run on a pre-rework ISO is the open A/B. The registration + resources are staged from the extracted dump (`DATA=calc-data`) | none (died first) |
+
+**ARM avkon rebuild (why it failed before).** The `protgl-src` volume's core was the Nov 4 snapshot, which has no `avkon_later` sources at all: the avkon the container built had no ordinal 4611. With current core's `os/` + `registry/`
+unpacked over it, `phe component build -arch arm avkon` (the `armb.sh` mounts: `protgl-src` at `/w`, core's `symbian` as a read-only subpath mount at `/symbian`, `protgl-arm` at `/w/build` and `/build`, `ARM_VFP=1`, `PATH` with `/opt/arm-gnu/bin`
+and `/opt/symbian-hosttools`) builds in the container (rc 0, `avkon.dll` 1363856 B). No `cpp` failure reproduced; the earlier one was most likely the stale core / a missing `/symbian` mount, not the source.
+
+**Priority findings.** No priority-related hang or deviation seen: the apps request very little (Sparkle one boost to 20 on a Qt thread and one back to Normal, Let's Golf 2 only `Normal`, PyS60 and the Calculator none), the main thread never waits on a thread that
+has to run below it. Nothing changed in proteusexec.cpp.
+
+**Environment note.** VirtualBox refused to start (`VBoxDrvStub ... SystemExtendedHandleInformation failed`, 507 MB handle table) while a stray `find / -name eshell.mmp` of 21:37 (pid 7008, 12.6 million handles, not from this run) was alive; it started on a later attempt without the process
+being touched. That process should be killed by its owner.
+
+Left: Let's Golf 2 from Input Name to a hole (the cropped Input Name screen; touch mapping), the Calculator panic A/B, the long SIS install timing A/B, About, the clean build of the current phgl.
