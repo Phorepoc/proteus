@@ -10,13 +10,14 @@
 #   proteus_stage.sh NAME APP exe DIR/FILE   a loose EXE in protgl-in
 #   EXE=/in/path/app.exe  closure root for the sis mode          OUT=<dir>  where compat-NAME.img lands (default: .)
 #   BASE=lg-base.img      the blank run disk in protgl-pc2 (default sparkle-inst.img, 256 MB with the Qt stack; a big package needs the 1 GB lg-base.img)
+#   DATA=calc-data        a tree in protgl-in copied onto C: (registration + resources of a ROM app: the Calculator)
 set -eu
 export MSYS_NO_PATHCONV=1
 NAME=$1; APP=$2; MODE=$3; ARG=$4
 OUT=$(cd "${OUT:-.}" && pwd -W 2>/dev/null || pwd)
 C=protreg2-stage-$NAME
 docker rm -f "$C" >/dev/null 2>&1 || true
-docker create --name "$C" -e MODE="$MODE" -e ARG="$ARG" -e APP="$APP" -e NAME="$NAME" -e EXE="${EXE:-}" -e BASE="${BASE:-}" \
+docker create --name "$C" -e MODE="$MODE" -e ARG="$ARG" -e APP="$APP" -e NAME="$NAME" -e EXE="${EXE:-}" -e BASE="${BASE:-}" -e DATA="${DATA:-}" \
   -v protgl-pc2:/b -v protgl-in:/in -v protgl-src:/w -v protgl-arm:/armb ghcr.io/phorepoc/base:latest bash -c '
 set -e; export MTOOLS_SKIP_CHECK=1; P=1048576; D=/b/compat-$NAME.img; cp /b/${BASE:-sparkle-inst.img} $D; I=$D@@$P
 mmd -i $I ::sis ::sys ::sys/bin ::sys/bin/arm 2>/dev/null || true
@@ -33,6 +34,7 @@ else
   printf "%s" "$(basename $ARG)" > /tmp/sa; mcopy -o -i $I /tmp/sa ::sisapp.txt
   ROOT=/in/$ARG
 fi
+if [ -n "$DATA" ]; then for d in $(cd /in/$DATA && find . -type d | sed "s|^./||" | grep -v "^.$"); do mmd -i $I ::$d 2>/dev/null || true; done; mcopy -s -o -i $I /in/$DATA/* ::; fi
 python3 /w/proteus/tools/proteus_closure.py "$ROOT" --app $APP --dirs /armb/arm/img --cdl --strict --quiet --out /tmp/cl
 mcopy -o -i $I /tmp/cl/* ::sys/bin/arm/        # -o: a stale file of an older staging must not win
 echo STAGED $(ls /tmp/cl | wc -l) files' >/dev/null
