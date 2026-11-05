@@ -8,6 +8,7 @@
 #   protgl-pc2 (PC build, holds the base disk)  protgl-in (inputs)  protgl-arm (ARM build: arm/img)  protgl-src (this repo at /w/proteus)
 #   proteus_stage.sh NAME APP sis DIR        DIR in protgl-in holds *.sis and sisapp.txt; the closure root is the EXE sisapp.txt names, extracted from the packages
 #   proteus_stage.sh NAME APP exe DIR/FILE   a loose EXE in protgl-in
+#   proteus_stage.sh NAME APP installed DIR  the base disk already holds the installed app (sparkle-inst.img: Qt + Sparkle): no SIS goes on C:, DIR only names the EXE and gives the closure root
 #   EXE=/in/path/app.exe  closure root for the sis mode          OUT=<dir>  where compat-NAME.img lands (default: .)
 #   BASE=lg-base.img      the blank run disk in protgl-pc2 (default sparkle-inst.img, 256 MB with the Qt stack; a big package needs the 1 GB lg-base.img)
 #   DATA=calc-data        a tree in protgl-in copied onto C: (registration + resources of a ROM app: the Calculator)
@@ -23,8 +24,8 @@ set -e; export MTOOLS_SKIP_CHECK=1; P=1048576; D=/b/compat-$NAME.img; cp /b/${BA
 mmd -i $I ::sis ::sys ::sys/bin ::sys/bin/arm 2>/dev/null || true
 for f in $(mdir -b -i $I ::sis | grep -i "\.sis$"); do mdel -i $I "$f"; done
 rm -rf /tmp/cl
-if [ "$MODE" = sis ]; then
-  for f in /in/$ARG/*.sis; do mcopy -o -i $I $f ::sis/; done
+if [ "$MODE" = sis ] || [ "$MODE" = installed ]; then
+  if [ "$MODE" = sis ]; then for f in /in/$ARG/*.sis; do mcopy -o -i $I $f ::sis/; done; fi
   mcopy -o -i $I /in/$ARG/sisapp.txt ::sisapp.txt
   mkdir -p /tmp/x; for f in /in/$ARG/*.sis; do python3 /w/proteus/tools/sis_extract.py $f /tmp/x >/dev/null; done
   APPX=$(head -n1 /in/$ARG/sisapp.txt | sed "s/[[:space:]]*$//")
