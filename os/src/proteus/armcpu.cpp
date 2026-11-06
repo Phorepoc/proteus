@@ -5,6 +5,7 @@
 // group, MOVW/MOVT, the ARMv6/v7 media group (Media()), VFPv3. Not covered (stops with EUndefined): NEON, SWP. Thumb: thumb.cpp. R[15] is "the address of the NEXT
 // instruction" while one executes, so reading PC = R[15] + 4 (+ 8 in a register-shifted operand).
 #include "armcpu.h"
+#include "armjit.h"
 #include <string.h>
 
 namespace proteus
@@ -25,7 +26,26 @@ bool CArmCpu::AddWindow(uint32_t aBase, uint32_t aSize)
 	if (iWinCount >= KMaxWindows || sizeof(void*) != 4) return false;
 	iWinBase[iWinCount] = aBase;
 	iWinSize[iWinCount++] = aSize;
+	PagesChanged(aBase, aSize);
 	return true;
+}
+
+void CArmCpu::PagesChanged(uint32_t aAddr, uint32_t aLen)
+{
+#ifdef PROTEUS_JIT
+	JitMap(iJit, aAddr, aLen);
+#else
+	(void)aAddr; (void)aLen;
+#endif
+}
+
+void CArmCpu::CodeChanged(uint32_t aAddr, uint32_t aLen)
+{
+#ifdef PROTEUS_JIT
+	JitInvalidate(iJit, aAddr, aLen);
+#else
+	(void)aAddr; (void)aLen;
+#endif
 }
 
 void CArmCpu::Fault(uint32_t aAddr, const char* aWhat)

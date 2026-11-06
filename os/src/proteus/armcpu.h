@@ -18,6 +18,7 @@ enum { KTrapBase = 0xF0000000u, KTrapEnd = 0xF8000000u, KReturnToHost = 0xF80000
 enum THalt { ERunning = 0, EReturned, EExited, EFault, EUndefined, EThumb, EStepLimit, ESvcUnhandled, EHleStop };
 
 struct FastCore;
+struct TArmJit;
 
 class CArmCpu
 {
@@ -49,6 +50,7 @@ public:
 		const uint32_t a0 = (aAddr - iBase) & ~0xFFFu, a1 = (aAddr - iBase + aLen + 0xFFF) & ~0xFFFu;
 		if (!iCommit(a0, a1 - a0, aCommit, iCommitCtx)) return false;
 		for (uint32_t p = a0 >> 12; p < a1 >> 12; ++p) iPageMap[p] = aCommit;
+		PagesChanged(iBase + a0, a1 - a0);
 		return true;
 	}
 	bool Committed(uint32_t aAddr, uint32_t aLen) const
@@ -83,6 +85,11 @@ public:
 	void (*iOnWatch)(CArmCpu& aCpu, uint32_t aAddr, uint32_t aValue, int aSize, void* aCtx);
 	TSvcFn iSvc;
 	void* iCtx;
+	// P1: the translator (armjit.h, builds with PROTEUS_JIT) runs the guest instead of the interpreter while it is set; breakpoints and
+	// watchpoints keep the interpreter. Null = the interpreter (the default, and the fallback when the translator cannot start).
+	TArmJit* iJit;
+	void PagesChanged(uint32_t aAddr, uint32_t aLen);							// the region's committed pages or the windows changed
+	void CodeChanged(uint32_t aAddr, uint32_t aLen);							// guest code was written or removed there (a module, an IMB)
 	// state
 	THalt iHalt;
 	int32_t iExitCode;

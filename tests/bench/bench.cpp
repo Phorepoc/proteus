@@ -3,10 +3,12 @@
 // bench.cpp -- host benchmark of the Proteus interpreter: loads bench.elf (bench.c) like tests/isa/harness.cpp, runs it REPS times, prints MIPS.
 //   bench <bench.elf> [reps]      stdout = the guest's checksum line (must be identical across interpreter changes), stderr = the speed
 #include "armcpu.h"
+#include "armjit.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <memory>
 #include <vector>
 
 using proteus::CArmCpu;
@@ -30,7 +32,7 @@ int main(int argc, char** argv)
 	uint64_t total = 0; double secs = 0;
 	for (int rep = 0; rep < reps; ++rep)
 	{
-		std::vector<uint8_t> mem(size);
+		std::unique_ptr<uint8_t, decltype(&free)> buf((uint8_t*)aligned_alloc(4096, size), &free); uint8_t* mem = buf.get(); memset(mem, 0, size);	// page aligned: the JIT maps whole pages
 		const uint32_t phoff = U32(f, 28), entry = U32(f, 24); const uint16_t phentsize = U16(f, 42), phnum = U16(f, 44);
 		for (uint16_t i = 0; i < phnum; ++i)
 		{
@@ -39,13 +41,20 @@ int main(int argc, char** argv)
 			memcpy(&mem[U32(f, ph + 8) - base], &f[U32(f, ph + 4)], U32(f, ph + 16));
 		}
 		CArmCpu* cpu = new CArmCpu;
-		cpu->iHost = mem.data(); cpu->iBase = base; cpu->iSize = size; cpu->R[13] = base + size - 16; cpu->iSvc = Svc; cpu->Branch(entry);
+		cpu->iHost = mem; cpu->iBase = base; cpu->iSize = size; cpu->R[13] = base + size - 16; cpu->iSvc = Svc; cpu->Branch(entry);
+#ifdef PROTEUS_JIT
+		if (getenv("PROTEUS_INTERP") == nullptr && !(cpu->iJit = proteus::JitNew(*cpu))) { fprintf(stderr, "JIT did not start\n"); return 1; }
+#endif
 		timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
 		cpu->Run(~0ull);		// no budget: the limit arithmetic must not overflow
 		clock_gettime(CLOCK_MONOTONIC, &b);
 		fflush(stdout);
 		if (cpu->iHalt != proteus::EExited) { fprintf(stderr, "halt %d at %08x %s pc=%08x\n", (int)cpu->iHalt, cpu->iFaultAddr, cpu->iNote, cpu->iLastPc); return 1; }
-		secs += (b.tv_sec - a.tv_sec) + (b.tv_nsec - a.tv_nsec) / 1e9; total += cpu->iSteps; delete cpu;
+		secs += (b.tv_sec - a.tv_sec) + (b.tv_nsec - a.tv_nsec) / 1e9; total += cpu->iSteps;
+#ifdef PROTEUS_JIT
+		proteus::JitDelete(cpu->iJit);
+#endif
+		delete cpu;
 	}
 	fprintf(stderr, "bench: %llu instructions, %.3f s, %.1f MIPS\n", (unsigned long long)total, secs, total / secs / 1e6);
 	return 0;

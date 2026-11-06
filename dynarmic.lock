@@ -1,0 +1,6 @@
+# dynarmic (0BSD): the last commit of the archived upstream (github.com/lioncash/dynarmic, archived 2024-03); its
+# externals (fmt, mcl, robin-map, xbyak, Zydis) are vendored in that tree. Boost: headers only (ICL, variant).
+DYNARMIC_COMMIT=a41c380246d3d9f9874f0f792d234dc0cc17c180
+DYNARMIC_SHA256=cc0dfec19b7cfb80a649bd994bd0569c0482de1f49448773d2899f30b6a180c3
+BOOST_URL=https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.gz
+BOOST_SHA256=a5800f405508f5df8114558ca9855d2640a2de8f0445f051fa1c7c3383045724

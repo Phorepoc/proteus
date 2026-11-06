@@ -820,6 +820,11 @@ void CArmCpu::Run(uint64_t aMaxSteps)
 			if (boundary < limit) limit = boundary;
 		}
 		if (limit <= iSteps) limit = iSteps + 1;				// always one instruction, as before
+#ifdef PROTEUS_JIT
+		if (iJit && !iBpCount && iWatchHi <= iWatchLo)
+			JitRun(iJit, limit);
+		else
+#endif
 		if (!iBpCount)
 		{
 			if (FastCore::Batch(*this, limit) && iHalt == ERunning && iSteps < limit) Step();		// pc outside the region (trap, foreign pc), odd pc

@@ -54,13 +54,16 @@ static sf __attribute__((noinline)) sf_add(sf a, sf b)
 }
 static int __attribute__((noinline)) scmp(const char* a, const char* b) { while (*a && *a == *b) { ++a; ++b; } return *a - *b; }
 
+#ifndef ROUNDS
+#define ROUNDS 300	/* the reference checksum is for 300; run_jit.sh ROUNDS=30000 = a long run where translation cost is amortised */
+#endif
 int main(void)
 {
 	u32 sum = 0, i, r; sf dacc = { 0, 0, 0x80000000u }, facc = { 0, 0, 0xC0000000u }, k1 = { 0, 0, 0x80010000u }, k2 = { 0, -2, 0x80000000u };
 	static const char* names[] = { "QObject", "QWidget", "QGraphicsView", "QApplication", "QEventDispatcher", "QString" };
 	for (i = 0; i < 512; ++i) { nodes[i].next = &nodes[(i * 37 + 11) & 511]; nodes[i].size = (i * 13) & 255; nodes[i].key = i; }
 	for (i = 0; i < 64; ++i) { objs[i].v = &VT; objs[i].rc = 1; objs[i].val = i * 7; }
-	for (r = 0; r < 300; ++r)
+	for (r = 0; r < ROUNDS; ++r)
 	{
 		for (i = 0; i < 40; ++i) sum += atomic_add(&buf[i & 15], i);			/* Qt ref counts */
 		for (i = 0; i < 40; ++i) sum += atomic_cas(&buf[16 + (i & 7)], buf[16 + (i & 7)], i + r);
