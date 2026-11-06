@@ -1906,8 +1906,21 @@ static TInt RunTimed(const TDesC& aName, const TDesC& aArgs, TInt aSeconds, TExi
 	t.CreateLocal();
 	p.Logon(st);
 	p.Resume();
-	t.After(tst, aSeconds * 1000000);
-	User::WaitForRequest(st, tst);
+	// RTimer::After takes a 32-bit microsecond interval (35 min at most): wait in chunks of 1800 s up to aSeconds
+	TInt left = aSeconds;
+	while (st == KRequestPending && left > 0)
+		{
+		const TInt chunk = left > 1800 ? 1800 : left;
+		t.After(tst, chunk * 1000000);
+		User::WaitForRequest(st, tst);
+		if (st == KRequestPending)
+			left -= chunk;		// the chunk elapsed
+		else
+			{
+			t.Cancel();
+			User::WaitForRequest(tst);
+			}
+		}
 	if (st == KRequestPending)
 		{
 		p.LogonCancel(st);
@@ -1915,8 +1928,6 @@ static TInt RunTimed(const TDesC& aName, const TDesC& aArgs, TInt aSeconds, TExi
 		}
 	else
 		{
-		t.Cancel();
-		User::WaitForRequest(tst);
 		aExit = p.ExitType();
 		aReason = p.ExitReason();
 		}
@@ -2025,7 +2036,7 @@ TInt E32Main()
 					{
 					TFileName pkg(_L("c:\\sis\\"));
 					pkg.Append((*sis)[i].iName);
-					ir = RunTimed(_L("sisinst.exe"), pkg, 600, et, reason);
+					ir = RunTimed(_L("sisinst.exe"), pkg, 14400, et, reason);
 					RDebug::Printf("PH: proteus P3 install %S: create %d exit type %d reason %d", TLog8(pkg).P(), ir, (TInt)et, reason);
 					}
 				TBuf8<64> exe8;
