@@ -1,0 +1,277 @@
+Pointer -> 64-bit integer casts on ILP32 (x32): GCC SIGN-extends a 32-bit pointer converted to a wider integer, so
+reinterpret_cast<u64>(p) of an address >= 0x80000000 (every ROM function: the thunks devirtualize.h hands the emitter,
+the dispatch tables, the callbacks' this pointers) gives 0xFFFFFFFF8xxxxxxx -- a non-canonical-half target the emitted
+mov rax, imm64; call rax faults on (KERN-EXEC 3 on the first block's GetTicksRemaining thunk). Cast through uintptr_t
+(unsigned 32-bit there, so zero-extended -- LP64's value for every address below 4 GiB); xbyak's getCurr<F>() the same.
+--- a/externals/xbyak/xbyak/xbyak.h
++++ b/externals/xbyak/xbyak/xbyak.h
+@@ -1190,7 +1190,7 @@
+ 	const F getCode() const { return reinterpret_cast<F>(top_); }
+ 	const uint8_t *getCurr() const { return &top_[size_]; }
+ 	template<class F>
+-	const F getCurr() const { return reinterpret_cast<F>(&top_[size_]); }
++	const F getCurr() const { return (F)(uintptr_t)(&top_[size_]); }
+ 	size_t getSize() const { return size_; }
+ 	void setSize(size_t size)
+ 	{
+--- a/src/dynarmic/backend/x64/a32_emit_x64.cpp
++++ b/src/dynarmic/backend/x64/a32_emit_x64.cpp
+@@ -246,7 +246,7 @@
+         terminal_handler_fast_dispatch_hint = code.getCurr<const void*>();
+         calculate_location_descriptor();
+         code.L(rsb_cache_miss);
+-        code.mov(r12, reinterpret_cast<u64>(fast_dispatch_table.data()));
++        code.mov(r12, (u64)(std::uintptr_t)(fast_dispatch_table.data()));
+         code.mov(rbp, rbx);
+         if (code.HasHostFeature(HostFeature::SSE42)) {
+             code.crc32(rbp, r12);
+@@ -265,7 +265,7 @@
+ 
+         code.align();
+         fast_dispatch_table_lookup = code.getCurr<FastDispatchEntry& (*)(u64)>();
+-        code.mov(code.ABI_PARAM2, reinterpret_cast<u64>(fast_dispatch_table.data()));
++        code.mov(code.ABI_PARAM2, (u64)(std::uintptr_t)(fast_dispatch_table.data()));
+         if (code.HasHostFeature(HostFeature::SSE42)) {
+             code.crc32(code.ABI_PARAM1, code.ABI_PARAM2);
+         }
+@@ -849,7 +849,7 @@
+     reg_alloc.HostCall(inst, {}, arg0, arg1);
+ 
+     if (callback.user_arg) {
+-        code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(*callback.user_arg));
++        code.mov(code.ABI_PARAM1, (u64)(std::uintptr_t)(*callback.user_arg));
+     }
+ 
+     code.CallFunction(callback.function);
+@@ -912,7 +912,7 @@
+         const Xbyak::Reg32 reg_word = ctx.reg_alloc.UseGpr(args[1]).cvt32();
+         const Xbyak::Reg64 reg_destination_addr = ctx.reg_alloc.ScratchGpr();
+ 
+-        code.mov(reg_destination_addr, reinterpret_cast<u64>(*destination_ptr));
++        code.mov(reg_destination_addr, (u64)(std::uintptr_t)(*destination_ptr));
+         code.mov(code.dword[reg_destination_addr], reg_word);
+ 
+         return;
+@@ -953,9 +953,9 @@
+         const Xbyak::Reg32 reg_word2 = ctx.reg_alloc.UseGpr(args[2]).cvt32();
+         const Xbyak::Reg64 reg_destination_addr = ctx.reg_alloc.ScratchGpr();
+ 
+-        code.mov(reg_destination_addr, reinterpret_cast<u64>((*destination_ptrs)[0]));
++        code.mov(reg_destination_addr, (u64)(std::uintptr_t)((*destination_ptrs)[0]));
+         code.mov(code.dword[reg_destination_addr], reg_word1);
+-        code.mov(reg_destination_addr, reinterpret_cast<u64>((*destination_ptrs)[1]));
++        code.mov(reg_destination_addr, (u64)(std::uintptr_t)((*destination_ptrs)[1]));
+         code.mov(code.dword[reg_destination_addr], reg_word2);
+ 
+         return;
+@@ -996,7 +996,7 @@
+         const Xbyak::Reg32 reg_word = ctx.reg_alloc.ScratchGpr().cvt32();
+         const Xbyak::Reg64 reg_source_addr = ctx.reg_alloc.ScratchGpr();
+ 
+-        code.mov(reg_source_addr, reinterpret_cast<u64>(*source_ptr));
++        code.mov(reg_source_addr, (u64)(std::uintptr_t)(*source_ptr));
+         code.mov(reg_word, code.dword[reg_source_addr]);
+ 
+         ctx.reg_alloc.DefineValue(inst, reg_word);
+@@ -1037,10 +1037,10 @@
+         const Xbyak::Reg64 reg_destination_addr = ctx.reg_alloc.ScratchGpr();
+         const Xbyak::Reg64 reg_tmp = ctx.reg_alloc.ScratchGpr();
+ 
+-        code.mov(reg_destination_addr, reinterpret_cast<u64>((*source_ptrs)[1]));
++        code.mov(reg_destination_addr, (u64)(std::uintptr_t)((*source_ptrs)[1]));
+         code.mov(reg_result.cvt32(), code.dword[reg_destination_addr]);
+         code.shl(reg_result, 32);
+-        code.mov(reg_destination_addr, reinterpret_cast<u64>((*source_ptrs)[0]));
++        code.mov(reg_destination_addr, (u64)(std::uintptr_t)((*source_ptrs)[0]));
+         code.mov(reg_tmp.cvt32(), code.dword[reg_destination_addr]);
+         code.or_(reg_result, reg_tmp);
+ 
+@@ -1283,7 +1283,7 @@
+         target_code_ptr = code.GetReturnFromRunCodeAddress();
+     }
+     const CodePtr patch_location = code.getCurr();
+-    code.mov(code.rcx, reinterpret_cast<u64>(target_code_ptr));
++    code.mov(code.rcx, (u64)(std::uintptr_t)(target_code_ptr));
+     code.EnsurePatchLocationSize(patch_location, 10);
+ }
+ 
+--- a/src/dynarmic/backend/x64/a32_interface.cpp
++++ b/src/dynarmic/backend/x64/a32_interface.cpp
+@@ -34,7 +34,7 @@
+ 
+ static RunCodeCallbacks GenRunCodeCallbacks(A32::UserCallbacks* cb, CodePtr (*LookupBlock)(void* lookup_block_arg), void* arg, const A32::UserConfig& conf) {
+     return RunCodeCallbacks{
+-        std::make_unique<ArgCallback>(LookupBlock, reinterpret_cast<u64>(arg)),
++        std::make_unique<ArgCallback>(LookupBlock, (u64)(std::uintptr_t)(arg)),
+         std::make_unique<ArgCallback>(Devirtualize<&A32::UserCallbacks::AddTicks>(cb)),
+         std::make_unique<ArgCallback>(Devirtualize<&A32::UserCallbacks::GetTicksRemaining>(cb)),
+         conf.enable_cycle_counting,
+--- a/src/dynarmic/backend/x64/a64_emit_x64.cpp
++++ b/src/dynarmic/backend/x64/a64_emit_x64.cpp
+@@ -204,7 +204,7 @@
+         terminal_handler_fast_dispatch_hint = code.getCurr<const void*>();
+         calculate_location_descriptor();
+         code.L(rsb_cache_miss);
+-        code.mov(r12, reinterpret_cast<u64>(fast_dispatch_table.data()));
++        code.mov(r12, (u64)(std::uintptr_t)(fast_dispatch_table.data()));
+         code.mov(rbp, rbx);
+         if (code.HasHostFeature(HostFeature::SSE42)) {
+             code.crc32(rbp, r12);
+@@ -223,7 +223,7 @@
+ 
+         code.align();
+         fast_dispatch_table_lookup = code.getCurr<FastDispatchEntry& (*)(u64)>();
+-        code.mov(code.ABI_PARAM2, reinterpret_cast<u64>(fast_dispatch_table.data()));
++        code.mov(code.ABI_PARAM2, (u64)(std::uintptr_t)(fast_dispatch_table.data()));
+         if (code.HasHostFeature(HostFeature::SSE42)) {
+             code.crc32(code.ABI_PARAM1, code.ABI_PARAM2);
+         }
+@@ -747,7 +747,7 @@
+         target_code_ptr = code.GetReturnFromRunCodeAddress();
+     }
+     const CodePtr patch_location = code.getCurr();
+-    code.mov(code.rcx, reinterpret_cast<u64>(target_code_ptr));
++    code.mov(code.rcx, (u64)(std::uintptr_t)(target_code_ptr));
+     code.EnsurePatchLocationSize(patch_location, 10);
+ }
+ 
+--- a/src/dynarmic/backend/x64/a64_interface.cpp
++++ b/src/dynarmic/backend/x64/a64_interface.cpp
+@@ -30,7 +30,7 @@
+ 
+ static RunCodeCallbacks GenRunCodeCallbacks(A64::UserCallbacks* cb, CodePtr (*LookupBlock)(void* lookup_block_arg), void* arg, const A64::UserConfig& conf) {
+     return RunCodeCallbacks{
+-        std::make_unique<ArgCallback>(LookupBlock, reinterpret_cast<u64>(arg)),
++        std::make_unique<ArgCallback>(LookupBlock, (u64)(std::uintptr_t)(arg)),
+         std::make_unique<ArgCallback>(Devirtualize<&A64::UserCallbacks::AddTicks>(cb)),
+         std::make_unique<ArgCallback>(Devirtualize<&A64::UserCallbacks::GetTicksRemaining>(cb)),
+         conf.enable_cycle_counting,
+--- a/src/dynarmic/backend/x64/block_of_code.h
++++ b/src/dynarmic/backend/x64/block_of_code.h
+@@ -87,7 +87,7 @@
+         static_assert(std::is_pointer_v<FunctionPointer> && std::is_function_v<std::remove_pointer_t<FunctionPointer>>,
+                       "Supplied type must be a pointer to a function");
+ 
+-        const u64 address = reinterpret_cast<u64>(fn);
++        const u64 address = (u64)(std::uintptr_t)(fn);
+         const u64 distance = address - (getCurr<u64>() + 5);
+ 
+         if (distance >= 0x0000000080000000ULL && distance < 0xFFFFFFFF80000000ULL) {
+--- a/src/dynarmic/backend/x64/devirtualize.h
++++ b/src/dynarmic/backend/x64/devirtualize.h
+@@ -33,13 +33,13 @@
+ 
+ template<auto mfp>
+ ArgCallback DevirtualizeGeneric(mcl::class_type<decltype(mfp)>* this_) {
+-    return ArgCallback{&impl::ThunkBuilder<decltype(mfp), mfp>::Thunk, reinterpret_cast<u64>(this_)};
++    return ArgCallback{&impl::ThunkBuilder<decltype(mfp), mfp>::Thunk, (u64)(std::uintptr_t)(this_)};
+ }
+ 
+ template<auto mfp>
+ ArgCallback DevirtualizeWindows(mcl::class_type<decltype(mfp)>* this_) {
+     static_assert(sizeof(mfp) == 8);
+-    return ArgCallback{mcl::bit_cast<u64>(mfp), reinterpret_cast<u64>(this_)};
++    return ArgCallback{mcl::bit_cast<u64>(mfp), (u64)(std::uintptr_t)(this_)};
+ }
+ 
+ template<auto mfp>
+@@ -56,7 +56,7 @@
+     static_assert(sizeof(MemberFunctionPointer) == sizeof(mfp));
+ 
+     u64 fn_ptr = mfp_struct.ptr;
+-    u64 this_ptr = reinterpret_cast<u64>(this_) + mfp_struct.adj;
++    u64 this_ptr = (u64)(std::uintptr_t)(this_) + mfp_struct.adj;
+     if (mfp_struct.ptr & 1) {
+         u64 vtable = mcl::bit_cast_pointee<u64>(this_ptr);
+         fn_ptr = mcl::bit_cast_pointee<u64>(vtable + fn_ptr - 1);
+--- a/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
++++ b/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
+@@ -231,7 +231,7 @@
+         ctx.reg_alloc.HostCall(inst, {}, args[1]);
+ 
+         code.mov(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(1));
+-        code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(&conf));
++        code.mov(code.ABI_PARAM1, (u64)(std::uintptr_t)(&conf));
+         if (ordered) {
+             code.mfence();
+         }
+@@ -249,7 +249,7 @@
+         ctx.reg_alloc.HostCall(nullptr);
+ 
+         code.mov(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(1));
+-        code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(&conf));
++        code.mov(code.ABI_PARAM1, (u64)(std::uintptr_t)(&conf));
+         ctx.reg_alloc.AllocStackSpace(16 + ABI_SHADOW_SPACE);
+         code.lea(code.ABI_PARAM3, ptr[rsp + ABI_SHADOW_SPACE]);
+         if (ordered) {
+@@ -291,7 +291,7 @@
+     code.cmp(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(0));
+     code.je(end);
+     code.mov(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(0));
+-    code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(&conf));
++    code.mov(code.ABI_PARAM1, (u64)(std::uintptr_t)(&conf));
+     if constexpr (bitsize != 128) {
+         using T = mcl::unsigned_integer_of_size<bitsize>;
+ 
+--- a/src/dynarmic/backend/x64/perf_map.cpp
++++ b/src/dynarmic/backend/x64/perf_map.cpp
+@@ -60,7 +60,7 @@
+         }
+     }
+ 
+-    const std::string line = fmt::format("{:016x} {:016x} {:s}\n", reinterpret_cast<u64>(start), reinterpret_cast<u64>(end) - reinterpret_cast<u64>(start), friendly_name);
++    const std::string line = fmt::format("{:016x} {:016x} {:s}\n", (u64)(std::uintptr_t)(start), (u64)(std::uintptr_t)(end) - (u64)(std::uintptr_t)(start), friendly_name);
+     std::fwrite(line.data(), sizeof *line.data(), line.size(), file);
+ }
+ }  // namespace detail
+--- a/src/dynarmic/common/llvm_disassemble.cpp
++++ b/src/dynarmic/common/llvm_disassemble.cpp
+@@ -34,7 +34,7 @@
+     size_t remaining = reinterpret_cast<size_t>(end) - reinterpret_cast<size_t>(pos);
+     while (pos < end) {
+         char buffer[80];
+-        size_t inst_size = LLVMDisasmInstruction(llvm_ctx, const_cast<u8*>(pos), remaining, reinterpret_cast<u64>(pos), buffer, sizeof(buffer));
++        size_t inst_size = LLVMDisasmInstruction(llvm_ctx, const_cast<u8*>(pos), remaining, (u64)(std::uintptr_t)(pos), buffer, sizeof(buffer));
+         ASSERT(inst_size);
+         for (const u8* i = pos; i < pos + inst_size; i++)
+             result += fmt::format("{:02x} ", *i);
+--- a/src/dynarmic/common/x64_disassemble.cpp
++++ b/src/dynarmic/common/x64_disassemble.cpp
+@@ -25,7 +25,7 @@
+         fmt::print("{:016x}  ", (u64)ptr + offset);
+ 
+         char buffer[256];
+-        ZydisFormatterFormatInstruction(&formatter, &instruction, operands, instruction.operand_count_visible, buffer, sizeof(buffer), reinterpret_cast<u64>(ptr) + offset, ZYAN_NULL);
++        ZydisFormatterFormatInstruction(&formatter, &instruction, operands, instruction.operand_count_visible, buffer, sizeof(buffer), (u64)(std::uintptr_t)(ptr) + offset, ZYAN_NULL);
+         puts(buffer);
+ 
+         offset += instruction.length;
+@@ -45,7 +45,7 @@
+     ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+     while (ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, static_cast<const char*>(ptr) + offset, size - offset, &instruction, operands))) {
+         char buffer[256];
+-        ZydisFormatterFormatInstruction(&formatter, &instruction, operands, instruction.operand_count_visible, buffer, sizeof(buffer), reinterpret_cast<u64>(ptr) + offset, ZYAN_NULL);
++        ZydisFormatterFormatInstruction(&formatter, &instruction, operands, instruction.operand_count_visible, buffer, sizeof(buffer), (u64)(std::uintptr_t)(ptr) + offset, ZYAN_NULL);
+ 
+         result.push_back(fmt::format("{:016x}  {}", (u64)ptr + offset, buffer));
+ 
+--- a/src/dynarmic/ir/basic_block.cpp
++++ b/src/dynarmic/ir/basic_block.cpp
+@@ -175,7 +175,7 @@
+             if (const unsigned name = arg.GetInst()->GetName()) {
+                 return fmt::format("%{}", name);
+             }
+-            return fmt::format("%<unnamed inst {:016x}>", reinterpret_cast<u64>(arg.GetInst()));
++            return fmt::format("%<unnamed inst {:016x}>", (u64)(std::uintptr_t)(arg.GetInst()));
+         }
+         switch (arg.GetType()) {
+         case Type::U1:
+@@ -204,7 +204,7 @@
+     for (const auto& inst : block) {
+         const Opcode op = inst.GetOpcode();
+ 
+-        ret += fmt::format("[{:016x}] ", reinterpret_cast<u64>(&inst));
++        ret += fmt::format("[{:016x}] ", (u64)(std::uintptr_t)(&inst));
+         if (GetTypeOf(op) != Type::Void) {
+             if (inst.GetName()) {
+                 ret += fmt::format("%{:<5} = ", inst.GetName());
