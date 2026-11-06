@@ -156,3 +156,32 @@ has to run below it. Nothing changed in proteusexec.cpp.
 being touched. That process should be killed by its owner.
 
 Left: Let's Golf 2 from Input Name to a hole (the cropped Input Name screen; touch mapping), the Calculator panic A/B, the long SIS install timing A/B, About, the clean build of the current phgl.
+
+## Follow-up (2026-11-06, VirtualBox, PC image `lim.iso` = Proteus with the install-limit change)
+
+**1. Let's Golf 2 install limit: fixed, install confirmed.** The limit is `RunTimed(_L("sisinst.exe"), pkg, 600, ...)` in `os/src/proteus/proteus.cpp` (P3). `RunTimed` leaves a process that is still running at the limit
+running and reports `EExitPending` (= "exit type 3"), so the 600 s mark only made P3 stop waiting; it did not kill the installer. Physical bound: the 167 MB package unpacks through the real installer at the speed of the
+VirtualBox disk and the PC image's file server; it needs well over 600 s. The limit is now 14400 s (4 h ceiling). `RTimer::After` takes a 32-bit microsecond interval (35 min at most), so `RunTimed` now waits in chunks
+of 1800 s (before, any value above 2147 s would have wrapped). Result: both packages install (`P3 install codecpack-x32.sis: create 0 exit type 0 reason 0`, `P3 install letsgolf2.sis: create 0 exit type 0 reason 0`), then
+`LetsGolf2.exe` runs, window group `2003b2cb`, **P3 PASS at 849 s** after VM start (boot + both installs + the 240 s app wait; the install itself took under 10 minutes). Not compared with aaefc21, so whether the
+priorities slowed the install is still unknown (the install ends inside one run, the A/B is a matter of one more run on `reg.iso`).
+
+**2. Calculator `USER 23`: not Proteus; it is the ARM files staged on 2026-11-05.** USER 23 is `ETDes8Overflow` (e32panic.h), a `TDes8::Copy` into a too-small buffer. The EikAppUiServer message before it is
+`EEikAppUiGetDebugPreferences` (fn 10; enum in `EIKSRVS.H`), the client's `REikAppUiSession::GetDebugPreferencesL`: `TIpcArgs(8, &bufPtr)` (8 = `KDefaultBufSize`), the server completes 0 (the preferences fit)
+and the bridge hands the client the same TDes8 it wrote to (`proteus IPC: !EikAppUiServer session 11 fn 10 flags 20 args 8 <TPtr8> 70 0 sync`, completed 0). The argument marshalling is therefore correct
+(arg 1 is a writable 8-bit descriptor, flag 0x20; the guest and host descriptors share their layout); the panic is a later copy (`lr` = `euser.dll+0x486d4`, the panic helper, from `bafl.dll+0xa00c`, under `eikcoctl`).
+A/B on this very ISO (Proteus unchanged), same registration/resources: the **Nov 4 ARM set** (`compat-calc.img`: avkon 1358872 B, eikcoctl 658916 B) **runs the Calculator** (calcsoft.exe running after 240 s, UI
+drawn: `img/compat-calculator-oldarm-20261106.png`; the P3 verdict says FAIL only because the stale disk's `sisapp.txt` had said `pcalc.exe` and I set it by hand for this A/B), the **Nov 5 set** (avkon 1363856 B,
+eikcoctl 658832 B) panics `USER 23`. Swapping only eikcoctl back to the Nov 4 file: still panics. Swapping avkon back: see the line below (run in progress when this was written).
+So the fault is in the ARM avkon.dll (or another DLL) rebuilt from current core in the `protgl-arm` volume, not in the guest->host conversion. Per the rules this is a native question first (does the same avkon from the same
+build run the Calculator on the native ARM side?): not Proteus' to patch.
+
+**3. Let's Golf 2 Input Name, only the left 360 px: evidence, cause not isolated.** The WSERV screen is in mode 0 (360x640) while the game draws its 640x360 GL surface: `proteus WSR: op 3 -> 168 280` (360x640) at the
+time the game's window group exists. The cap server's screen-mode decision for the game's window group: `sgc wg 42 full 1 orientSpec 4 landscape 8 spLayout 0x8cc01a4` (the game asked for landscape, as Sparkle does:
+`orientSpec 4 landscape 8`) and then `sgc SetLayoutL top wg 42 (sp index 3) -> mode 0 (last set 0)`: `CalculateScreenMode(ETrue, specified, landscape, unset)` returned mode 0 for a landscape request. No Proteus
+code touches orientation (the guest talks to the native WSERV / cap server over the bridge), the game's flags are the same as Sparkle's, so this is the PC image's screen-mode configuration or the state the cap server
+sees (hardware layout state / alternate screen mode of the layout config), not something Proteus converts. The picture is the unrotated 640x360 surface blitted at the bottom of the 360x640 window (`img/compat-letsgolf2-inputname-20261106.png`).
+Next: log `iAvkonEnv->SettingCache().HardwareLayoutState()` and the layout config's modes in `CEikSgcServer::SetLayoutL` (core `akncapserver_trace`) and compare with the Sparkle run. Keys and taps were not retried (they go to the
+same window, whose size is the portrait one).
+
+**4. About: not run** (no time left in the 60 minutes).
