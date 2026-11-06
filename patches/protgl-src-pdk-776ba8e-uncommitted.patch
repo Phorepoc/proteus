@@ -1,0 +1,490 @@
+diff --git a/.github/workflows/board-image.yml b/.github/workflows/board-image.yml
+index 048a83b..957ba85 100644
+--- a/.github/workflows/board-image.yml
++++ b/.github/workflows/board-image.yml
+@@ -220,11 +220,8 @@ jobs:
+           docker push -q "$img:$core"; docker push -q "$img:main"
+           docker rmi "$img:$core" "$img:main" >/dev/null
+ 
+-      # (GH_TOKEN: the recipe fetches the SIS files of the board's preinstalled packages, board.conf PACKAGES, from
+-      # their releases -- phe image packages)
+       - name: The board's release files (board.conf RELEASE)
+         if: inputs.images && inputs.arch == ''
+-        env: { GH_TOKEN: "${{ github.token }}" }
+         run: phe image release -b "${{ steps.setup.outputs.board }}" -o "$PWD/out"
+ 
+       - name: Checksums + provenance
+diff --git a/.github/workflows/package.yml b/.github/workflows/package.yml
+index 6ccf474..05e8f34 100644
+--- a/.github/workflows/package.yml
++++ b/.github/workflows/package.yml
+@@ -22,18 +22,12 @@
+ #   jobs:
+ #     package:
+ #       uses: Phorepoc/pdk/.github/workflows/package.yml@main
+-#       with: { version: "${{ needs.version.outputs.version }}" }   # optional: the SIS carries the release's version
+ #       permissions: { contents: read, packages: read }
+ 
+ name: package
+ 
+ on:
+   workflow_call:
+-    inputs:
+-      version:
+-        description: "The version this build will be released under (v1.2.3), or empty; the recipes see it as PHOREPOC_PACKAGE_VERSION (1.2.3)"
+-        type: string
+-        default: ""
+ 
+ jobs:
+   conf:
+@@ -111,9 +105,7 @@ jobs:
+           phe component build -arch "$PHOREPOC_ARCH" ${{ matrix.components }}
+ 
+       - name: The SIS files (recipes/sis.sh)
+-        env: { RELEASE_VERSION: "${{ inputs.version }}" }
+         run: |
+-          export PHOREPOC_PACKAGE_VERSION="${RELEASE_VERSION#v}"
+           phe image recipe sis
+           sudo chown -R "$(id -u):$(id -g)" build
+           mkdir -p out && cp build/sis/*.sis out/ && ls -l out
+diff --git a/cmd/phe/commands.go b/cmd/phe/commands.go
+index a731c56..d417e8f 100644
+--- a/cmd/phe/commands.go
++++ b/cmd/phe/commands.go
+@@ -524,27 +524,6 @@ func commands(app *cli.App) []*cli.Command {
+ 				return python(fs, "tools/zdata_gen.py")
+ 			},
+ 		},
+-		{
+-			Group: "image", Name: "packages",
+-			Summary: "Put the board's preinstalled packages into the ROM data",
+-			Description: "A board lists packages it ships preinstalled (PACKAGES in board.conf, each pinned in board.lock " +
+-				"by the commit its release was built from). Their repositories are not built here: the SIS of the " +
+-				"board's architecture comes from that release (checked against its SHA256SUMS) and its files become " +
+-				"data files of the ROM, with a ROM stub SIS that registers the package and lists them as eclipsable, " +
+-				"so a newer release of the package installs over them and removing it brings them back. " +
+-				"Run it before \"image zdata\", which adds the files to the ROM.",
+-			Flags:   boardFlag,
+-			Aliases: []string{"packages"},
+-			Examples: []cli.Example{
+-				{What: "Fetch the preinstalled packages of a board:", Cmd: "image packages -b <board>"},
+-			},
+-			Run: func(fs *flag.FlagSet, args []string) error {
+-				if err := noArgs(args); err != nil {
+-					return err
+-				}
+-				return python(fs, "tools/packages.py")
+-			},
+-		},
+ 		{
+ 			Group: "image", Name: "sis", Operands: "<component>...",
+ 			Summary: "Package components as an installable SIS file",
+diff --git a/docs/layering.md b/docs/layering.md
+index fc357ce..932099d 100644
+--- a/docs/layering.md
++++ b/docs/layering.md
+@@ -42,21 +42,6 @@ REPOS="mysoc myboard mesa-symbian tls"            # the repositories it is made
+ RELEASE=recipes/release.sh                        # makes the release files into $OUT (CI and `phe image release`)
+ ```
+ 
+-A board can also carry **packages** preinstalled, besides the repositories it builds:
+-
+-```sh
+-PACKAGES="webkit-symbian"                         # packages published by their own repositories' releases
+-```
+-
+-A package repository (`package.conf`, the pdk's `package.yml`) builds and releases SIS files by itself. The board does not
+-build it again: `board.lock` pins it by the commit of one of its releases, and `phe image packages` (the board's `RELEASE`
+-recipe calls it before `phe image zdata`) takes the SIS of the board's architecture from that release, checked against the
+-release's `SHA256SUMS`. The package's files go into the ROM as data files, with a **ROM stub SIS**
+-(`z:\system\install\<package>_stub.sis`) that registers the package at the release's version and lists those files as
+-eclipsable. That is the standard way to ship an upgradable component in a ROM: a newer release of the package, a SIS built
+-with the ROM-upgrade flag (`make_sis.py --rom-upgrade`), installs over the ROM files, and removing it brings them back.
+-The package stays a separate component, so its own licence terms (relinking an LGPL part, for example) are kept.
+-
+ `phe` finds boards by looking for a `board.conf` in each checkout next to core, so a new board needs no change
+ anywhere else. `board.lock`, next to it, pins the commit of each repository a release is built from
+ (`tools/board_lock.sh <board repository>` in the pdk).
+diff --git a/docs/phe/README.md b/docs/phe/README.md
+index 00f33c7..8a6ee5f 100644
+--- a/docs/phe/README.md
++++ b/docs/phe/README.md
+@@ -41,7 +41,6 @@ What goes onto a device: the ROM, its data, installable packages.
+ | [`phe image skin`](phe-image-skin.md) | Build the skin packages (the default skin and the Haze and Jing themes) |
+ | [`phe image icons`](phe-image-icons.md) | Build every component's icon files (.mif) |
+ | [`phe image zdata`](phe-image-zdata.md) | Collect the Z: data the packages export |
+-| [`phe image packages`](phe-image-packages.md) | Put the board's preinstalled packages into the ROM data |
+ | [`phe image sis`](phe-image-sis.md) | Package components as an installable SIS file |
+ | [`phe image compare`](phe-image-compare.md) | Byte-compare images with another build |
+ 
+diff --git a/lib/build/build.go b/lib/build/build.go
+index cdc2dfb..520123c 100644
+--- a/lib/build/build.go
++++ b/lib/build/build.go
+@@ -28,7 +28,6 @@ var passThrough = []string{
+ 	"SECONDARY_IMAGE", "PHOREPOC_S4", "PHOREPOC_QT48", "PHETTY", "CENREP_EXTRA", "ROM_DATA_EXTRA", "UTC_OFFSET",
+ 	"WEBFONTS", "THEMES", "X32_LD", "X32_DEFS", "X32_LIBS", "X32_INCLUDE", "X32_FULLERR", "PRUNE_UNRESOLVED", "ROM_HEAP_LIMITS",
+ 	"TRACE", "SCREEN", "SCALE", "DBG", "KCLEAN", "ARM_VFP", "ARM_CPU_FLAGS", "ALF_TRACE", "ALF_TIMING", "ALF_LOG", "ALF_RC",
+-	"PHOREPOC_PACKAGE_VERSION", "PHOREPOC_PACKAGE_OWNER", "GH_TOKEN", "GITHUB_TOKEN",
+ }
+ 
+ // Env is where the pieces live.
+diff --git a/tests/compare_images.py b/tests/compare_images.py
+old mode 100644
+new mode 100755
+diff --git a/tools/armasm2gas/armasm2gas.py b/tools/armasm2gas/armasm2gas.py
+old mode 100644
+new mode 100755
+diff --git a/tools/armasm2gas/build_bootstrap.sh b/tools/armasm2gas/build_bootstrap.sh
+old mode 100644
+new mode 100755
+diff --git a/tools/armasm2gas/h2inc.py b/tools/armasm2gas/h2inc.py
+old mode 100644
+new mode 100755
+diff --git a/tools/board_lock.sh b/tools/board_lock.sh
+old mode 100644
+new mode 100755
+index b25432a..de7d8be
+--- a/tools/board_lock.sh
++++ b/tools/board_lock.sh
+@@ -3,13 +3,13 @@
+ # SPDX-License-Identifier: Apache-2.0
+ 
+ # board_lock.sh <board repository> -- write <board repository>/board.lock: the commit of every repository the board's
+-# release is built from (the pdk, core, its board.conf REPOS and PACKAGES), taken from the checkouts next to this pdk. The release
++# release is built from (the pdk, core and its board.conf REPOS), taken from the checkouts next to this pdk. The release
+ # workflow (.github/workflows/board-image.yml) builds exactly these commits. Run it before tagging a release; every
+ # commit must be pushed (the workflow fetches them from GitHub).
+ set -eu
+ dir="$(cd "${1:?usage: board_lock.sh <board repository>}" && pwd)"
+ [ -f "$dir/board.conf" ] || { echo "no board.conf in $dir" >&2; exit 1; }
+-NAME= REPOS= PACKAGES=; . "$dir/board.conf"
++NAME= REPOS=; . "$dir/board.conf"
+ root="$(cd "$(dirname "$0")/../.." && pwd)"
+ out="$dir/board.lock"
+ {
+@@ -21,13 +21,5 @@ out="$dir/board.lock"
+ 		fi
+ 		echo "$r $(git -C "$root/$r" rev-parse HEAD)"
+ 	done
+-	# PACKAGES (carried preinstalled, tools/packages.py) are not built with the board: the ROM takes the SIS files of
+-	# a package's release, so each is pinned by the commit of its latest release (its newest v* tag; fetch the tags)
+-	for r in $PACKAGES; do
+-		[ -d "$root/$r/.git" ] || { echo "no checkout $root/$r" >&2; exit 1; }
+-		tag=$(git -C "$root/$r" tag --list 'v*' --sort=-v:refname | head -n 1)
+-		[ -n "$tag" ] || { echo "$r has no release tag (git fetch --tags)" >&2; exit 1; }
+-		echo "$r $(git -C "$root/$r" rev-list -n 1 "$tag")"
+-	done
+ } > "$out"
+ cat "$out"
+diff --git a/tools/cenrep_set.py b/tools/cenrep_set.py
+old mode 100644
+new mode 100755
+diff --git a/tools/ci/commit_lint.sh b/tools/ci/commit_lint.sh
+old mode 100644
+new mode 100755
+diff --git a/tools/ci/layering.sh b/tools/ci/layering.sh
+old mode 100644
+new mode 100755
+diff --git a/tools/ci/next_version.sh b/tools/ci/next_version.sh
+old mode 100644
+new mode 100755
+diff --git a/tools/ci/release_notes.py b/tools/ci/release_notes.py
+old mode 100644
+new mode 100755
+diff --git a/tools/e32check.py b/tools/e32check.py
+old mode 100644
+new mode 100755
+diff --git a/tools/emitter/sis.py b/tools/emitter/sis.py
+index a9dc6b9..0610f86 100644
+--- a/tools/emitter/sis.py
++++ b/tools/emitter/sis.py
+@@ -85,7 +85,6 @@ LANG_EN = 1
+ INSTALL_TYPE_INSTALLATION = 0
+ HASH_SHA1 = 1
+ OP_INSTALL = 1
+-INSTALL_FLAG_ROM_UPGRADE = 1 << 2      # Swi::Sis::EInstFlagROMUpgrade (installtypes.h)
+ 
+ 
+ def _field(ftype: int, payload: bytes, typed: bool = True) -> bytes:
+@@ -128,8 +127,7 @@ def _file_des(target: str, data: bytes, deflated: bytes, caps, index: int) -> by
+ 
+ 
+ def build_package(files, *, app_uid: int, vendor: str, app_name: str,
+-                  version=(1, 0, 0), signer=None, platform_uid=None, install_type=None, dependencies=(),
+-                  rom_upgrade=False) -> bytes:
++                  version=(1, 0, 0), signer=None, platform_uid=None, install_type=None, dependencies=()) -> bytes:
+     """A SISX package. `files` = [(data bytes, target path, caps or None)]; `signer` = (private key,
+     certificate DER) from the `cryptography` package -> one SISSignatureCertificateChain.
+ 
+@@ -138,11 +136,7 @@ def build_package(files, *, app_uid: int, vendor: str, app_name: str,
+     SISInstallBlock (+ SISLogo) -- everything before the first signature chain; RSA PKCS#1 v1.5 over SHA-1
+     (signatureverifier.cpp), the raw signature integer as the blob; the chain = the concatenated DER
+     certificates. A self-signed chain validates as ESignatureSelfSigned, which the policy (swipolicy.ini)
+-    accepts with user-grantable capabilities.
+-
+-    `rom_upgrade` sets the ROM-upgrade install flag (EInstFlagROMUpgrade, makesis "RU"): the package may then eclipse
+-    the files of the same package UID that a ROM stub (build_rom_stub) lists. Where no stub is installed the flag does
+-    nothing, so the same package installs on a device that carries none."""
++    accepts with user-grantable capabilities."""
+     import datetime
+     import zlib
+     now = datetime.datetime.now()
+@@ -155,8 +149,7 @@ def build_package(files, *, app_uid: int, vendor: str, app_name: str,
+                   + _field(SISDateTime,
+                            _field(SISDate, struct.pack("<HBB", now.year, now.month - 1, now.day - 1))
+                            + _field(SISTime, struct.pack("<BBB", now.hour, now.minute, now.second)))
+-                  + struct.pack("<BB", INSTALL_TYPE_INSTALLATION if install_type is None else install_type,
+-                                INSTALL_FLAG_ROM_UPGRADE if rom_upgrade else 0))
++                  + struct.pack("<BB", INSTALL_TYPE_INSTALLATION if install_type is None else install_type, 0))
+     supported_options = _field(SISSupportedOptions, _array(SISSupportedOption, []))
+     # SISLanguage = a 4-byte language id (real SWI reads 4)
+     supported_langs = _field(SISSupportedLanguages,
+@@ -216,14 +209,10 @@ def build_package(files, *, app_uid: int, vendor: str, app_name: str,
+     return struct.pack("<IIII", HEADER_MAGIC, 0, app_uid, uid_checksum(HEADER_MAGIC, 0, app_uid)) + contents
+ 
+ 
+-def build_rom_stub(*, pkg_uid: int, vendor: str, name: str, version, files=()) -> bytes:
++def build_rom_stub(*, pkg_uid: int, vendor: str, name: str, version) -> bytes:
+     """A ROM stub SIS (makesis -s, Z:\\system\\install\\*_stub.sis): the raw, uncompressed SISController alone -- no SIS header,
+     no data (as the release's stubs, e.g. aiwdialdata_stub.sis). SWI registers the package as installed in ROM at its version,
+-    so a SIS that depends on it (pkg_uid, version >= x) installs. `files` = the package's ROM files as device paths (`z:\\sys\\bin\\x.dll`): the install block lists them
+-    without data, which makes them eclipsable -- a later SIS of this package UID with the ROM-upgrade flag
+-    (build_package rom_upgrade) or a partial upgrade may install over them (swis installationplanner.cpp
+-    PrepareEclipsableFilesListL), and uninstalling it brings the ROM files back. Without `files` the block is empty: the
+-    files are in ROM and cannot be replaced."""
++    so a SIS that depends on it (pkg_uid, version >= x) installs. An empty install block: the files are in ROM already."""
+     import datetime
+     now = datetime.datetime.now()
+     info = _field(SISInfo,
+@@ -242,119 +231,11 @@ def build_rom_stub(*, pkg_uid: int, vendor: str, name: str, version, files=()) -
+                      _array(SISLanguage, [_field(SISLanguage, struct.pack("<I", LANG_EN), typed=False)]))
+             + _field(SISPrerequisites, _array(SISDependency, []) + _array(SISDependency, []))
+             + _field(SISProperties, _array(SISProperty, []))
+-            + _field(SISInstallBlock, _array(SISFileDes, [_file_des(f, b"", b"", None, 0) for f in files])
+-                     + _array(SISController, []) + _array(SISIf, []))
++            + _field(SISInstallBlock, _array(SISFileDes, []) + _array(SISController, []) + _array(SISIf, []))
+             + _field(SISDataIndex, struct.pack("<I", 0)))
+     return _field(SISController, body)
+ 
+ 
+-def _read_field(buf: bytes, off: int, typed: bool = True):
+-    """One field at `off`: (type or None, payload, offset of the next field) -- the inverse of _field."""
+-    ftype = None
+-    if typed:
+-        ftype = struct.unpack_from("<I", buf, off)[0]
+-        off += 4
+-    n = struct.unpack_from("<I", buf, off)[0]
+-    if n & 0x80000000:
+-        raise ValueError("SIS: a field over 2 GB")
+-    off += 4
+-    return ftype, buf[off:off + n], off + n + ((-(off + n)) % 4)
+-
+-
+-def _array_elements(payload: bytes) -> list:
+-    """The elements (payloads) of a SISArray payload whose elements are untyped fields."""
+-    off, out = 4, []
+-    while off < len(payload):
+-        _, p, off = _read_field(payload, off, typed=False)
+-        out.append(p)
+-    return out
+-
+-
+-def _typed_array(buf: bytes, off: int) -> tuple:
+-    """A typed SISArray at `off`: (its elements, offset of the next field)."""
+-    t, p, nxt = _read_field(buf, off)
+-    if t != SISArray:
+-        raise ValueError(f"SIS: expected an array, found field {t}")
+-    return _array_elements(p), nxt
+-
+-
+-def _inflate(buf: bytes, off: int) -> bytes:
+-    """A typed SISCompressed field at `off`: its bytes (inflated when deflated)."""
+-    import zlib
+-    t, p, _ = _read_field(buf, off)
+-    if t != SISCompressed:
+-        raise ValueError(f"SIS: expected a compressed field, found field {t}")
+-    algo, size = struct.unpack_from("<IQ", p, 0)
+-    raw = zlib.decompress(p[12:]) if algo == 1 else p[12:]
+-    if len(raw) != size:
+-        raise ValueError("SIS: the compressed length does not match")
+-    return raw
+-
+-
+-def read_package(data: bytes) -> dict:
+-    """The inverse of build_package, for the packages this writer makes (and the pdk's package builds): the package UID,
+-    vendor, name, version, install type and flags, and the files as [(device path, bytes)], e.g. `!:\\sys\\bin\\x.dll`.
+-    Only the layout build_package writes is understood (one data unit, the controller right after the two checksums);
+-    anything else is an error, never a guess. Each file's SHA-1 is checked against its description."""
+-    import hashlib
+-    if len(data) < 28 or struct.unpack_from("<I", data, 0)[0] != HEADER_MAGIC:
+-        raise ValueError("not a SIS file")
+-    t, contents, _ = _read_field(data, 16)
+-    if t != SISContents:
+-        raise ValueError("SIS: no contents field")
+-    off = 0
+-    for _ in range(2):                                    # the controller and data checksums
+-        _, _, off = _read_field(contents, off)
+-    controller = _inflate(contents, off)
+-    _, _, off = _read_field(contents, off)
+-    t, payload, _ = _read_field(contents, off)
+-    if t != SISData:
+-        raise ValueError("SIS: no data field")
+-    units, _ = _typed_array(payload, 0)
+-    datas = _typed_array(units[0], 0)[0] if units else []
+-    t, body, _ = _read_field(controller, 0)
+-    if t != SISController:
+-        raise ValueError("SIS: no controller")
+-    t, info, off = _read_field(body, 0)
+-    if t != SISInfo:
+-        raise ValueError("SIS: no info field")
+-    o = 0
+-    _, uid, o = _read_field(info, o)
+-    _, vendor, o = _read_field(info, o)
+-    names, o = _typed_array(info, o)
+-    _, o = _typed_array(info, o)                          # the vendor names
+-    _, version, o = _read_field(info, o)
+-    _, _, o = _read_field(info, o)                        # date and time
+-    itype, iflags = info[o], info[o + 1]
+-    block = None
+-    while off < len(body):                                # options, languages, prerequisites, properties, install block
+-        t, p, off = _read_field(body, off)
+-        if t == SISInstallBlock:
+-            block = p
+-            break
+-    if block is None:
+-        raise ValueError("SIS: no install block")
+-    descs, _ = _typed_array(block, 0)
+-    files = []
+-    for d in descs:
+-        _, target, o = _read_field(d, 0)
+-        _, _, o = _read_field(d, o)                       # mime type
+-        t, p, nxt = _read_field(d, o)
+-        if t == SISCapabilities:
+-            t, p, nxt = _read_field(d, nxt)
+-        if t != SISHash:
+-            raise ValueError("SIS: a file without a hash")
+-        sha1 = _read_field(p[4:], 0)[1]
+-        _op, _options, _stored, size, index = struct.unpack_from("<IIQQI", d, nxt)
+-        raw = _inflate(datas[index], 0)
+-        if len(raw) != size or hashlib.sha1(raw).digest() != sha1:
+-            raise ValueError("SIS: a file does not match its description")
+-        files.append((target.decode("utf-16-le"), raw))
+-    return {"uid": struct.unpack("<I", uid)[0], "vendor": vendor.decode("utf-16-le"),
+-            "name": names[0].decode("utf-16-le"),
+-            "version": struct.unpack("<iii", version), "install_type": itype, "flags": iflags, "files": files}
+-
+-
+ def build_sis(exe_bytes: bytes, *, target_path: str = "!:\\sys\\bin\\app.exe",
+               app_uid: int = 0xE1234567, vendor: str = "Phorepoc",
+               app_name: str = "App",
+diff --git a/tools/make_phorepoc_rom.sh b/tools/make_phorepoc_rom.sh
+old mode 100644
+new mode 100755
+diff --git a/tools/make_sis.py b/tools/make_sis.py
+index 6ff8c3d..f5fd037 100644
+--- a/tools/make_sis.py
++++ b/tools/make_sis.py
+@@ -47,9 +47,6 @@ def main() -> int:
+                     help="the package needs an installed package of this uid, version >= x (e.g. 0x2001E61C,4.7.3,Qt)")
+     ap.add_argument("--file", action="append", default=[], metavar="HOST=TARGET",
+                     help="an extra data file (licence text, notices): host path = target path on the device (!:/resource/Qt/LICENSE.LGPL; / becomes a backslash)")
+-    ap.add_argument("--rom-upgrade", action="store_true",
+-                    help="set the ROM-upgrade install flag: the package may replace the files a ROM stub of the same package UID "
+-                         "lists (tools/packages.py makes the stub); where there is no such stub it installs as any package")
+     ap.add_argument("--type", choices=["sa", "sp", "pu"], default="sa", help="SIS install type: sa (full), sp (patch), pu (partial upgrade of an installed package)")
+     a = ap.parse_args()
+     files = []
+@@ -62,13 +59,6 @@ def main() -> int:
+         if key == a.keys[0]:
+             uid3, caps = struct.unpack_from("<I", img, 8)[0], img_caps
+         files.append((img, "!:\\sys\\bin\\" + rom, img_caps))
+-        if m.targettype == "plugin":
+-            # an ECOM plug-in is found through its registration resource (compile_registration: BUILD/plugins/<stem>.rsc), which
+-            # the ROM carries in \resource\plugins; installed, it goes to the same folder of the install drive
+-            reg = os.path.join(BUILD, "plugins", os.path.splitext(rom)[0] + ".rsc")
+-            if not os.path.isfile(reg):
+-                sys.exit(f"make_sis: {key} is an ECOM plug-in but {reg} (its registration) was not built: run the resource step first")
+-            files.append((open(reg, "rb").read(), "!:\\resource\\plugins\\" + os.path.basename(reg), None))
+         lines = list(comp.get("rom_data", []))
+         man = os.path.join(BUILD, "romfiles", rom + ".romfiles")
+         if os.path.isfile(man):
+@@ -90,7 +80,7 @@ def main() -> int:
+                             platform_uid=0x20022E6D if a.arm else None,
+                             dependencies=[(int(d.split(",")[0], 0), tuple(int(x) for x in d.split(",")[1].split(".")), d.split(",", 2)[2])
+                                           for d in a.depends],
+-                            install_type={"sa": 0, "sp": 1, "pu": 2}[a.type], rom_upgrade=a.rom_upgrade)
++                            install_type={"sa": 0, "sp": 1, "pu": 2}[a.type])
+     out = a.out or os.path.join(BUILD, "sis", a.keys[0] + ".sis")
+     os.makedirs(os.path.dirname(out), exist_ok=True)
+     open(out, "wb").write(pkg)
+diff --git a/tools/ordcheck.py b/tools/ordcheck.py
+old mode 100644
+new mode 100755
+diff --git a/tools/packages.py b/tools/packages.py
+index 01bf704..fb0a3f0 100644
+--- a/tools/packages.py
++++ b/tools/packages.py
+@@ -155,6 +155,8 @@ def main() -> int:
+     os.makedirs(OUT, exist_ok=True)
+     manifest = os.path.join(OUT, "manifest.txt")
+     open(manifest, "w").close()           # (a run for a board without packages leaves nothing of an earlier one)
++    commits = os.path.join(OUT, "commits.txt")   # "<package> <commit>": the ROM's build record lists them (a PhoneLab push checks the base)
++    open(commits, "w").close()
+     d = board_dir(board)
+     if d is None:
+         print("packages: no board.conf among the repositories: no packages")
+@@ -197,6 +199,7 @@ def main() -> int:
+         for r in roms:
+             print("   ", r, "(the ROM has it from a component)" if r.lower() in owned else "")
+     open(manifest, "w").write("\n".join(lines) + "\n")
++    open(commits, "w").write("".join(f"{pkg} {pins[pkg]}\n" for pkg in pkgs))
+     return 0
+ 
+ 
+diff --git a/tools/rombuild.py b/tools/rombuild.py
+old mode 100644
+new mode 100755
+diff --git a/tools/toolchain/cc_batch.py b/tools/toolchain/cc_batch.py
+old mode 100644
+new mode 100755
+diff --git a/tools/toolchain/cc_cached b/tools/toolchain/cc_cached
+old mode 100644
+new mode 100755
+diff --git a/tools/toolchain/mk_pure_wrappers.sh b/tools/toolchain/mk_pure_wrappers.sh
+old mode 100644
+new mode 100755
+diff --git a/tools/toolchain/symcc b/tools/toolchain/symcc
+old mode 100644
+new mode 100755
+diff --git a/tools/zdata_gen.py b/tools/zdata_gen.py
+index d625a87..06c9282 100644
+--- a/tools/zdata_gen.py
++++ b/tools/zdata_gen.py
+@@ -135,15 +135,6 @@ def board_zdata():
+     return out
+ 
+ 
+-def package_zdata():
+-    """the files of the packages the board carries preinstalled (tools/packages.py, `phe image packages`): the
+-    `<rom path>=<host path>` lines it left in BUILD/packages/manifest.txt, with the packages' ROM stubs."""
+-    path = os.path.join(BUILD, "packages", "manifest.txt")
+-    if not os.path.isfile(path):
+-        return []
+-    return [tuple(t.strip() for t in line.strip().partition("=")[::2]) for line in open(path, encoding="utf-8") if line.strip()]
+-
+-
+ def zdata(bldinf):
+     """yield (src_abs, rom_path) for the Z:-drive exports of one bld.inf."""
+     cur_dir, section = os.path.dirname(bldinf), ""
+@@ -191,7 +182,7 @@ def main() -> int:
+                         missing += 1
+                         continue
+                     out[rom.lower()] = (rom, src)
+-    for rom, rel in GENERATED + board_zdata() + package_zdata():
++    for rom, rel in GENERATED + board_zdata():
+         if os.path.isfile(resolve(rel)):
+             out[rom.lower()] = (rom, resolve(rel))
+         else:
+
+?? os/src/phorepoc/avkon_layout/

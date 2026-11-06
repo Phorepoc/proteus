@@ -1,0 +1,101 @@
+diff --git a/fetch.sh b/fetch.sh
+old mode 100644
+new mode 100755
+diff --git a/os/src/phebrowser/phebrowser.cpp b/os/src/phebrowser/phebrowser.cpp
+index 49ed957..98763ec 100644
+--- a/os/src/phebrowser/phebrowser.cpp
++++ b/os/src/phebrowser/phebrowser.cpp
+@@ -1382,7 +1382,7 @@ private:
+ 			if (aE.iType == TPointerEvent::EButton1Up)
+ 				{
+ 				if (ClearRect(el).Contains(aE.iPosition))
+-					{ iEdit->SetTextL(&KNullDesC); iEdit->SetFocus(ETrue); DrawDeferred(); }
++					{ iEdit->SetTextL(&KNullDesC); iEdit->SetCursorPosL(0, EFalse); iEdit->SetFocus(ETrue); DrawDeferred(); }   // (SelectAllL left the caret and the selection anchor past the now empty text: the next key panicked ETEXT 12)
+ 				else if (!FieldRect(el).Contains(aE.iPosition))
+ 					EndEditL(EFalse);                                   // tap outside = cancel
+ 				}
+diff --git a/os/src/pheeh/gen_def.sh b/os/src/pheeh/gen_def.sh
+old mode 100644
+new mode 100755
+diff --git a/os/src/symgl/symgl_window.cpp b/os/src/symgl/symgl_window.cpp
+index 24379c9..c4bd060 100644
+--- a/os/src/symgl/symgl_window.cpp
++++ b/os/src/symgl/symgl_window.cpp
+@@ -305,11 +305,15 @@ namespace
+ 			Mem::Copy(dst + y * dstStride, aSrc + y * aSrcStride, aW * 4);
+ 		bmp.EndDataAccess();
+ 		CWindowGc& gc = *aSt.iGc;
++		// The frame is window drawing, so it follows the window server's redraw convention and belongs to the window's owner.
++		// Inside the owner's BeginRedraw..EndRedraw (a Qt GL widget paints, and swaps, from its paint event) the frame joins that
++		// redraw; a bracket of our own would nest in it and the server panics the client (WSERV 69,
++		// EWservPanicDrawCommandsInvalidState, CWsRedrawMsgWindow::BeginRedraw). Outside a redraw (a game that swaps from a timer or
++		// an idle loop) the window server stores the drawing as a non-redraw segment of the window and adds the window's visible
++		// region to the screen's redraw regions (CWsRedrawMsgWindow::StoreDrawCommandL -> HandleNonRedrawCommand), so the frame still
++		// reaches the screen and is kept for exposure. Either way no bracket here.
+ 		gc.Activate(win);
+-		win.Invalidate();
+-		win.BeginRedraw();
+ 		gc.BitBlt(TPoint(0, 0), &bmp);
+-		win.EndRedraw();
+ 		gc.Deactivate();
+ 		win.Session()->Flush();
+ 		}
+diff --git a/os/toolchain/x32/efile_census_x32.sh b/os/toolchain/x32/efile_census_x32.sh
+old mode 100644
+new mode 100755
+diff --git a/os/toolchain/x32/efsrv_census_x32.sh b/os/toolchain/x32/efsrv_census_x32.sh
+old mode 100644
+new mode 100755
+diff --git a/os/toolchain/x32/estart_census_x32.sh b/os/toolchain/x32/estart_census_x32.sh
+old mode 100644
+new mode 100755
+diff --git a/os/toolchain/x32/euser_census_x32.sh b/os/toolchain/x32/euser_census_x32.sh
+old mode 100644
+new mode 100755
+diff --git a/os/toolchain/x32/hal_census_x32.sh b/os/toolchain/x32/hal_census_x32.sh
+old mode 100644
+new mode 100755
+diff --git a/os/toolchain/x32/x64ekern/build_exctrap_test.sh b/os/toolchain/x32/x64ekern/build_exctrap_test.sh
+old mode 100644
+new mode 100755
+diff --git a/os/toolchain/x32/x64smp/build_atomics_test.sh b/os/toolchain/x32/x64smp/build_atomics_test.sh
+old mode 100644
+new mode 100755
+diff --git a/os/toolchain/x32/x64user/build_realx_test.sh b/os/toolchain/x32/x64user/build_realx_test.sh
+old mode 100644
+new mode 100755
+diff --git a/os/tools/charconv/gen_basic_snm.sh b/os/tools/charconv/gen_basic_snm.sh
+old mode 100644
+new mode 100755
+diff --git a/os/tools/charconv/uidcrc b/os/tools/charconv/uidcrc
+old mode 100644
+new mode 100755
+diff --git a/os/tools/phorepoc-qt48/build_iap_sis.sh b/os/tools/phorepoc-qt48/build_iap_sis.sh
+old mode 100644
+new mode 100755
+diff --git a/os/tools/phorepoc-qt48/build_qt_sis.sh b/os/tools/phorepoc-qt48/build_qt_sis.sh
+old mode 100644
+new mode 100755
+diff --git a/os/tools/phorepoc-qt48/build_qtcomponents_sis.sh b/os/tools/phorepoc-qt48/build_qtcomponents_sis.sh
+old mode 100644
+new mode 100755
+diff --git a/os/tools/phorepoc-qt48/build_qtmobility_sis.sh b/os/tools/phorepoc-qt48/build_qtmobility_sis.sh
+old mode 100644
+new mode 100755
+diff --git a/os/tools/phorepoc-qt48/build_qtwebkit_sis.sh b/os/tools/phorepoc-qt48/build_qtwebkit_sis.sh
+old mode 100644
+new mode 100755
+diff --git a/registry/components.py b/registry/components.py
+index 41ebfbd..d6339fc 100644
+--- a/registry/components.py
++++ b/registry/components.py
+@@ -420,7 +420,8 @@ COMPONENTS = {
+     # own AknEcs.cpp stem targets a newer classicui): no phone server here and the real phoneclient
+     # panics 'PhSrvStartUp' -- run the emergency-call detector with a null CPhCltEmergencyCall
+     "avkon": dict(mmp="../symbian-rcl3/oss.FCL.sf.mw.classicui/uifw/AvKon/group/avkon.mmp",
+-                  drop=["aknecs.cpp", "AknAppUi.cpp"], extra=["toolchain/shims/stems/AknEcs.cpp", "src/phorepoc/avkon_trace/AknAppUi.cpp"],
++                  drop=["aknecs.cpp", "AknAppUi.cpp", "AknAdaptiveSearchGrid.cpp"],
++                  extra=["toolchain/shims/stems/AknEcs.cpp", "src/phorepoc/avkon_trace/AknAppUi.cpp", "src/phorepoc/avkon_layout/AknAdaptiveSearchGrid.cpp"],
+                   import_typeinfo=True),   # the AppUi typeinfo chain: CEikAppUi's real typeinfo from eikcore (see eikcore)
+     "akntransitionutils": dict(mmp="../symbian-rcl3/oss.FCL.sf.mw.classicui/uifw/AvKon/AknTransitionUtils/group/akntransitionutils.mmp"),
+     # Open Dynamics Engine (in classicui!): aknphysics -- every Avkon menu/list kinetic scroll -- creates

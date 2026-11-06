@@ -184,3 +184,11 @@ Next: log `iAvkonEnv->SettingCache().HardwareLayoutState()` and the layout confi
 same window, whose size is the portrait one).
 
 **4. About: not run** (no time left in the 60 minutes).
+
+## Calculator USER 23: clean ARM rebuild A/B (2026-11-06)
+
+The `protgl-src` volume's core was a mixed state (54c5824 + uncommitted edits; adaptation-pc/mesa/tls older than the lock). Its uncommitted edits are saved in `patches/` (`protgl-src-core-54c5824-uncommitted.patch`, `protgl-src-pdk-776ba8e-uncommitted.patch`).
+Clean redo: core checked out at 1011bd4, pdk at 415ac54 (board.lock), `adaptation-pc` df40744 (its pin of core 1011bd4; board.lock's 057af3a still EXTENDs the removed `pheget`, so it cannot build against 1011bd4) + `catalogue` 0dc3532 + mesa-symbian 4910a10 + tls d3d54fa as git archives (stale
+copies kept as `*.stale-nov5`); the ARM `mmp-build` and `defs` were moved aside (`/w/build/arm/mmp-build.stale-nov5`, `/w/build/stale-nov5`), so every object was recompiled; the build needs core's `symbian` mounted at `/symbian`
+(without it `cpp` fails on avkon.mmp, which was the Nov 5 "cpp failure"). Rebuilt: `libstdcpp avkon eikcoctl eikcoctllaf` (avkon.dll 1363956 B, eikcoctl.dll 660356 B). The rest of the closure is unchanged from the volume.
+Result on `lim.iso` (VirtualBox, `compat-calculator-cleanarm-20261106.png`): **PASS**: `proteus P3 calcsoft.exe: create 0 exit type 3 reason 0 (running after 240 s)`, UI drawn, no USER 23. Conclusion: the panic came from the mixed avkon build, not from core 1011bd4 or Proteus. About: not run.
