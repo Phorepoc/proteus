@@ -1,0 +1,10 @@
+FPRecipExponent: the exponent field of a double lies in bits 52-62, which a 32-bit size_t (x32, ILP32) cannot hold.
+Take the operand as u64, its real width.
+--- a/src/dynarmic/common/fp/op/FPRecipExponent.cpp
++++ b/src/dynarmic/common/fp/op/FPRecipExponent.cpp
+@@ -18,3 +18,3 @@
+ namespace {
+ template<typename FPT>
+-FPT DetermineExponentValue(size_t value) {
++FPT DetermineExponentValue(u64 value) {
+     if constexpr (sizeof(FPT) == sizeof(u32)) {

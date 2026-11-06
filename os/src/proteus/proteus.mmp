@@ -15,5 +15,7 @@ OS_LAYER_LIBC_SYSTEMINCLUDE
 MW_LAYER_SYSTEMINCLUDE_SYMBIAN
 USERINCLUDE		.
 SOURCEPATH		.
-SOURCE			proteus.cpp armcpu.cpp thumb.cpp proteusrt.cpp e32decomp.cpp proteusexec.cpp proteusgl.cpp
-LIBRARY			euser.lib efsrv.lib libc.lib libm.lib ws32.lib apparc.lib mmfcontrollerframework.lib
+SOURCE			proteus.cpp armcpu.cpp thumb.cpp proteusrt.cpp e32decomp.cpp proteusexec.cpp proteusgl.cpp armjitmem.cpp
+// P1: the translator (armjit.cpp, in the dynarmic archives of the registry entry)
+MACRO			PROTEUS_JIT
+LIBRARY			euser.lib efsrv.lib libc.lib libm.lib libpthread.lib ws32.lib apparc.lib mmfcontrollerframework.lib

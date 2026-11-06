@@ -18,6 +18,7 @@
 #include <mmf/common/mmfcontrollerframework.h>
 #include <string.h>
 #include "armcpu.h"
+#include "armjit.h"
 #include "proteusrt.h"
 #include "../proteusimg/proteusimg.h"
 
@@ -1612,7 +1613,16 @@ static TInt MainL()
 	TFileName arg;
 	User::CommandLine(arg);
 	arg.Trim();
-	// "-b" first: every ARM image through the image broker (the P2e test: what a program without AllFiles gets when PlatSec is enforced)
+#ifdef PROTEUS_JIT
+	// "-i" first: the interpreter only (P1 A/B runs; the default is the translator)
+	const TBool interpOnly = arg.Left(3) == _L("-i ");
+	if (interpOnly)
+		{
+		arg.Delete(0, 3);
+		arg.Trim();
+		}
+#endif
+	// "-b" next: every ARM image through the image broker (the P2e test: what a program without AllFiles gets when PlatSec is enforced)
 	if (arg.Left(3) == _L("-b "))
 		{
 		gViaBroker = ETrue;
@@ -1674,6 +1684,11 @@ static TInt MainL()
 	cpu->iCommitCtx = &chunk;
 	cpu->iPageMap = (TUint8*)User::AllocZL(guestBytes >> 12);
 	CleanupStack::PushL(cpu->iPageMap);
+#ifdef PROTEUS_JIT
+	// P1: dynarmic runs the guest (armjit.cpp); it follows every Commit from here on. Null = the interpreter.
+	cpu->iJit = interpOnly ? NULL : proteus::JitNew(*cpu);
+	RDebug::Printf("PH: proteus cpu: %s", cpu->iJit ? "jit" : "interpreter");
+#endif
 	// the main thread's stack at the region top (proteusrt.cpp StartThreadStack: the thread data 4 KB below the top)
 	if (!cpu->Commit(cpu->iBase + guestBytes - proteus::KStackBytes, proteus::KStackBytes))
 		User::Leave(KErrNoMemory);
@@ -1694,6 +1709,7 @@ static TInt MainL()
 		RDebug::Printf("PH: proteus load failed: %s", proc->iError);
 		proteus::FreeProcess(*proc);
 		delete proc;
+		proteus::JitDelete(cpu->iJit);
 		delete cpu;
 		User::Leave(KErrNotSupported);
 		}
@@ -1827,6 +1843,7 @@ static TInt MainL()
 			bridge->iObj[i].Close();
 		}
 	delete bridge;
+	proteus::JitDelete(cpu->iJit);
 	delete cpu;
 	proteus::FreeProcess(*proc);
 	delete proc;

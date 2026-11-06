@@ -1,0 +1,40 @@
+mcl::bit_cast between a pointer (or function pointer) and a 64-bit integer: dynarmic does this throughout (host
+function addresses into IR immediates, code pointers into fmt), which assumes LP64. On ILP32 (x32) zero-extend /
+truncate through uintptr_t -- the same values LP64 sees for any address below 4 GiB, which is all of them there.
+--- a/externals/mcl/include/mcl/bit_cast.hpp
++++ b/externals/mcl/include/mcl/bit_cast.hpp
+@@ -4,6 +4,7 @@
+ 
+ #pragma once
+ 
++#include <cstdint>
+ #include <cstring>
+ #include <type_traits>
+ 
+@@ -13,13 +14,19 @@
+ template<class Dest, class Source>
+ inline Dest bit_cast(const Source& source) noexcept
+ {
+-    static_assert(sizeof(Dest) == sizeof(Source), "size of destination and source objects must be equal");
+-    static_assert(std::is_trivially_copyable_v<Dest>, "destination type must be trivially copyable.");
+-    static_assert(std::is_trivially_copyable_v<Source>, "source type must be trivially copyable");
+-
+-    std::aligned_storage_t<sizeof(Dest), alignof(Dest)> dest;
+-    std::memcpy(&dest, &source, sizeof(dest));
+-    return reinterpret_cast<Dest&>(dest);
++    if constexpr (sizeof(void*) < sizeof(Dest) && std::is_integral_v<Dest> && std::is_pointer_v<Source>) {
++        return static_cast<Dest>(reinterpret_cast<std::uintptr_t>(source));
++    } else if constexpr (sizeof(void*) < sizeof(Source) && std::is_integral_v<Source> && std::is_pointer_v<Dest>) {
++        return reinterpret_cast<Dest>(static_cast<std::uintptr_t>(source));
++    } else {
++        static_assert(sizeof(Dest) == sizeof(Source), "size of destination and source objects must be equal");
++        static_assert(std::is_trivially_copyable_v<Dest>, "destination type must be trivially copyable.");
++        static_assert(std::is_trivially_copyable_v<Source>, "source type must be trivially copyable");
++
++        std::aligned_storage_t<sizeof(Dest), alignof(Dest)> dest;
++        std::memcpy(&dest, &source, sizeof(dest));
++        return reinterpret_cast<Dest&>(dest);
++    }
+ }
+ 
+ /// Reinterpret objects of any arbitrary type as another type by bit-casting between object representations.

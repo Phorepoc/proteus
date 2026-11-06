@@ -1850,6 +1850,11 @@ static bool DoExecCall(CArmCpu& cpu, THle& h, uint32_t imm)
 			r[0] = s;
 			return true;
 		}
+		if (!strcmp(name, "EExecIMBRange"))			// Exec::IMB_Range(start, size) (us_exec.cpp User::IMB_Range): the guest wrote code there
+		{
+			cpu.CodeChanged(r[0], r[1]);			// a translation of it is stale (the interpreter has nothing to flush)
+			return true;
+		}
 		// ---- the guest's loader: RLibrary::Load = a "!Loader" session (ELoadLibrary) + the DLL lock / attach / lookup execs, all served
 		// here against the guest's module list -- the native loader would load x86 code ----
 		if (!strcmp(name, "EExecWaitDllLock") || !strcmp(name, "EExecReleaseDllLock") || !strcmp(name, "EExecLibraryAttached")) { r[0] = KErrNone; return true; }

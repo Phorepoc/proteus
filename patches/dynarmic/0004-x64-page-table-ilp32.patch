@@ -1,0 +1,30 @@
+Page table lookups on ILP32 (x32): the table is std::array<u8*, N>, 4-byte entries. The emitted lookup loaded a qword
+at a sizeof(void*) stride, i.e. this entry plus the next one as the page pointer. Load a dword (zero-extended).
+--- a/src/dynarmic/backend/x64/emit_x64_memory.h
++++ b/src/dynarmic/backend/x64/emit_x64_memory.h
+@@ -83,7 +83,11 @@
+     code.mov(tmp, vaddr.cvt32());
+     code.shr(tmp, static_cast<int>(page_bits));
+ 
+-    code.mov(page, qword[r14 + tmp.cvt64() * sizeof(void*)]);
++    if constexpr (sizeof(void*) == 4) {
++        code.mov(page.cvt32(), dword[r14 + tmp.cvt64() * 4]);  // ILP32: 4-byte entries; the 32-bit load zero-extends
++    } else {
++        code.mov(page, qword[r14 + tmp.cvt64() * sizeof(void*)]);
++    }
+     if (ctx.conf.page_table_pointer_mask_bits == 0) {
+         code.test(page, page);
+     } else {
+@@ -136,7 +140,11 @@
+         code.test(tmp, u32(-(1 << valid_page_index_bits)));
+         code.jnz(abort, code.T_NEAR);
+     }
+-    code.mov(page, qword[r14 + tmp * sizeof(void*)]);
++    if constexpr (sizeof(void*) == 4) {
++        code.mov(page.cvt32(), dword[r14 + tmp * 4]);  // ILP32: 4-byte entries; the 32-bit load zero-extends
++    } else {
++        code.mov(page, qword[r14 + tmp * sizeof(void*)]);
++    }
+     if (ctx.conf.page_table_pointer_mask_bits == 0) {
+         code.test(page, page);
+     } else {

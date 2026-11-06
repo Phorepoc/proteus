@@ -16,9 +16,15 @@ import os
 from paths import OS_ROOT  # noqa: E402
 
 _ARM = ".proteus/arm/"
+# the translator's archives (armjit.cpp, dynarmic and its externals) + the C++ runtime they need. No eh: x32 unwinding is unfinished
+# (cxxrt build_cxxtest.sh); dynarmic throws only on a fatal allocation failure, which then terminates the process
+_JIT = dict(allow_wsd=True, static_ctors=True,
+            x32_archives=[f"thirdparty/x86/dynarmic/lib{a}.a" for a in ("proteusjit", "dynarmic", "mcl", "fmt", "Zydis")]
+            + [f"thirdparty/x86/cxxrt/{a}.a" for a in ("libphcompat", "libstdc++", "libgcc_eh", "libgcc")])
 COMPONENTS = {
     # proteus.exe: the loader + interpreter (x32). ROM data: the ARM test EXEs in the per-arch directory \sys\bin\arm\
-    "proteus": dict(mmp=os.path.join(OS_ROOT, "src/proteus/proteus.mmp"), test=True, cdriver=False, also_own_name=True,
+    # P1: the translator (dynarmic + armjit.cpp) is linked in: archives from recipes/build_dynarmic.sh (ARCH=x32), C++ runtime from cxxrt
+    "proteus": dict(mmp=os.path.join(OS_ROOT, "src/proteus/proteus.mmp"), test=True, cdriver=False, also_own_name=True, **_JIT,
                     rom_data=[r"Sys\Bin\arm\proteushello.exe=" + _ARM + "proteushello.exe",
                               r"Sys\Bin\armhello.exe=" + _ARM + "proteushello.exe",           # P1: launched by plain name (the loader's foreign-CPU redirect looks in \sys\bin\ only)
                               r"Sys\Bin\arm\proteusdll.dll=" + _ARM + "proteusdll.bp.dll",    # P2: an ARM EXE + the ARM DLL it imports (byte-pair)
@@ -29,7 +35,7 @@ COMPONENTS = {
                               r"Sys\Bin\arm\hal.dll=" + _ARM + "hal.dll",                     # the ARM hal.dll (HAL::Get ...) over the real euser's UserSvr::HalFunction
                               r"Sys\Bin\arm\proteusfs.exe=" + _ARM + "proteusfs.exe"]),
     # the same program under the name core's loader hands an ARM EXE to (sf_lepoc.cpp ForeignCpuRedirect): in every ROM built with this layer
-    "cpuhandler_arm": dict(mmp=os.path.join(OS_ROOT, "src/proteus/proteus.mmp"), cdriver=False, rom="cpuhandler_arm.exe"),
+    "cpuhandler_arm": dict(mmp=os.path.join(OS_ROOT, "src/proteus/proteus.mmp"), cdriver=False, rom="cpuhandler_arm.exe", **_JIT),
     # the image broker: ARM images under \sys\bin\ for a handler holding the program's capabilities (no AllFiles)
     "proteusimg": dict(mmp=os.path.join(OS_ROOT, "src/proteusimg/proteusimg.mmp"), cdriver=False),
     # the ARM test programs (ARM builds only)
