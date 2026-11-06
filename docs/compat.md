@@ -172,8 +172,7 @@ and the bridge hands the client the same TDes8 it wrote to (`proteus IPC: !EikAp
 (arg 1 is a writable 8-bit descriptor, flag 0x20; the guest and host descriptors share their layout); the panic is a later copy (`lr` = `euser.dll+0x486d4`, the panic helper, from `bafl.dll+0xa00c`, under `eikcoctl`).
 A/B on this very ISO (Proteus unchanged), same registration/resources: the **Nov 4 ARM set** (`compat-calc.img`: avkon 1358872 B, eikcoctl 658916 B) **runs the Calculator** (calcsoft.exe running after 240 s, UI
 drawn: `img/compat-calculator-oldarm-20261106.png`; the P3 verdict says FAIL only because the stale disk's `sisapp.txt` had said `pcalc.exe` and I set it by hand for this A/B), the **Nov 5 set** (avkon 1363856 B,
-eikcoctl 658832 B) panics `USER 23`. Swapping only eikcoctl back to the Nov 4 file: still panics. Swapping avkon back: see the line below (run in progress when this was written).
-So the fault is in the ARM avkon.dll (or another DLL) rebuilt from current core in the `protgl-arm` volume, not in the guest->host conversion. Per the rules this is a native question first (does the same avkon from the same
+eikcoctl 658832 B) panics `USER 23`. Swapping only eikcoctl back to the Nov 4 file: still panics. Swapping only avkon back to the Nov 4 file (the Nov 5 rest unchanged): **no panic, calcsoft.exe running after 240 s**. So the fault is in the ARM avkon.dll rebuilt from current core in the `protgl-arm` volume, not in the guest->host conversion. Per the rules this is a native question first (does the same avkon from the same
 build run the Calculator on the native ARM side?): not Proteus' to patch.
 
 **3. Let's Golf 2 Input Name, only the left 360 px: evidence, cause not isolated.** The WSERV screen is in mode 0 (360x640) while the game draws its 640x360 GL surface: `proteus WSR: op 3 -> 168 280` (360x640) at the
