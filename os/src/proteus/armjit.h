@@ -18,6 +18,7 @@ void JitDelete(TArmJit* aJit);
 void JitRun(TArmJit* aJit, uint64_t aLimit);					// runs until iSteps >= aLimit, a halt, or a hook the caller's loop must see
 void JitMap(TArmJit* aJit, uint32_t aAddr, uint32_t aLen);		// the guest's pages in [aAddr, aAddr + aLen) changed (commit, decommit, a window)
 void JitInvalidate(TArmJit* aJit, uint32_t aAddr, uint32_t aLen);	// code there changed (a module loaded or unloaded, an IMB)
+void JitDiag(const char* aText);								// the embedder's debug log (proteus.cpp: RDebug): slow-run diagnostics
 }
 
 #endif

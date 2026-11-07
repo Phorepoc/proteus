@@ -1,0 +1,17 @@
+IR::Block's instruction pool starts with one slab of 4096 instructions (sizeof(Inst) * 4096, about 200 KB), malloc'd and
+freed for every block translated. On a host where malloc of that size is a cheap mmap that costs nothing; on Symbian it is
+above RHybridHeap's paged-allocation threshold, so each translation commits and zero-fills ~50 pages (Exec::ChunkAdjust)
+and frees them again -- a Qt application (tens of thousands of blocks) spends minutes there before it draws a frame. The
+pool grows by whole slabs when a block needs more, so 64-instruction slabs (a few KB, the heap's ordinary cells) keep
+every block's capacity and leave the kernel out of translation.
+--- a/src/dynarmic/ir/basic_block.cpp
++++ b/src/dynarmic/ir/basic_block.cpp
+@@ -22,7 +22,7 @@
+ namespace Dynarmic::IR {
+
+ Block::Block(const LocationDescriptor& location)
+-        : location{location}, end_location{location}, cond{Cond::AL}, instruction_alloc_pool{std::make_unique<Common::Pool>(sizeof(Inst), 4096)} {}
++        : location{location}, end_location{location}, cond{Cond::AL}, instruction_alloc_pool{std::make_unique<Common::Pool>(sizeof(Inst), 64)} {}
+
+ Block::~Block() = default;
+

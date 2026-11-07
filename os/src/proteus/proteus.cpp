@@ -1523,6 +1523,11 @@ static void Progress(proteus::CArmCpu& aCpu, void* aHleP)
 	RDebug::Printf("PH: proteus progress %u M instructions: pc %s, lr %s; %s", (TUint)(aCpu.iSteps >> 20), pc, lr, th);
 	}
 
+void proteus::JitDiag(const char* aText)
+{
+	RDebug::Printf("%s", aText);
+}
+
 // CArmCpu::iOnForeignPc: the guest called native code -- in practice a virtual function of a native object it shares, like the
 // CBitmapFont in the font server's heap (CFbsFont::DoFontSpecInTwips calls Address()->FontSpecInTwips()), whose vtable points into
 // the native fntstr.dll. The guest has the ARM twin of that DLL with the same class layouts, so run the twin's function on the

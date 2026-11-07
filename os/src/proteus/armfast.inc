@@ -814,11 +814,8 @@ void CArmCpu::Run(uint64_t aMaxSteps)
 	{
 		uint64_t limit = aMaxSteps > ~0ull - start ? ~0ull : start + aMaxSteps;		// (no overflow for "no budget" = ~0)
 		if (iSliceSteps && iNextSlice < limit) limit = iNextSlice;
-		if (iOnProgress)
-		{
-			const uint64_t boundary = (iSteps | ((1ull << 26) - 1)) + 1;
-			if (boundary < limit) limit = boundary;
-		}
+		const uint64_t boundary = (iSteps | ((1ull << 26) - 1)) + 1;
+		if (iOnProgress && boundary < limit) limit = boundary;
 		if (limit <= iSteps) limit = iSteps + 1;				// always one instruction, as before
 #ifdef PROTEUS_JIT
 		if (iJit && !iBpCount && iWatchHi <= iWatchLo)
@@ -834,7 +831,7 @@ void CArmCpu::Run(uint64_t aMaxSteps)
 			do Step();
 			while (iSteps < limit && iHalt == ERunning && iBpCount);
 		}
-		if (iOnProgress && !(iSteps & ((1u << 26) - 1))) iOnProgress(*this, iBpCtx);
+		if (iOnProgress && iSteps >= boundary) iOnProgress(*this, iBpCtx);		// crossed, not landed on: a JIT block can run past the limit
 		if (iSliceSteps && iSteps >= iNextSlice)
 		{
 			iNextSlice = iSteps + iSliceSteps;

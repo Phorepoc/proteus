@@ -18,6 +18,8 @@
 #include <dynarmic/interface/exclusive_monitor.h>
 #include <memory>
 #include <string.h>
+#include <stdio.h>
+#include <time.h>
 
 namespace proteus
 {
@@ -62,6 +64,13 @@ struct TArmJit final : public A32::UserCallbacks
 	uint64_t iLimit = 0;
 	uint32_t iQ = 0;				// CPSR.Q: the interpreter keeps no sticky saturation flag, the JIT keeps it across reloads
 	bool iCpuOwns = false;			// a hook copied the state out and may have changed it: CArmCpu holds the truth, reload before running on
+	uint32_t iWinReports = 0;		// 10 s reports so far (the first 60: bounded serial output)
+	time_t iHookSecs = 0;			// wall time this run spent inside SVC hooks (slow-run diagnostics)
+	uint32_t iRunSvc = 0, iRunSvcImm = 0;	// SVCs this run, the last one's number
+	uint64_t iRunTicks = 0;			// AddTicks this run
+	time_t iWinStart = 0, iWinHook = 0;	// the 10 s report: window start, seconds in SVC hooks
+	uint32_t iWinRuns = 0, iWinSvc = 0;
+	uint64_t iWinTicks = 0;				// Jit::Run calls: every 64 K of them the progress hook reports (a guest that leaves the JIT constantly runs few instructions)
 
 	explicit TArmJit(CArmCpu& aCpu) : iCpu(aCpu) {}
 
@@ -82,6 +91,7 @@ struct TArmJit final : public A32::UserCallbacks
 	{
 		const auto& r = iJit->Regs();
 		for (int i = 0; i < 16; ++i) iCpu.R[i] = r[i];
+		iCpu.iLastPc = r[15];		// out of ticks: where the guest is (progress lines, thread stats); the hooks set the exact instruction after this
 		const uint32_t c = iJit->Cpsr();
 		iCpu.iN = c >> 31; iCpu.iZ = (c >> 30) & 1; iCpu.iC = (c >> 29) & 1; iCpu.iV = (c >> 28) & 1; iQ = c & (1u << 27);
 		iCpu.iGE = (c >> 16) & 0xF; iCpu.iT = (c >> 5) & 1;
@@ -130,11 +140,14 @@ struct TArmJit final : public A32::UserCallbacks
 	{
 		HandOver();				// R[15] = the next instruction, as the interpreter's SWI sees it
 		++iCpu.iStatSvc;
+		++iRunSvc; iRunSvcImm = aImm;
+		const time_t t0 = time(nullptr);
 		if (!iCpu.iSvc || !iCpu.iSvc(iCpu, aImm, iCpu.iCtx))
 		{
 			iCpu.Halt(ESvcUnhandled, (int32_t)aImm);
 			iCpu.iFaultAddr = iCpu.R[15] - (iCpu.iT ? 2 : 4);
 		}
+		iHookSecs += time(nullptr) - t0;
 	}
 	void ExceptionRaised(A32::VAddr aPc, A32::Exception aWhy) override
 	{
@@ -176,7 +189,7 @@ struct TArmJit final : public A32::UserCallbacks
 			return;
 		}
 	}
-	void AddTicks(std::uint64_t aTicks) override { iCpu.iSteps += aTicks; }
+	void AddTicks(std::uint64_t aTicks) override { iCpu.iSteps += aTicks; iRunTicks += aTicks; }
 	// dynarmic keeps the remaining ticks as a signed 64-bit count: hand it at most 2^30 per run (an unlimited budget is ~0)
 	std::uint64_t GetTicksRemaining() override { const uint64_t r = iCpu.iSteps < iLimit ? iLimit - iCpu.iSteps : 0; return r < (1u << 30) ? r : (1u << 30); }
 
@@ -239,7 +252,31 @@ void JitRun(TArmJit* aJit, uint64_t aLimit)
 	{
 		aJit->Load();
 		aJit->iJit->ClearHalt();
+		const time_t t0 = time(nullptr);
+		aJit->iHookSecs = 0; aJit->iRunSvc = 0; aJit->iRunTicks = 0;
+		const uint64_t budget = aJit->GetTicksRemaining();
 		aJit->iJit->Run();
+		const time_t now = time(nullptr), secs = now - t0;
+		++aJit->iWinRuns; aJit->iWinSvc += aJit->iRunSvc; aJit->iWinTicks += aJit->iRunTicks; aJit->iWinHook += aJit->iHookSecs;
+		if (!aJit->iWinStart) aJit->iWinStart = now;
+		if (now - aJit->iWinStart >= 10 && aJit->iWinReports < 60)		// every 10 s of wall time this CPU runs (the first 60): runs, SVCs, guest instructions, seconds in SVC hooks
+		{
+			char w[200];
+			snprintf(w, sizeof(w), "PH: proteus jit 10s: %u s: %u runs, %u SVCs, %llu K instr, %u s in SVC hooks, pc %08x",
+				(unsigned)(now - aJit->iWinStart), aJit->iWinRuns, aJit->iWinSvc, (unsigned long long)(aJit->iWinTicks >> 10), (unsigned)aJit->iWinHook,
+				(unsigned)(aJit->iCpuOwns ? c.R[15] : aJit->iJit->Regs()[15]));
+			JitDiag(w);
+			++aJit->iWinReports;
+			aJit->iWinStart = now; aJit->iWinRuns = aJit->iWinSvc = 0; aJit->iWinTicks = 0; aJit->iWinHook = 0;
+		}
+		if (secs >= 2)		// a run that took 2 s or more of wall time: where it went (SVC hooks or the JIT itself: translation, guest code)
+		{
+			char b[300];
+			snprintf(b, sizeof(b), "PH: proteus jit slow run: %u s, %u s in %u SVC hooks (last 0x%x), %llu ticks of %llu, owns %d halt %d, steps %llu limit %llu, pc %08x",
+				(unsigned)secs, (unsigned)aJit->iHookSecs, aJit->iRunSvc, aJit->iRunSvcImm, (unsigned long long)aJit->iRunTicks,
+				(unsigned long long)budget, aJit->iCpuOwns, (int)c.iHalt, (unsigned long long)c.iSteps, (unsigned long long)aLimit, (unsigned)(aJit->iCpuOwns ? c.R[15] : aJit->iJit->Regs()[15]));
+			JitDiag(b);
+		}
 		if (!aJit->iCpuOwns) { aJit->Store(); return; }		// out of ticks: the caller's loop does slices, progress, the step limit
 		// a hook ran (SVC, trap, fault): its effects are in CArmCpu; go on unless it halted or the time is up
 	}
