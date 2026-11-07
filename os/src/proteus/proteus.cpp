@@ -1686,7 +1686,11 @@ static TInt MainL()
 	CleanupStack::PushL(cpu->iPageMap);
 #ifdef PROTEUS_JIT
 	// P1: dynarmic runs the guest (armjit.cpp); it follows every Commit from here on. Null = the interpreter.
-	cpu->iJit = interpOnly ? NULL : proteus::JitNew(*cpu);
+	// c:\proteus\interp.txt = the interpreter for every program of this disk (app A/B runs: an app started by its name comes through
+	// the loader's redirect, whose command line has no room for "-i")
+	TEntry interpEntry;
+	const TBool interpDisk = fs.Entry(_L("c:\\proteus\\interp.txt"), interpEntry) == KErrNone;
+	cpu->iJit = interpOnly || interpDisk ? NULL : proteus::JitNew(*cpu);
 	RDebug::Printf("PH: proteus cpu: %s", cpu->iJit ? "jit" : "interpreter");
 #endif
 	// the main thread's stack at the region top (proteusrt.cpp StartThreadStack: the thread data 4 KB below the top)
