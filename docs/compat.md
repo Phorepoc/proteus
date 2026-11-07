@@ -229,13 +229,14 @@ Not done in this session (time): the Calculator and PyS60 on the host GPU, a hol
 The same two games, run natively (ARM, on the phone's own kernel, 4 x A53) from E:\sys\bin with `phestart <uid>`
 (Sparkle 20030f70, Let's Golf 2 2003b2cb), image already on the phone (boot 2354, slot B), volume turned down 15 times.
 
-**The `[symgl] prof/frame` / `prof/frame2` / `eglInitialize` lines do not exist on the phone.** That stack (symgl + Mesa,
-used by the PC image and Proteus) is not what the phone runs: the phone's native GL is the `libGLES_CM.dll` /
-`libGLESv2.dll` wrapper behind the Alfred window server (`PH: alf: wrapper eglInitialize done`), with its own drawing path
-(`alf: RI gpu path fills`). No renderer string and no per-600-swap profile is printed, so a like-for-like number from
-Mesa's lines is not available. What the phone does print is the kernel display counter, `[EKERN][frame] active second:
+**The phone runs the same Mesa stack** (corrected 2026-11-07 from the phone log of boot 2354: `PH: phgl heap: a chunk heap of
+its own, 128 MB`, `PH: [symdrm] Mali GP 0b070101 PP cd070101 x2`, `PH: symgl window surface 640x360 ... NGA background
+surface`): the games render through phgl (Mesa, the lima driver on the Mali-400) into the NGA window surface. The
+`[symgl] prof/frame` lines are missing because the frame profile came to mesa-symbian in ec8b3f7 (2026-11-04), after the
+image on the phone was built. What the phone does print is the kernel display counter, `[EKERN][frame] active second:
 frames=N` (frames the display engine scanned out in the last busy second). That is the figure below, so it is a
-presented-frame rate, not the game's own swap count, and it is not the same instrument as the PC column.
+presented-frame rate, not the game's own swap count, and it is not the same instrument as the PC column; an image with
+the current mesa-symbian prints `prof/frame2` on the phone too.
 
 | game | screen | phone (presented frames/s) | PC, host GPU (`prof/frame2`) | notes |
 |---|---|---|---|---|
@@ -254,8 +255,7 @@ Findings:
 - The screen blanks about 10 s after the last input even with a game in front, so each sample window needed a power-key wake.
   The screen recorder (`record_start`) captures at its own 30 fps and burns ~54% of a core in `pherec`; it cannot be used to
   count game frames.
-- To get a real swap-based number natively, the phone's `libGLES_CM` wrapper needs a swap counter printed like symgl's
-  `prof/frame2` (not done).
+- To get a real swap-based number natively: an image with the current mesa-symbian (`prof/frame2`, ec8b3f7 or later).
 
 Screenshots: `img/phone-sparkle-20261107.png` (Sparkle title, landscape rotated on the portrait panel),
 `img/phone-letsgolf2-20261107.png` (Let's Golf 2 main menu).
