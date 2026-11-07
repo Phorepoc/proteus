@@ -7,8 +7,10 @@ UID				0x1000007a 0xE70157F1
 EPOCSTACKSIZE	0x10000
 CAPABILITY		All -TCB
 VENDORID		0
-// the heap holds the ARM images the guest loads (Mesa's phgl.dll alone is 15 MB): a reservation, committed as used
-EPOCHEAPSIZE	0x10000 0x10000000
+// the handler's own heap: the guest's image files while they load, dynarmic's translation state, the bridge (Sparkle at its first
+// frame: 46 MB). Guest memory is the guest region and Mesa has a chunk heap of its own, so this is a reservation sized to that use;
+// euser reserves twice the maximum for the heap chunk, and the GL GPU channel needs a 256 MB pool in the same address space
+EPOCHEAPSIZE	0x10000 0x8000000
 
 OS_LAYER_SYSTEMINCLUDE_SYMBIAN
 OS_LAYER_LIBC_SYSTEMINCLUDE

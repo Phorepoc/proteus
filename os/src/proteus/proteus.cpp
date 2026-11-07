@@ -31,6 +31,11 @@ _LIT(KDefaultExe, "z:\\sys\\bin\\arm\\proteushello.exe");
 // commits them) -- a real app's heap reserves its EPOCHEAPSIZE maximum (PyS60: 32 MB; Sparkle: 128 MB, which euser doubles for the heap chunk)
 // and commits a little of it. As much as a process's local address space gives (an ARM process has ~1 GB): the reservation costs no RAM.
 const TInt KGuestBytesMax = 1 << 30, KGuestBytesMin = 64 << 20;
+// native services map into this process after the guest region is made, all in the same local address space: the font and bitmap
+// server's chunks (192 MB), Mesa's chunk heap (128 MB), the JIT's code (32 MB) and the GL GPU channel's 256 MB pool (adaptation-pc symvmw:
+// Mesa's svga driver on a VM's host GPU; without one free range that large it fails with KErrNoMemory and GL falls back to the software
+// renderer). The guest region leaves this much of the largest reservation the kernel grants free for them.
+const TInt KNativeReserveBytes = 320 << 20;
 
 // CArmCpu::TCommitFn: commit / decommit host pages of the guest region (a disconnected chunk). A range may overlap pages committed
 // before (a module's last page and the next module's first): then it goes page by page and those count as done.
@@ -1678,7 +1683,13 @@ static TInt MainL()
 	while ((r = chunk.CreateDisconnectedLocal(0, 0, guestBytes)) != KErrNone && guestBytes > KGuestBytesMin)
 		guestBytes >>= 1;
 	User::LeaveIfError(r);
-	RDebug::Printf("PH: proteus guest region %d MB", guestBytes >> 20);
+	if (guestBytes - KNativeReserveBytes >= KGuestBytesMin)		// leave the native services their room (KNativeReserveBytes)
+		{
+		chunk.Close();
+		guestBytes -= KNativeReserveBytes;
+		User::LeaveIfError(chunk.CreateDisconnectedLocal(0, 0, guestBytes));
+		}
+	RDebug::Printf("PH: proteus guest region %d MB at %08x", guestBytes >> 20, (TUint32)chunk.Base());
 	CleanupClosePushL(chunk);
 	TUint8* mem = chunk.Base();
 	proteus::CArmCpu* cpu = new (ELeave) proteus::CArmCpu;
