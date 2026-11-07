@@ -391,3 +391,37 @@ there is no window group; the log lines are the result).
   The audio recorder and the converter are the same code as the player; the tone player (`CMdaAudioToneUtility`) opens its controller through `RMMFController` too. None was run.
 - A guest thread slot of a *non*-hosted dead thread is still never reused (`KMaxThreads` 32): only the hosted ones are, since the guest closes their handles with the proxy.
 - The two CAF plug-ins above are the only ARM files added; any MMF app's closure needs them (`proteus_closure.py --extra f32agent.dll,f32agentui.dll`).
+
+## Under the JIT, and on the host GPU (2026-11-07, VirtualBox 2 CPUs, `VBOX_3D=1`)
+
+Sparkle runs under the dynarmic JIT and on Mesa's svga driver (the VM's host GPU). Four faults stood in the way, each found
+from evidence (a kernel thread sampler, a JIT-vs-interpreter trace diff, kernel logs on each failure path), not by trying fixes:
+
+1. **Translation stalls** (minutes before the first frame): dynarmic's `IR::Block` pool started with a 4096-instruction slab
+   (~200 KB) per translated block, above RHybridHeap's paged threshold, so every translation went through `Exec::ChunkAdjust`.
+   Patch 0007 (`patches/dynarmic/0007-block-pool-small-slabs.patch`): 64-instruction slabs.
+2. **GL calls misdispatched under the JIT** (`eglGetDisplay` ran as `eglGetError`): trap addresses were `KTrapBase | slot << 1`,
+   and dynarmic's ARM-state `BX` masks bit 1, so every odd slot became the even one below. Trap addresses are now 4-aligned
+   (`slot << 2`, `proteusgl.cpp`, `proteusrt.cpp`).
+3. **Pango crashed in GLib** (core): `malloc` returned 4-mod-8 blocks from RHybridHeap's slabs; GLib keeps lock bits in the low
+   three bits of a `GData*`. Core's libc now rounds every request to a multiple of 8 (`os/toolchain/shims/libc_alloc8`).
+4. **No host GPU** (`symvmw_open: pool -> -4`): the GPU channel maps a 256 MB pool into the handler process, and no free range
+   that large was left. The handler heap reserved 512 MB (EPOCHEAPSIZE max 256 MB, which euser doubles) but held 46 MB at the
+   first frame. The process at the failure: heap 512 MB, guest region 704 MB, Mesa's chunk heap 128 MB, the font and bitmap
+   server's chunks 192 MB, JIT code 32 MB; largest free range 252 MB. Now heap max 128 MB, and the guest region leaves
+   `KNativeReserveBytes` (320 MB) of the largest reservation free.
+
+| run | first frame | steady fps | per frame: GL / present / guest code |
+|---|---|---|---|
+| interpreter, softpipe | 311 s | 8-16 | 65-100 / 11-13 / 13-25 ms |
+| JIT, softpipe | 405 s | 9-12 | 70-80 / 10-12 / 14-19 ms |
+| interpreter, host GPU | ~70 s | 29-44 | 0.3 / 15-27 / 7-11 ms |
+| JIT, host GPU | ~75 s | 29-38 | 0.3 / 16-24 / 8-10 ms |
+
+Sparkle's guest code is light; the JIT and the interpreter draw level. The frame is now bound by the window server's
+**software rotation**: Sparkle's window is 640x360 in the landscape screen mode, the display is 360x640, so scan-out (the
+window as the GPU screen target) is refused (`[symgl] scan-out: not full-screen (window 640x360 at 0,0, display 360x640)`,
+core logs the reason since 2026-11-07), and every frame is rotated by the CPU in the window server (~20 ms, the `post`
+phase of symgl's profile: `RWindow::Size()` waits for it). Next: scan-out in the landscape mode -- either a rotating GPU
+pass into a portrait screen target at the swap, or the svga display itself switched to 640x360 while the screen mode is
+landscape (what a PC monitor does).
