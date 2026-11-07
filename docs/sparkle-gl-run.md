@@ -425,3 +425,12 @@ core logs the reason since 2026-11-07), and every frame is rotated by the CPU in
 phase of symgl's profile: `RWindow::Size()` waits for it). Next: scan-out in the landscape mode -- either a rotating GPU
 pass into a portrait screen target at the swap, or the svga display itself switched to 640x360 while the screen mode is
 landscape (what a PC monitor does).
+
+### Rotated scan-out (2026-11-07, core + mesa-symbian)
+
+Done the first way: core's `symgl_window_display_rotation` reports the screen mode's rotation (`[symgl] screen mode 1: 640x360,
+rotation 90`), and Mesa draws the finished frame turned the window server's way into a display-sized surface on a pipe context
+of its own, which becomes the screen target (`scan-out: this window is the display (GPU screen target, no window server),
+turned 90`). The picture is the same as the window server's. Sparkle, JIT, host GPU: **~62 fps** (59-65), present 2.2-2.6 ms
+(was ~33 fps, present ~20 ms); the frame is now the guest's code (~13 ms). The window server still takes the display back
+whenever it draws (a note, the status bar), and the frame after that goes through it again.
