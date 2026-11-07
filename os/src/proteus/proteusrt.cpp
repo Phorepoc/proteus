@@ -246,7 +246,7 @@ static bool LoadE32At(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at,
 					}
 					else
 						slot = (d << 16) | (w & 0x7FFF);		// (single image: DLL ref | ordinal)
-					cpu.Write32(where, KTrapBase | (slot << 1));		// even address: bit 0 would mean Thumb
+					cpu.Write32(where, KTrapBase | (slot << 2));		// 4-aligned: bit 0 would mean Thumb, and an ARM-state BX clears bits 1:0 (the JIT does)
 				}
 			}
 			++o.iNumImports;
@@ -320,7 +320,7 @@ void Say(THle& h, const char* fmt, const char* a, const char* b)
 static void OnTrap(CArmCpu& cpu, uint32_t addr, void* ctx)
 {
 	THle& h = *(THle*)ctx;
-	const uint32_t slot = (addr - KTrapBase) >> 1;
+	const uint32_t slot = (addr - KTrapBase) >> 2;
 	const uint32_t v = h.iProcess ? (slot < h.iProcess->iSlotCount ? h.iProcess->iSlots[slot] : 0) : slot;
 	const uint32_t dll = (v >> 16) & 0x3F, ord = v & 0xFFFF, mod = v >> 22;
 	if (h.iProcess && GlTrapSlot(cpu, h, v))		// a GL function eglGetProcAddress handed out

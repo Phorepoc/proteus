@@ -13,7 +13,7 @@
 
 namespace proteus
 {
-enum { KTrapBase = 0xF0000000u, KTrapEnd = 0xF8000000u, KReturnToHost = 0xF8000000u };		// trap = module (bits 21-26) | DLL (16-20) | ordinal << 1
+enum { KTrapBase = 0xF0000000u, KTrapEnd = 0xF8000000u, KReturnToHost = 0xF8000000u };		// trap = KTrapBase | import slot << 2 (proteusrt.h)
 
 enum THalt { ERunning = 0, EReturned, EExited, EFault, EUndefined, EThumb, EStepLimit, ESvcUnhandled, EHleStop };
 

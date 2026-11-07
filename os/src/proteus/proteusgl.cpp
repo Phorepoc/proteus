@@ -109,7 +109,7 @@ static uint32_t ProcSlot(CArmCpu& aCpu, const char* aName)
 			}
 			const uint32_t slot = proc->iSlotCount++;
 			proc->iSlots[slot] = (KGlModule << 22) | i;
-			return gProcSlot[i] = KTrapBase | (slot << 1);
+			return gProcSlot[i] = KTrapBase | (slot << 2);
 		}
 	Say(*gHle, "[proteus] eglGetProcAddress(%s): not in the Khronos tables -> NULL", aName);
 	return 0;

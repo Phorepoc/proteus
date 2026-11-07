@@ -44,7 +44,7 @@ struct TProcess
 	TLoaded iMod[KMaxModules];
 	int iCount;
 	char iError[96];
-	// HLE import slots: a trap address is KTrapBase | slot << 1; a slot = module << 22 | DLL ref << 16 | ordinal (malloc'd, FreeProcess)
+	// HLE import slots: a trap address is KTrapBase | slot << 2 (4-aligned: an ARM-state BX to it clears bits 1:0); a slot = module << 22 | DLL ref << 16 | ordinal (malloc'd, FreeProcess)
 	uint32_t* iSlots;
 	uint32_t iSlotCount, iSlotMax;
 	bool iRealEuser;			// P2: set before LoadProcess = euser imports bind to a real ARM euser.dll (via aFind) + the SWI executive
