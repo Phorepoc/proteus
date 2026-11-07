@@ -192,3 +192,34 @@ Clean redo: core checked out at 1011bd4, pdk at 415ac54 (board.lock), `adaptatio
 copies kept as `*.stale-nov5`); the ARM `mmp-build` and `defs` were moved aside (`/w/build/arm/mmp-build.stale-nov5`, `/w/build/stale-nov5`), so every object was recompiled; the build needs core's `symbian` mounted at `/symbian`
 (without it `cpp` fails on avkon.mmp, which was the Nov 5 "cpp failure"). Rebuilt: `libstdcpp avkon eikcoctl eikcoctllaf` (avkon.dll 1363956 B, eikcoctl.dll 660356 B). The rest of the closure is unchanged from the volume.
 Result on `lim.iso` (VirtualBox, `compat-calculator-cleanarm-20261106.png`): **PASS**: `proteus P3 calcsoft.exe: create 0 exit type 3 reason 0 (running after 240 s)`, UI drawn, no USER 23. Conclusion: the panic came from the mixed avkon build, not from core 1011bd4 or Proteus. About: not run.
+
+## Host GPU, JIT vs interpreter (2026-11-07)
+
+PC image ISO of 2026-11-07 17:05 (newest Proteus + kernel), VirtualBox 2 CPUs, 1 GB, `VBOX_3D=1` (VMSVGA + SVGA3D, host GPU), one VM at a time under the measurement lock. Let's Golf 2 from its real SIS
+(`letsgolf2.sis` + `codecpack-x32.sis`, 1 GB disk staged with `tools/proteus_stage.sh lg3 letsgolf2 sis lg2` and `BASE=lg-base.img`, ARM closure from the current ARM build). The interpreter runs use a copy of the
+installed disk (post-install state of run 1, `c:\sis` emptied, so no reinstall) plus `c:\proteus\interp.txt` (`interpreter`); the JIT control on that same installed disk is run 3.
+
+| run | disk | P3 | first GLSTAT (after VM start) | steady fps (GLSTAT, frames 300-2500) | per frame (GL / present / guest code) |
+|---|---|---|---|---|---|
+| JIT, host GPU | fresh (2 installs + app) | PASS, window group `2003b2cb` | 871 s (includes both installs, ~605 s+) | 18.1-21.4 (19.4 typical) | 0.2-0.3 / 19-29 / 21-33 ms |
+| JIT, host GPU | installed | PASS | 366 s | 18.4-20.8 | 0.2 / 17 / 33 ms |
+| interpreter, host GPU | installed | PASS | 287 s | 17.0-20.6 (18.8 typical) | 0.2-0.3 / 21-23 / 30-31 ms |
+
+Reading: with the host GPU Let's Golf 2 runs at about 19 fps (the game's menu and intro screens) on both CPU engines; the guest-code share per frame (~30 ms) is the same for the JIT and
+the interpreter, so on this workload the frame time is not the ARM CPU: the swap is `post` = the window server's software rotation (see the Sparkle section in `sparkle-gl-run.md`). The JIT reached its
+first frame later than the interpreter (366 s vs 287 s) on the same installed disk: translation cost at start-up; one run each, not repeated, so the 80 s difference is a single measurement. The 19 fps is the intro/menu
+(title, Input Name); a playable hole was not driven in these runs (no input sent), so in-game fps is not measured.
+Software pipe earlier (compat.md, 2026-11-04): 3-11 fps interpreted in the hole; the menu numbers here are not comparable to it.
+
+Evidence lines (`serial-*.log` of the runs):
+- `[symgl] eglInitialize: svga (VMware SVGA3D, host GPU) screen up` (all three runs)
+- `[symgl] scan-out: not full-screen (window 640x360 at 0,0, display 360x640)` (all three: the same rotation-bound path as Sparkle)
+- `proteus cpu: jit` / `proteus cpu: interpreter`
+- JIT: `GLSTAT frames 2520: 19.8 fps over 1513 ms; per frame 50.4 ms = GL calls 0.2 + present 17.2 + rest (interpreter, services) 33.0`; `[symgl] prof/frame2: ... 600 swaps in 30292 ms = 19 fps`
+- interpreter: `GLSTAT frames 2580: 18.8 fps over 1592 ms; per frame 53.0 ms = GL calls 0.3 + present 22.5 + rest 30.2`; `600 swaps in 30725 ms = 19 fps`
+- `P3 LetsGolf2.exe: create 0 exit type 3 reason 0 (running after 240 s)`, `P3 window group ... 2003b2cb Lets Golf 2`, `P3 (installed ARM app) PASS`; the label "rest (interpreter, services)" in GLSTAT is generic, it is also printed under the JIT.
+
+Screenshots: `img/compat-letsgolf2-3d-jit-20261107.png` (fresh-disk JIT run: Input Name), `img/compat-letsgolf2-3d-jit-installed-20261107.png` (installed-disk JIT run), `img/compat-letsgolf2-3d-interp-20261107.png`
+(interpreter: title "Touch to continue"). The screens differ only because the shot is taken at a fixed time after the first frame and the intro clips have different lengths of work in front of it.
+
+Not done in this session (time): the Calculator and PyS60 on the host GPU, a hole of Let's Golf 2 (needs input), and repeats of the first-frame time.
