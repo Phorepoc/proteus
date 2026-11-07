@@ -223,3 +223,39 @@ Screenshots: `img/compat-letsgolf2-3d-jit-20261107.png` (fresh-disk JIT run: Inp
 (interpreter: title "Touch to continue"). The screens differ only because the shot is taken at a fixed time after the first frame and the intro clips have different lengths of work in front of it.
 
 Not done in this session (time): the Calculator and PyS60 on the host GPU, a hole of Let's Golf 2 (needs input), and repeats of the first-frame time.
+
+## Native on the PinePhone (2026-11-07)
+
+The same two games, run natively (ARM, on the phone's own kernel, 4 x A53) from E:\sys\bin with `phestart <uid>`
+(Sparkle 20030f70, Let's Golf 2 2003b2cb), image already on the phone (boot 2354, slot B), volume turned down 15 times.
+
+**The `[symgl] prof/frame` / `prof/frame2` / `eglInitialize` lines do not exist on the phone.** That stack (symgl + Mesa,
+used by the PC image and Proteus) is not what the phone runs: the phone's native GL is the `libGLES_CM.dll` /
+`libGLESv2.dll` wrapper behind the Alfred window server (`PH: alf: wrapper eglInitialize done`), with its own drawing path
+(`alf: RI gpu path fills`). No renderer string and no per-600-swap profile is printed, so a like-for-like number from
+Mesa's lines is not available. What the phone does print is the kernel display counter, `[EKERN][frame] active second:
+frames=N` (frames the display engine scanned out in the last busy second). That is the figure below, so it is a
+presented-frame rate, not the game's own swap count, and it is not the same instrument as the PC column.
+
+| game | screen | phone (presented frames/s) | PC, host GPU (`prof/frame2`) | notes |
+|---|---|---|---|---|
+| Sparkle (Qt + GLES 1), story/title screen | 640x360 landscape | 48-53 (0x30-0x35, many samples) | ~62 | main thread ~10% of one core, whole phone ~5% busy; compose update->composed 7.1-7.4 ms |
+| Let's Golf 2, Gameloft logo video | 640x360 | 29-30 | (video) | the intro video's own rate |
+| Let's Golf 2, main menu (3D golfer animated) | 640x360 | **10 steady** (0x0a for 30+ consecutive samples; display update period 62-69 ms) | ~19-20 | update->composed 10-11 ms |
+
+Findings:
+- Let's Golf 2 is **not** at a 20 fps cap on the phone: it presents a flat 10 fps in the menu, half the PC figure, so the PC
+  ~20 fps (50 ms frames) is the game's own cap and the phone currently runs at half of it. Not investigated further
+  (gameplay was not reached; only the menu was measured, within the 60-minute budget).
+- Sparkle on the phone is ~50 fps at the title screen, close to but below the PC's ~62. The scene is static-ish text and a
+  button, so this is an upper bound for gameplay.
+- Per-frame breakdown (GL / present / guest) is not available natively; the only phone-side timing is the compositor's
+  update->composed average (7.2 ms Sparkle, 10-11 ms Golf menu).
+- The screen blanks about 10 s after the last input even with a game in front, so each sample window needed a power-key wake.
+  The screen recorder (`record_start`) captures at its own 30 fps and burns ~54% of a core in `pherec`; it cannot be used to
+  count game frames.
+- To get a real swap-based number natively, the phone's `libGLES_CM` wrapper needs a swap counter printed like symgl's
+  `prof/frame2` (not done).
+
+Screenshots: `img/phone-sparkle-20261107.png` (Sparkle title, landscape rotated on the portrait panel),
+`img/phone-letsgolf2-20261107.png` (Let's Golf 2 main menu).
