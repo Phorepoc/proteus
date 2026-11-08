@@ -32,7 +32,7 @@ _LIT(KDefaultExe, "z:\\sys\\bin\\arm\\proteushello.exe");
 // and commits a little of it. As much as a process's local address space gives (an ARM process has ~1 GB): the reservation costs no RAM.
 const TInt KGuestBytesMax = 1 << 30, KGuestBytesMin = 64 << 20;
 // native services map into this process after the guest region is made, all in the same local address space: the font and bitmap
-// server's chunks (192 MB), Mesa's chunk heap (128 MB), the JIT's code (32 MB) and the GL GPU channel's 256 MB pool (adaptation-pc symvmw:
+// server's chunks (192 MB), Mesa's chunk heap (128 MB), the JIT's code (32 MB) and the GL GPU channel's 256 MB pool (the PC board layer symvmw:
 // Mesa's svga driver on a VM's host GPU; without one free range that large it fails with KErrNoMemory and GL falls back to the software
 // renderer). The guest region leaves this much of the largest reservation the kernel grants free for them.
 const TInt KNativeReserveBytes = 320 << 20;
@@ -1831,7 +1831,7 @@ static TInt MainL()
 		cpu->AddWindow((TUint32)rom->iRomBase, rom->iRomSize);
 		RDebug::Printf("PH: proteus ROM window %x + %x", (TUint)rom->iRomBase, rom->iRomSize);
 		}
-	proteus::RunExe(*cpu, hle, ~0ull);		// no instruction budget for a real app (it was 50 M: about.exe hit it while drawing text; 4 G: Sparkle hit that on VirtualBox)
+	proteus::RunExe(*cpu, hle, ~0ull);		// no instruction budget for a real app (it was 50 M: about.exe hit it while drawing text; 4 G: Sparkle hit that on the x32 PC VM)
 	RDebug::Printf("PH: proteus guest halted: %d exit %d after %d instructions, fault %x '%s'", (TInt)cpu->iHalt, cpu->iExitCode, (TInt)cpu->iSteps, cpu->iFaultAddr, cpu->iNote);
 	if (cpu->iHalt == proteus::EUndefined)
 		for (TInt m = 0; m < proc->iCount; ++m)

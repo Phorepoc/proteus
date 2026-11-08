@@ -27,7 +27,7 @@ softpipe both run under TCG, a few frames in several minutes.
 ## Open
 
 - (done, see Landscape below) Sparkle is a landscape game (GL viewport 640x360): the PC image has a landscape screen mode now.
-- Speed: see "Interpreter speed" below (VirtualBox 150-200 MIPS; QEMU TCG 15-17).
+- Speed: see "Interpreter speed" below (the x32 PC VM 150-200 MIPS; QEMU TCG 15-17).
 - P3's verdict is at the end of the 240 s wait; the screendumps (`--linger`, `--shot-at`) provide the display refresh
   Sparkle waits for under `-display none`.
 
@@ -101,7 +101,7 @@ returns to mode 0 when it leaves (`top wg 36 -> mode 0`).
 instructions in: LDREX/STREX loops (Qt reference counts), memset/memcpy byte loops, a free-list walk, virtual calls, string compares, a
 software float (CLZ + UMULL normalisation, what dfpaeabi does), an ALU mix; `bench.cpp` loads it into `CArmCpu`; `run.sh`, `THUMB=1` builds
 the same workload as Thumb-1; the guest prints a checksum that must not change). Three yardsticks: the host (native), `qemu-x86_64` user-mode
-TCG (a proxy for "interpreter under TCG"; no softmmu, so it flatters the real thing), and the real PC image in QEMU system mode and VirtualBox
+TCG (a proxy for "interpreter under TCG"; no softmmu, so it flatters the real thing), and the real PC image in QEMU system mode and the x32 PC VM
 (the `proteus progress` lines). The host profile came from callgrind (`valgrind --tool=callgrind`), per source line.
 
 **Profile before (callgrind, 9.7 M guest instructions): 196 host instructions per guest instruction.** `Step()` 40% (the per-instruction
@@ -144,27 +144,27 @@ deliberate difference, left out of the tests: an unaligned LDR rotates (ARMv5), 
 | qemu-user TCG, Thumb workload | 19.5 | 62.5 |
 | PC image in QEMU system mode (TCG), Sparkle ARM phases | 6.4-6.9 | 15-17 |
 | PC image in QEMU system mode, Sparkle's Thumb exe phase | 7.1 | 16-18 |
-| PC image in VirtualBox (hardware virtualisation), Sparkle | not measured | **150-200** (3.5 G instructions in 22 s; 22.5 G by 355 s) |
+| PC image in the x32 PC VM (hardware virtualisation), Sparkle | not measured | **150-200** (3.5 G instructions in 22 s; 22.5 G by 355 s) |
 
-Host instructions per guest instruction: 196 -> about 85 (callgrind). **The 50 MIPS goal is met on VirtualBox (the image the public runs) by
+Host instructions per guest instruction: 196 -> about 85 (callgrind). **The 50 MIPS goal is met on the x32 PC VM (the image the public runs) by
 3-4x and not met on QEMU TCG (15-17).** QEMU system mode costs ~3x more than the user-mode proxy for the same code (every load and store of the
 interpreter's own data goes through the softmmu TLB; the loop still touches ~10 words of state per guest instruction), and a table-driven
 interpreter cannot get much below that: the next step on QEMU is a translation cache (basic blocks of pre-decoded instructions, registers
 cached across a block), i.e. the JIT the brief put out of scope until numbers were in. These are the numbers.
 
-**What else the VirtualBox run found (it is fast enough to get there).**
+**What else the the x32 PC VM run found (it is fast enough to get there).**
 - `User::AfterHighRes` (slow exec 135) was not emulated: Sparkle halted at it right after "Pushing layer Loading" (221 M instructions in). Added
   `Exec::After` / `Exec::AfterHighRes`: the thread's own timer (`DThread::iTimer`) completes the `TRequestStatus` the exec is given at its
   deadline (`FireAfter` in `proteusexec.cpp`, checked at every slice end and when all threads are blocked; the scheduler's native wait is
   bounded by the nearest timer).
 - A 4 G instruction cap (`RunExe` took a `uint32_t` budget; the board passed `0xFFFFFFFF`) stopped Sparkle with `EStepLimit` once the interpreter
   was fast enough to reach it. The budget is `uint64_t` and unlimited for a real app; `Run` limit arithmetic is overflow-safe.
-- With both fixed, Sparkle on VirtualBox runs past its whole data load (22 G instructions by 355 s) and reaches `GameWidget::startAnimating`.
+- With both fixed, Sparkle on the x32 PC VM runs past its whole data load (22 G instructions by 355 s) and reaches `GameWidget::startAnimating`.
   Two things stop it from reaching the menu: (1) an active object leaves **-4 (KErrNoMemory)** while caching the sound effects ("..caching sound
   'sfx/throw-orb'"): the guest heap or the region is exhausted (check Sparkle's heap max against the device default, `tools/heap_audit.py`
-  style, before anything else); (2) the VirtualBox screen shows a sheared copy of the loading screen (360x640 portrait window, 640x360
+  style, before anything else); (2) the the x32 PC VM screen shows a sheared copy of the loading screen (360x640 portrait window, 640x360
   landscape content): the landscape mode switch seen on QEMU does not reach the VMSVGA display. Neither is the interpreter. Screenshot:
-  `docs/img/sparkle-vbox-sheared.png`.
+  `docs/img/sparkle-pcvm-sheared.png`.
 - P0-P3 PASS on the final build in QEMU (P3 = the installed Sparkle starts). ViewSrv 11 did not occur in any run since the speed-up (QEMU: the
   load needs more than 2 G instructions at 4 s per 64 M).
 
@@ -173,7 +173,7 @@ cached across a block), i.e. the JIT the brief put out of scope until numbers we
 64 M instructions" (192 M -> 256 M, `dfpaeabi`) is not interpretation: `wait=0`, 11 K SVCs, 0.65 M slow steps; it is the native image decoders and
 the emulated ATA disk loading Sparkle PNGs.
 
-**Open (speed).** QEMU TCG: a block cache / JIT (see above). VirtualBox: nothing in the interpreter; 150-200 MIPS leaves a Sparkle start well
+**Open (speed).** QEMU TCG: a block cache / JIT (see above). the x32 PC VM: nothing in the interpreter; 150-200 MIPS leaves a Sparkle start well
 inside the view server limits. Sampling the guest with the QEMU monitor (`info registers -a` in a loop) is cheap and needs no instrumentation
 in the guest; it only shows kernel idle when the interesting thread is blocked, so take the samples inside an interpretive window.
 
@@ -181,7 +181,7 @@ Final build on QEMU (P0-P3 PASS): with `AfterHighRes` working Sparkle sleeps and
 load), so the QEMU rate in that phase is ~10 MIPS (64 M per 6-8 s) and 1.47 G instructions at 357 s; the 15-17 MIPS figures above are the
 interpretive phases before it.
 
-## The two blockers, solved (2026-11-04, VirtualBox)
+## The two blockers, solved (2026-11-04, the x32 PC VM)
 
 **1. KErrNoMemory (-4) was the sync object table, not memory.** The 512-entry table of mutexes, semaphores, condition variables and message
 queues (`KMaxSync`, `TExecState::iSync`) had no way to free a slot: `EExecHandleClose` of such a handle was a no-op and every create took
@@ -193,31 +193,31 @@ reserved; the PC image's RAM is not touched until pages are committed). Nothing 
 reused, and the table grows (realloc) up to what a handle can name (`KMaxSync` = 0xF0000: KHandleObj + index must stay below the bridge handles).
 `Duplicate` of these handles is still not emulated (no one asks). Other fixed tables with the same shape, not hit yet: guest chunks (64, never
 freed), threads (32), logons (8).
-Result: the data load completes on VirtualBox (about 4.8 G instructions to the Start button), the loading bar fills and the **Start** button appears
-(`docs/img/sparkle-vbox-start.png`); a tap on it (VirtualBox mouse integration) gives "Clicked 'start'", the music switches to main-theme and the first
-scene renders (`docs/img/sparkle-vbox-map.png`: mushrooms, tower, windmill; a landscape picture on the portrait panel, rotated 90 degrees).
+Result: the data load completes on the x32 PC VM (about 4.8 G instructions to the Start button), the loading bar fills and the **Start** button appears
+(`docs/img/sparkle-pcvm-start.png`); a tap on it (the VM mouse integration) gives "Clicked 'start'", the music switches to main-theme and the first
+scene renders (`docs/img/sparkle-pcvm-map.png`: mushrooms, tower, windmill; a landscape picture on the portrait panel, rotated 90 degrees).
 Note: the PC image blanks the screen lights after ~30 s without input and the focus then goes (Sparkle: "Focus lost -> BackgroundStop", it stops animating);
-a key press (Ctrl) wakes it. A run on VirtualBox that waits for the menu has to send a key every 20 s.
+a key press (Ctrl) wakes it. A run on the x32 PC VM that waits for the menu has to send a key every 20 s.
 
-**2. The sheared screen was the screen driver's pitch, on every screen, not only landscape.** `docs/img/sparkle-vbox-sheared.png`,
-`docs/img/landtest-vbox-sheared.png`. Cause: the OMAP draw devices (used since adaptation-pc v0.3.0 for the software-rotated landscape mode)
+**2. The sheared screen was the screen driver's pitch, on every screen, not only landscape.** `docs/img/sparkle-pcvm-sheared.png`,
+`docs/img/landtest-pcvm-sheared.png`. Cause: the OMAP draw devices (used since the PC board layer v0.3.0 for the software-rotated landscape mode)
 read the row pitch from the HAL and then call the base class's `Construct(aSize)`, which sets the pitch to exactly width * 4 again. The PC
-display pads rows to 64 bytes like the 701 (1472 bytes for 360 px; applications writing screen memory assume it). In VirtualBox VMSVGA the screen is
+display pads rows to 64 bytes like the reference device (1472 bytes for 360 px; applications writing screen memory assume it). In the x32 PC VM VMSVGA the screen is
 always the padded shadow screen, so WSERV drew 1440 bytes per row into 1472 byte rows: the whole screen sheared (the home screen too, in portrait;
 the v0.3.0 notes only showed landscape). QEMU draws straight into a framebuffer of exactly 1440 bytes per row, where the two agree, so every QEMU test
-passed. Confirmed three ways: an unpadded shadow (ScreenWpl = width) in VirtualBox drew correctly; the fix below draws correctly; the pattern of the
-new test is identical on both. Fix (adaptation-pc 0298654, pushed): `os/src/phescdv/scnew.cpp`, the driver's factory, builds the 32-bit
+passed. Confirmed three ways: an unpadded shadow (ScreenWpl = width) in the x32 PC VM drew correctly; the fix below draws correctly; the pattern of the
+new test is identical on both. Fix (the PC board layer 0298654, pushed): `os/src/phescdv/scnew.cpp`, the driver's factory, builds the 32-bit
 draw devices through a subclass that puts the HAL's pitch back after the base class has run; test `phelandtest` (SSM_TEST: landscape mode + a
-pattern with corner marks, ramp bars, a frame and a diagonal). Checked: phelandtest on QEMU and VirtualBox (`docs/img/landtest-vbox-fixed.png`, same
-picture), the portrait home screen on VirtualBox (`docs/img/home-vbox-portrait-fixed.png`), all 17 apps of the regress list ALIVE in QEMU portrait.
+pattern with corner marks, ramp bars, a frame and a diagonal). Checked: phelandtest on QEMU and the x32 PC VM (`docs/img/landtest-pcvm-fixed.png`, same
+picture), the portrait home screen on the x32 PC VM (`docs/img/home-pcvm-portrait-fixed.png`), all 17 apps of the regress list ALIVE in QEMU portrait.
 The 8- and 16-bit OMAP classes have the same flaw and are unused here (the display is 32 bits).
-Sparkle after the fix, VirtualBox: `docs/img/sparkle-vbox-pitch-fixed.png`.
+Sparkle after the fix, the x32 PC VM: `docs/img/sparkle-pcvm-pitch-fixed.png`.
 
-## Playable on VirtualBox (2026-11-04)
+## Playable on the x32 PC VM (2026-11-04)
 
-Setup: the PC image (adaptation-pc 0298654, the pitch fix), VirtualBox 2 CPUs, 1 GB, VMSVGA, AC97, `SSM_TEST=proteus` ROM (so P0-P3 run and P3 starts the
-installed Sparkle), a C: with Sparkle installed (the SIS removed after the install). Input through the VirtualBox COM API (`PutMouseEventAbsolute` =
-mouse integration; `tools/phorepoc-x86/vbox_mouse.ps1` of the main repo). Screenshots (`VBoxManage controlvm screenshotpng`) are in `docs/img/sparkle-vbox-*.png`.
+Setup: the PC image (the PC board layer 0298654, the pitch fix), the x32 PC VM 2 CPUs, 1 GB, VMSVGA, AC97, `SSM_TEST=proteus` ROM (so P0-P3 run and P3 starts the
+installed Sparkle), a C: with Sparkle installed (the SIS removed after the install). Input through the the VM manager COM API (`PutMouseEventAbsolute` =
+mouse integration; the main repo's VM mouse script). Screenshots (the VM manager's screenshot command) are in `docs/img/sparkle-pcvm-*.png`.
 
 **It plays.** Cold boot to the Start button takes about 3.5 minutes (4.8 G guest instructions), then: Start -> main menu (animated, particles) ->
 Play -> Play Quest -> Instructions -> OK -> the game (orbs run along the path, taps throw orbs, orbs match and burst, lives, "level failed", back to
@@ -255,7 +255,7 @@ Fixes (proteus.cpp, proteusexec.cpp):
 3. **A kernel object handed over in a reply is adopted at its first use as its type** (`AdoptObj`; sessions already were): a chunk (`EExecChunkBase/Size/MaxSize/
    Bottom/Top` on a handle outside the guest's own ranges) is wrapped with `SetHandle`, the guest keeps the handle's value, and its memory becomes a guest
    window (`proteus kernel: adopted chunk handle 6ac60019: window 70004000 + 3000`). Close finds it by value. Other types adopt the same way when one is needed.
-Result: the audio reaches the device. VirtualBox's own statistics (`VBoxManage debugvm <vm> statistics --pattern "/Devices/ichac97/Stream1/*"`): the AC97
+Result: the audio reaches the device. the VM's own statistics (`the VM manager's statistics command, pattern "/Devices/ichac97/Stream1/*"`): the AC97
 PCM-out stream is started and read by the device, `offRead` 8.9 MB (~46 s of 48 kHz stereo) after a minute of play, and a WasAPI output stream is created at
 the host. **Not verified by ear** (headless run, nobody listening): that the samples are the game's music and not silence. A person at the VM has to
 confirm it.
@@ -265,7 +265,7 @@ confirm it.
 `eglSwapBuffers` is counted in the guest GL trace (`proteusgl.cpp`): every 30 swaps a `GLSTAT` line gives the rate over the last interval and the split of one
 frame into native GL calls, the present (native `eglSwapBuffers`: symgl's bitmap copy + WSERV) and the rest (the interpreter + other native services).
 Each call is timed with the kernel fast counter, extended to 64 bits at every sample (it is 32 bits and wraps in seconds on this PC); the sums are scaled by the
-wall clock from the tick count (the HAL's counter frequency is not the PC's real rate; using it made GL "take" more than the frame). VirtualBox, 2 CPUs:
+wall clock from the tick count (the HAL's counter frequency is not the PC's real rate; using it made GL "take" more than the frame). the x32 PC VM, 2 CPUs:
 
 | phase | fps | frame | native GL (softpipe) | present | rest = interpreter + services |
 |---|---|---|---|---|---|
@@ -274,7 +274,7 @@ wall clock from the tick count (the HAL's counter frequency is not the PC's real
 | level / dialogs, later (43 lines) | 13.0 | 82 ms | 54.2 (66%) | 11.3 | 16.6 |
 
 So in the game two thirds of a frame is the native software rasteriser (Mesa softpipe: the PC image has no GPU path), the present is ~10 ms and the
-interpreter and all native services together ~13-17 ms (~20%). The interpreter is no longer the limit on VirtualBox; the next gain is the GL side (softpipe on
+interpreter and all native services together ~13-17 ms (~20%). The interpreter is no longer the limit on the x32 PC VM; the next gain is the GL side (softpipe on
 one core: fewer / cheaper draws, or the llvmpipe-style JIT rasteriser, or SVGA3D in the VM). Frames per second are 13-17, the game is playable, not smooth.
 
 ### Other findings
@@ -286,22 +286,22 @@ one core: fewer / cheaper draws, or the llvmpipe-style JIT rasteriser, or SVGA3D
 
 ### Regression checks (same day)
 
-- **VirtualBox app regression** on the normal ROM built with the Proteus layer (`phe image rom -O prune=1 -O leave-trace=1`, `/w/proteus` in
+- **the x32 PC VM app regression** on the normal ROM built with the Proteus layer (`phe image rom -O prune=1 -O leave-trace=1`, `/w/proteus` in
   `PHOREPOC_ADAPTATIONS`, blank C:, the 17 apps of the regress list started one by one by bootui, 20 s each): **17 / 17 ALIVE, no panic, portrait**
-  (`docs/img/regress-vbox-portrait-gsapp.png`). Native apps do not touch the handler; this shows the ROM with the new handler is unharmed.
-- **QEMU** (TCG, the same `SSM_TEST=proteus` ISO as the VirtualBox runs): **P0, P1, P2, P2b, P2c, P2d, P2f, P3 PASS** (440 s; the native queue
+  (`docs/img/regress-pcvm-portrait-gsapp.png`). Native apps do not touch the handler; this shows the ROM with the new handler is unharmed.
+- **QEMU** (TCG, the same `SSM_TEST=proteus` ISO as the the x32 PC VM runs): **P0, P1, P2, P2b, P2c, P2d, P2f, P3 PASS** (440 s; the native queue
   path runs there too: `EExecMsgQueueNotifyDataAvailable` on the native handle, signal credited).
 
 ### Music missing: not the mixer, not an underrun (2026-11-04, audio A0 measurement)
 **Resolved the same day: the next section (the MMF controller hosted natively). Point 3 below named the cause; the fix is not ARM twins of the chain.**
 
-Symptom: effects play, Sparkle's music (MP3 files, `music/main-theme`, ...) is nearly absent. Measured on the PC image in VirtualBox (AC97 via the
-null audio driver with VirtualBox's own WAV capture, `VBoxInternal2/Audio/Debug/Enabled`), with the audio trace switches on (`PHOREPOC_AUDIO_A0`, and the
+Symptom: effects play, Sparkle's music (MP3 files, `music/main-theme`, ...) is nearly absent. Measured on the PC image in the x32 PC VM (AC97 via the
+null audio driver with the VM's own WAV capture, `the VM's audio debug-capture setting`), with the audio trace switches on (`PHOREPOC_AUDIO_A0`, and the
 mixer's new one-line-a-second summary, `PHMIX_TRACE`).
 
 1. **Sparkle uses two audio paths.** Effects: its own software mixer into one `CMdaAudioOutputStream` (22050 Hz mono, 1024 B writes). Music: `CMdaAudioPlayerUtility`
    on the MP3 files (the game imports `mediaclientaudio`). Only the first reaches the audio server: there is one channel on the mixer, never a second.
-2. **The stream path carries silence between effects**: over 149 s of play after "Switching the music" every one-second mixer summary has `peak 0`; the VirtualBox
+2. **The stream path carries silence between effects**: over 149 s of play after "Switching the music" every one-second mixer summary has `peak 0`; the the x32 PC VM
    capture of 560 s has audible samples in 3 seconds. The mixer is not dropping anything (it mixes what it gets) and MMRC never pauses or denies: one stream.
 3. **The music open fails in the guest.** Right after `Switching the music to 'music/main-theme'` the guest connects to `!ecomserver`, gets -17004 twice,
    and `proteus DLL f32agent.dll: no ARM file (stays HLE)` / `RLibrary::Load Z:\sys\bin\f32agent.dll -> -1`. The MMF client of `CMdaAudioPlayerUtility` loads
@@ -363,7 +363,7 @@ all five clients in `Client/Audio` and `Client/Video` go through `CMMFFindAndOpe
 second, `Stop`, close, a second file. Staged as `c:\sys\bin\proteusmmf.exe` + `c:\sisapp.txt` and the MP3s in its own private directory (P3 reports FAIL for it: it is not a GUI app,
 there is no window group; the log lines are the result).
 
-**Results** (VirtualBox 2 CPUs, the PC image, `SSM_TEST=proteus` ROM, AC97 on VirtualBox's debug WAV capture, `PHMIX_TRACE` through `X32_DEFS=mdasoundadapter:PHMIX_TRACE`):
+**Results** (the x32 PC VM 2 CPUs, the PC image, `SSM_TEST=proteus` ROM, AC97 on the VM's debug WAV capture, `PHMIX_TRACE` through `X32_DEFS=mdasoundadapter:PHMIX_TRACE`):
 - `proteusmmf`: both tracks open (`init complete 0`, duration 65848 ms / 59004 ms), play (`GetPosition` follows the clock, 1 s per second), stop, close; the second open reuses the
   guest thread slot (`thread 1` twice); the mixer shows one stereo 22050 Hz stream, peak 8000-25000, underflow 0 after the first second. Every message of the protocol above (function 0
   load, 15 / 1 / 11 / 5 / 10 / 6 / 9 / 8, async `ReceiveEvents` = 1) crossed the bridge; `async fn 1 completed -13` at close is the pending `ReceiveEvents` ending with the server.
@@ -373,7 +373,7 @@ there is no window group; the log lines are the result).
   Mixer, one-second summaries, **217 consecutive seconds of play in a level** (a tap every 5 s): **peak never 0** (min 11927, max 30427), both stream formats present
   (`fmt 22050/1` = Sparkle's own effects stream, 124 s, `fmt 22050/2` = the controller's stereo stream, 93 s: the second stream), 245 underflowed quanta in all (1.1 a second, 112 of the 217
   seconds had at least one; the previous measurement of the effects stream alone was 13 a second in silence). Capture: `scratchpad/shots/sparkle-music.wav` of the session (48 kHz stereo, 652 s: loading tune,
-  main theme, map tune, game tunes, with the effects); screenshot of the level it was taken in: `docs/img/sparkle-vbox-music-level.png`.
+  main theme, map tune, game tunes, with the effects); screenshot of the level it was taken in: `docs/img/sparkle-pcvm-music-level.png`.
 - P0, P1, P2, P2b, P2c, P2d, P2f, **P3 PASS** (`Sparkle.exe` running after 240 s with a window group) on the same ISO; Sparkle's effects stream still plays (mono lines above).
 
 **Limits, stated** (nothing is stubbed; these are properties of the design or open work):
@@ -392,7 +392,7 @@ there is no window group; the log lines are the result).
 - A guest thread slot of a *non*-hosted dead thread is still never reused (`KMaxThreads` 32): only the hosted ones are, since the guest closes their handles with the proxy.
 - The two CAF plug-ins above are the only ARM files added; any MMF app's closure needs them (`proteus_closure.py --extra f32agent.dll,f32agentui.dll`).
 
-## Under the JIT, and on the host GPU (2026-11-07, VirtualBox 2 CPUs, `VBOX_3D=1`)
+## Under the JIT, and on the host GPU (2026-11-07, the x32 PC VM 2 CPUs, `PC_VM_3D=1`)
 
 Sparkle runs under the dynarmic JIT and on Mesa's svga driver (the VM's host GPU). Four faults stood in the way, each found
 from evidence (a kernel thread sampler, a JIT-vs-interpreter trace diff, kernel logs on each failure path), not by trying fixes:
