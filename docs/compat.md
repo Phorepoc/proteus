@@ -336,6 +336,13 @@ Screenshots: `img/phone-nfs-title-20261108.png` (title, clean), `img/phone-nfs-c
 
 ### Accelerometer options (not built)
 
+- Source search (2026-11-08): `HWRMAccelerationSensorClient` is in none of the 2010 source packages (no file, no string
+  hit), nor in the 701 ROM image. The 2010 source has only the Sensor Framework headers (`sensrvaccelerometersensor.h`,
+  `sensrv*.h`); the older `rrsensorapi` (an S60 5th-edition API, header only in an incubator package) is also absent
+  from the ROM. So the DLL is not a 2010 compatibility wrapper that can be built from a real mmp. Its exact imports
+  need the game's binary, which is not on the build machine (it was installed on the ARM phone board from elsewhere),
+  so the PC comparison is blocked until the SIS is supplied.
+
 - The phone has a real one: an MPU-6050 on the second I2C bus, read by the board's sensor driver (15-25 Hz, mount matrix
   applied in the driver, a 32-sample ring), exposed through the real sensor server as an XYZ channel (own SSY, UID
   0x1020507E, with the 2010 orientation SSY on top). Values from earlier boots: 16384 per g; upright on a stand about
