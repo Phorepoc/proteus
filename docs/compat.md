@@ -259,3 +259,93 @@ Findings:
 
 Screenshots: `img/phone-sparkle-20261107.png` (Sparkle title, landscape rotated on the portrait panel),
 `img/phone-letsgolf2-20261107.png` (Let's Golf 2 main menu).
+
+## Native on the ARM phone board, in gameplay (2026-11-08)
+
+The 2026-11-07 section measured only a menu. This one measures 3D games in play, from the phone's own `prof/frame` /
+`prof/frame2` / `vfpvec` / `displayed` / monitor lines (volume down 15 times; games started with `phestart`; a harmless tap
+about every 7 s keeps the screen awake). Image: the release before the VFP fast paths (boot 2362) for NFS Shift, Let's Golf 2
+and Dungeon Hunter 2; the release with the VFP fast paths (board layer commit 5ac28ff, boot 2363) for Let's Golf 2 only.
+The windows are Mesa's 600-swap windows, at least two per scene. `swap` and its parts are milliseconds per frame.
+
+| game, scene | fps per window | swap | flush | fence | acquire | busy core % | VFP trap share |
+|---|---|---|---|---|---|---|---|
+| NFS Shift, main menu (3D car) | 17 / 15 / 17 / 17 | 37-45 | 1.9-2.0 | 12.7-20.4 | 21.8-22.8 | 12-25 | none (no traps) |
+| NFS Shift, in the race (car on the track, portrait) | 15 / 18 | 38.8 / 39.4 | 1.9 / 1.8 | 13.8 / 15.0 | 23.0 / 22.5 | 13-18 | none |
+| Let's Golf 2, tee of a hole (Greenland hole 5), release before the fast paths | 11 / 9 / 9 | 36.0 / 43.8 / 46.3 | 2.3 / 6.8 / 7.5 | 9.1 / 9.1 / 9.1 | 24.4 / 27.8 / 29.4 | 17-41 | 33-39% of wall; 8.5-10 us per trap |
+| Let's Golf 2, tee of a hole (Kenya hole 5), release with the fast paths | 10 / 10 / 10 | 44.6 / 47.7 / 47.1 | 9.2 / 9.2 / 9.3 | 10.8 / 10.9 / 10.8 | 24.3 / 27.5 / 26.7 | 18-40 | 20-23% of wall; 3.4-5.0 us per trap |
+| Dungeon Hunter 2, in the dungeon (mage, first room of act 1), character not moving | 21 / 21 | 26.0 / 26.8 | 0 | 3.3 / 3.2 | 22.5 / 23.4 | 13-23 | none |
+
+How the columns were read: fps is `prof/frame2` (600 swaps in N ms); swap, flush, fence and acquire are the `prof/frame us`
+parts converted to ms. VFP share = `ticks` over `wall` of the same `[EKERN][vfpvec] stat` line (16384 traps each); us per
+trap = ticks / 24 / 16384 (24 MHz ticks). `displayed:` counters on every game: `ok` rose by exactly the submits,
+`overflow 0 notvisible 0 other 0`, `uncomposed` 0-3 in total (NFS Shift 2-3 since its start, Let's Golf 2 and Dungeon
+Hunter 2: 0). The compositor's update-to-composed time stayed 6.9-7.3 ms.
+
+Findings:
+- **Gameplay is not slower than the menu in Dungeon Hunter 2 and NFS Shift (21 and 15-18 fps); Let's Golf 2 is the slow
+  one (9-11 fps on a hole, as in its menu).** Dungeon Hunter 2 has no VFP traps at all.
+- **The VFP fast paths cut the emulation cost per trap by about 45% (8.5-10 us to 3.4-5.0 us) and the share of the wall
+  clock from about 35% to about 21%, but Let's Golf 2 still runs at 10 fps** (56.2-56.4 s per 600 swaps, 94 ms a frame,
+  unchanged). So the game is not only VFP bound. 10 fps is half of the PC's ~20 fps (50 ms frames), so the game's
+  fixed-step logic probably drops to every second step as soon as a frame needs more than 50 ms. Not proven; the test is
+  to get a frame under 50 ms, and the wait for `acquire` alone is 24-29 ms of every frame (next point).
+- **`acquire` is a constant 22-29 ms in every game and scene** (the present step waiting for a free window buffer from the
+  display side) and the biggest single part of `swap` (60-90%). `fence` (the GPU) is 3-20 ms, `flush` 0-9 ms. The busy core
+  is only 15-40% busy, so the frames are not CPU bound; a fixed ~23 ms wait per swap looks like the display path's buffer
+  return, not a game cost. Worth looking at first, since it hits every game. Dungeon Hunter 2's first window, while it was
+  loading, ran 52 fps with acquire 12.5 ms.
+
+What was not reached (blockers):
+- **Let's Golf 2: no shot was played.** The hole is reached (Single Player, Instant Play, Preview, fly-over, tee). The game
+  needs a double tap, 1.2 s apart, on most buttons: a single touch is often ignored. Swings tried: a drag along the game's
+  vertical axis down and up, a fast flick, the same as raw down/move/up events (a pull of 240 px over 1.5 s, hold, fast
+  return), a touch on the ball/spin icon. The club moves a little on the pull and the camera pans, but the swing never
+  fires, so the numbers are the tee view (club animation, camera pans), not a ball in flight.
+- **Dungeon Hunter 2: the character did not move.** The game gets past its title (the menu shows a save at level 1), the
+  loading screen and into the first room; taps on the floor, a held drag and the attack button only turn the character's
+  staff. The room did not scroll, so this is an idle character in torch light, not movement or combat. No stick is drawn;
+  the corner orbs are skills and the pause button.
+- **NFS Shift: the race runs, but there is no tilt input, so the car cannot be steered** (see the accelerometer notes).
+- No screenshot came out black: every full-screen game was captured through the OS picture.
+
+### NFS Shift: artifacts
+
+Screenshots: `img/phone-nfs-title-20261108.png` (title, clean), `img/phone-nfs-carselect-20261108.png`,
+`img/phone-nfs-menu-artifact-trees-20261108.png`, `img/phone-nfs-menu-artifact-trees2-20261108.png`,
+`img/phone-nfs-race-car-speckles-20261108.png`, `img/phone-nfs-race-speckles-20261108.png`.
+- **Black speckles on the player's car**, in the menu pose and in the race (rear view): small black dots scattered over
+  the paint (hood, roof, boot lid), the same pattern in several shots. The rest of the 3D scene (buildings, road, crowd,
+  barriers) is clean, so it is specific to the car's body material.
+- **Missing blocks in the foliage** of the main menu's sky backdrop: rectangular chunks of the alpha-tested leaf sprites
+  are missing while the camera moves (`...trees-20261108.png`, bottom of the tree).
+- **A doubled car** (two cars side by side, one seam) in one capture of the car-select screen during its slide animation
+  (`...carselect-20261108.png`); the capture after the transition is normal, so probably a transition frame, not an error.
+- **No Mesa, symgl or GL error in the phone log**: `GL error 0` on every present, no shader or extension complaint; the
+  only lines are the `eglGetProcAddress` list (`glMapBufferOES`, `glDiscardFramebufferEXT`, `glEGLImageTarget*`,
+  `glMultiDraw*EXT`) and `symgl window surface 640x360 ... x3: NGA background surface`. Speckles on one material and holes
+  in alpha-tested sprites point at alpha test or alpha-to-coverage, polygon offset or depth precision of a decal layer, or
+  a texture format the driver converts (hypotheses, not tested).
+- **PC host GPU: not compared.** Proteus' staging knows only Sparkle, Let's Golf 2, PyS60 and the Calculator
+  (`tools/proteus_closure.py --app`), so NFS Shift has never run on the PC image and no PC screenshots exist. It needs a
+  closure entry (the Sparkle recipe) and one run on the x32 PC VM.
+- **The window-surface regression is fixed for NFS Shift.** The first attempt (one rule for every window) broke NFS Shift,
+  Sparkle and others and was reverted; the per-window version (core 3c7f657) is in the image, and NFS Shift renders the
+  landscape menu (rotated on the portrait panel) and a portrait race with the right orientation, so that regression is not
+  the cause of the speckles.
+
+### Accelerometer options (not built)
+
+- The phone has a real one: an MPU-6050 on the second I2C bus, read by the board's sensor driver (15-25 Hz, mount matrix
+  applied in the driver, a 32-sample ring), exposed through the real sensor server as an XYZ channel (own SSY, UID
+  0x1020507E, with the 2010 orientation SSY on top). Values from earlier boots: 16384 per g; upright on a stand about
+  x -590, y +14138, z +9446, display-up reported correctly. Lying flat face-up the mount matrix should give x and y near 0
+  and z near +16384 (1 g): expected sane, not measured in this round.
+- NFS Shift looks for the old S60 acceleration client (`HWRMAccelerationSensorClient.dll`, UID 10000079): the log shows
+  `LDR: load HWRMAccelerationSensorClient.dll -> -1` right after the game starts, then `sensorserver.exe` being created.
+  So the game has no tilt source at all today, with or without a real sensor. First thing to provide: that client (a
+  thin DLL over the sensor server's XYZ channel), not an injector.
+- Injection, cheapest first: (1) a fake-data mode in the board's sensor driver, switched by a PhoneLab op (a compile-time
+  `A64_SENSOR_FAKE_LANDSCAPE` exists and only fakes the orientation); (2) an extra SSY serving scripted samples on the same
+  channel; (3) tilting the real phone, which works as soon as the client DLL exists. PhoneLab has no sensor op today
+  (touch, key, swipe, text only).
