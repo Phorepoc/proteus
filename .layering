@@ -2,7 +2,7 @@
 pine ?phone
 pine64
 # a64 as a word, but not the ARM A64:: namespace of dynarmic (our patches/dynarmic): not the chip
-a64($|[^:])
+\ba64\b($|[^:])
 allwinner
 sun50i
 virtualbox
