@@ -284,6 +284,7 @@ static bool NameLeaves(const char* m)
 		for (int i = 0; i < n && *m; ++i) ++m;
 	}
 	if (!last || lastLen < 2) return false;
+	if (lastLen >= 5 && !strncmp(last + lastLen - 5, "PushL", 5)) return false;	// (CleanupStack::PushL: returns with the item pushed, like an LC)
 	const char c1 = last[lastLen - 1], c2 = last[lastLen - 2];
 	return c1 == 'L' && ((c2 >= 'a' && c2 <= 'z') || (c2 >= '0' && c2 <= '9'));
 	// (not ...LC / ...LD: they return with an item on the cleanup stack, which a TRAP around the call would panic on -- CBase 71)
