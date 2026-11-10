@@ -1,0 +1,42 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
+// The declarations behind euseru.def: every public and internal header euser exports a class or function from.
+#include <e32std.h>
+#include <e32base.h>
+#include <e32base_private.h>
+#include <e32cons.h>
+#include <e32event.h>
+#include <e32hal.h>
+#include <e32property.h>
+#include <e32math.h>
+#include <e32svr.h>
+#include <e32ldr.h>
+#include <e32ldr_private.h>
+#include <e32msgqueue.h>
+#include <e32hashtab.h>
+#include <e32huffman.h>
+#include <e32shbuf.h>
+#include <e32debug.h>
+#include <e32btrace.h>
+#include <e32utrace_basic_types.h>
+#include <e32reg.h>
+#include <e32std_private.h>
+#include <e32twin.h>
+#include <e32uid.h>
+#include <e32lang.h>
+#include <e32notif.h>
+#include <e32power.h>
+#include <e32keys.h>
+#include <e32test.h>
+#include <e32atomics.h>
+#include <collate.h>
+#include <unicode.h>
+#include <u32std.h>
+#include <u32hal.h>
+#include <u32property.h>
+#include <byte_pair_compress.h>
+#include <slab.h>
+#include <page_alloc.h>
+#include <heap_hybrid.h>
+#include <rpipe.h>
+#include <opensystemtrace.h>
