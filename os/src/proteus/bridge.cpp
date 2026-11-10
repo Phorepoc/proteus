@@ -41,6 +41,78 @@ struct BrArgs
 	}
 };
 
+// ---- calling guest code from native code (reverse stubs). A function pointer the guest hands to a native export (a comparator, a thread or
+// exception handler, a TCallBack in a struct) is an ARM address the native side cannot call: BrCb gives it a native stub from a pool; the
+// stub (called with up to 4 words, returning one -- every callback signature of euser and efsrv fits) runs the guest function on a nested
+// interpreter run (BridgeCallGuest). A pointer outside the guest region is a native one already and passes through.
+uint32_t BridgeCallGuest(CArmCpu& aCpu, uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3)
+{
+	CArmCpu& c = aCpu;
+	uint32_t R[16], flags[6];
+	uint64_t D[32];
+	memcpy(R, c.R, sizeof(R)); memcpy(D, c.iD, sizeof(D));
+	flags[0] = c.iN; flags[1] = c.iZ; flags[2] = c.iC; flags[3] = c.iV; flags[4] = c.iT; flags[5] = c.iGE;
+	const uint32_t fpscr = c.iFpscr;
+	const THalt halt = c.iHalt; const int32_t code = c.iExitCode;
+	TArmJit* const jit = c.iJit; const uint64_t slice = c.iSliceSteps, next = c.iNextSlice;
+	c.iJit = 0;									// the translator is not re-entrant: the nested call interprets
+	c.iSliceSteps = 0;							// and is not preempted (no guest thread switch inside a native callback)
+	const uint32_t sp = (R[13] - 64) & ~7u;
+	c.R[0] = a0; c.R[1] = a1; c.R[2] = a2; c.R[3] = a3;
+	c.R[13] = sp; c.R[14] = KReturnToHost;
+	c.iHalt = ERunning;
+	c.Branch(aFn);
+	c.Run(~0ull);
+	const uint32_t result = c.R[0];
+	const bool ok = c.iHalt == EReturned;
+	c.iJit = jit; c.iSliceSteps = slice; c.iNextSlice = next;
+	if (ok)											// back to the interrupted guest code, exactly as it was
+	{
+		memcpy(c.R, R, sizeof(R)); memcpy(c.iD, D, sizeof(D));
+		c.iN = flags[0]; c.iZ = flags[1]; c.iC = flags[2]; c.iV = flags[3]; c.iT = flags[4]; c.iGE = flags[5];
+		c.iFpscr = fpscr; c.iHalt = halt; c.iExitCode = code;
+	}
+	return ok ? result : 0;						// (anything else: the guest stopped in the callback; the halt stays and ends the run)
+}
+
+namespace
+{
+enum { KMaxStubs = 64 };
+struct TRevStub { uint32_t iFn; };
+TRevStub gStub[KMaxStubs];
+int gStubCount;
+CArmCpu* gStubCpu;
+template <int K> uint32_t RevStub(uint32_t a, uint32_t b, uint32_t c, uint32_t d) { return BridgeCallGuest(*gStubCpu, gStub[K].iFn, a, b, c, d); }
+typedef uint32_t (*TStubFn)(uint32_t, uint32_t, uint32_t, uint32_t);
+template <int K> struct TStubTable { static void Fill(TStubFn* t) { t[K] = &RevStub<K>; TStubTable<K - 1>::Fill(t); } };
+template <> struct TStubTable<-1> { static void Fill(TStubFn*) {} };
+TStubFn gStubFn[KMaxStubs];
+}
+
+// the native address of stub k: on x32 the function itself; on an LP64 host test a token BridgeStubFn turns back into the function
+static uint32_t StubAddress(int k) { return sizeof(void*) == 4 ? (uint32_t)(uintptr_t)gStubFn[k] : 0xE0000000u | (uint32_t)k; }
+uintptr_t BridgeStubFn(uint32_t aAddr) { return (aAddr & 0xFF000000u) == 0xE0000000u ? (uintptr_t)gStubFn[aAddr & 0xFFFFFF] : (uintptr_t)aAddr; }
+
+static uint32_t BrCb(CArmCpu& aCpu, uint32_t aGuestFn)
+{
+	if (!aGuestFn || !aCpu.InRegion(aGuestFn & ~1u, 2))
+		return aGuestFn;
+	if (!gStubFn[0]) TStubTable<KMaxStubs - 1>::Fill(gStubFn);
+	gStubCpu = &aCpu;
+	for (int k = 0; k < gStubCount; ++k)
+		if (gStub[k].iFn == aGuestFn) return StubAddress(k);
+	if (gStubCount == KMaxStubs) { aCpu.Halt(EHleStop); strncpy(aCpu.iNote, "bridge: out of callback stubs", sizeof(aCpu.iNote) - 1); return 0; }
+	gStub[gStubCount].iFn = aGuestFn;
+	return StubAddress(gStubCount++);
+}
+static void BrCbField(CArmCpu& aCpu, uint8_t* aField)
+{
+	uint32_t v;
+	memcpy(&v, aField, 4);
+	v = BrCb(aCpu, v);
+	memcpy(aField, &v, 4);
+}
+
 #include "gen/bridge_shapes.inc"
 #include "gen/bridge_euser.inc"
 #include "gen/bridge_efsrv.inc"
@@ -126,6 +198,26 @@ void BridgeConfigure(const char* aText)
 }
 
 void BridgeSetResolver(uintptr_t (*aFn)(uint32_t)) { gResolve = aFn; }
+
+// the embedder's native export lookup for the loader, before any guest runs (the loader has no THle): by DLL name and native ordinal
+static uint32_t (*gLookup)(void* aCtx, const char* aDll, int aOrdinal);
+static void* gLookupCtx;
+void BridgeSetLookup(uint32_t (*aFn)(void*, const char*, int), void* aCtx) { gLookup = aFn; gLookupCtx = aCtx; }
+
+// an import of DATA (a vtable, a type_info, an exported variable) of a native DLL: the guest reads it as a word / an object, so the import word
+// must be the native address itself, not a trap. Returns false = not data, or not native: the import stays a trap slot.
+bool BridgeDataImport(const char* aDll, uint32_t aOrd, uint32_t& aAddr)
+{
+	for (int i = 0; i < 2; ++i)
+	{
+		if (!gDll[i].iNativeOn || !SameDll(aDll, gDll[i].iName) || aOrd < 1 || aOrd > gDll[i].iCount) continue;
+		const TBridgeExport& e = gDll[i].iRows[aOrd - 1];
+		if (!(e.iFlags & (BR_DATA | BR_VTABLE | BR_TYPEINFO)) || !e.iNative || !gLookup) return false;
+		aAddr = gLookup(gLookupCtx, gDll[i].iName, e.iNative);
+		return aAddr != 0;
+	}
+	return false;
+}
 
 bool BridgeNative(const char* aImport)
 {

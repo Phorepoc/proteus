@@ -236,7 +236,10 @@ bool GlTrapSlot(CArmCpu& aCpu, THle& aHle, uint32_t aSlotValue);
 void BridgeConfigure(const char* aText);
 bool BridgeNative(const char* aImport);
 bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd);
+void BridgeSetLookup(uint32_t (*aFn)(void* aCtx, const char* aDll, int aOrdinal), void* aCtx);	// before LoadProcess: where native DATA imports are looked up
+bool BridgeDataImport(const char* aDll, uint32_t aOrd, uint32_t& aAddr);
 bool BridgeMapWanted(uint32_t& aLo, uint32_t& aHi);
+uintptr_t BridgeStubFn(uint32_t aAddr);	// (host tests) the callable function behind a reverse stub address
 void BridgeSetResolver(uintptr_t (*aFn)(uint32_t));	// (host tests)
 const char* BridgeNativeName(const char* aDll, uint32_t aNativeOrdinal);	// (host tests)
 // eglCreateWindowSurface(dpy, config, window, attribs) with the guest's RWindow (proteusglwin.cpp)

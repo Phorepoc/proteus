@@ -230,6 +230,12 @@ static bool LoadE32At(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at,
 				}
 				else
 				{
+					uint32_t dataAddr = 0;
+					if (proc && BridgeDataImport(o.iDll[d], ord, dataAddr))		// a native DLL's DATA (vtable, type_info, variable): its address, not a trap
+					{
+						cpu.Write32(where, dataAddr + adj);
+						continue;
+					}
 					uint32_t slot = 0;
 					if (proc)
 					{

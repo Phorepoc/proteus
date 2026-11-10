@@ -33,6 +33,9 @@ static TInt Descriptors()
 	return 0;
 	}
 
+struct TPair { TInt iKey; TInt iTag; };
+static TInt ComparePair(const TPair& aA, const TPair& aB) { return aA.iKey - aB.iKey; }
+
 static TInt Arrays()
 	{
 	RArray<TInt> a;
@@ -44,6 +47,14 @@ static TInt Arrays()
 	CHECK(24, a.Count() == 2 && a[1] == 8);
 	CHECK(25, a.Insert(4, 1) == KErrNone && a[1] == 4);
 	a.Close();
+	// a function pointer into native code: Sort / Find take a comparator the native euser must call back into ARM code
+	RArray<TPair> b;
+	const TInt v[] = { 5, 3, 8, 1, 9, 2 };
+	for (TInt i = 0; i < 6; ++i) { TPair p = { v[i], i }; b.Append(p); }
+	b.Sort(TLinearOrder<TPair>(&ComparePair));
+	CHECK(26, b[0].iKey == 1 && b[1].iKey == 2 && b[2].iKey == 3 && b[3].iKey == 5 && b[4].iKey == 8 && b[5].iKey == 9);
+	CHECK(27, b[0].iTag == 3 && b[5].iTag == 4);
+	b.Close();
 	return 0;
 	}
 

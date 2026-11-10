@@ -1539,6 +1539,7 @@
 "align":4,
 "c":"S",
 "float":false,
+"fp":[],
 "rec":"TChar",
 "size":4,
 "t":"TChar"
@@ -4346,6 +4347,7 @@
 "align":4,
 "c":"S",
 "float":false,
+"fp":[],
 "rec":"TPtrC16",
 "size":8,
 "t":"TPtrC"
@@ -4438,6 +4440,7 @@
 "align":4,
 "c":"S",
 "float":false,
+"fp":[],
 "rec":"TPtrC16",
 "size":8,
 "t":"TPtrC"
@@ -5321,6 +5324,7 @@
 "align":4,
 "c":"S",
 "float":false,
+"fp":[],
 "rec":"TPtrC16",
 "size":8,
 "t":"TPtrC"
@@ -5413,6 +5417,7 @@
 "align":4,
 "c":"S",
 "float":false,
+"fp":[],
 "rec":"TPtrC16",
 "size":8,
 "t":"TPtrC"
@@ -6030,6 +6035,7 @@
 "align":4,
 "c":"S",
 "float":false,
+"fp":[],
 "rec":"TPtrC16",
 "size":8,
 "t":"TPtrC"
@@ -6139,6 +6145,7 @@
 "align":4,
 "c":"S",
 "float":false,
+"fp":[],
 "rec":"TPtrC16",
 "size":8,
 "t":"TPtrC"
@@ -6206,6 +6213,7 @@
 "align":4,
 "c":"S",
 "float":false,
+"fp":[],
 "rec":"TPtrC16",
 "size":8,
 "t":"TPtrC"
@@ -6231,6 +6239,7 @@
 "align":4,
 "c":"S",
 "float":false,
+"fp":[],
 "rec":"TPtrC16",
 "size":8,
 "t":"TPtrC"
@@ -6256,6 +6265,7 @@
 "align":4,
 "c":"S",
 "float":false,
+"fp":[],
 "rec":"TPtrC16",
 "size":8,
 "t":"TPtrC"
@@ -6281,6 +6291,7 @@
 "align":4,
 "c":"S",
 "float":false,
+"fp":[],
 "rec":"TPtrC16",
 "size":8,
 "t":"TPtrC"
@@ -6457,6 +6468,7 @@
 "align":8,
 "c":"S",
 "float":false,
+"fp":[],
 "rec":"TThreadId",
 "size":8,
 "t":"TThreadId"
@@ -7381,6 +7393,7 @@
 "align":2,
 "c":"S",
 "float":false,
+"fp":[],
 "rec":"TVersion",
 "size":4,
 "t":"TVersion"
@@ -10067,6 +10080,7 @@
 "align":4,
 "c":"S",
 "float":false,
+"fp":[],
 "rec":"TChar",
 "size":4,
 "t":"TChar"

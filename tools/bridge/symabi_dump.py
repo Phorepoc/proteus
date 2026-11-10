@@ -249,6 +249,7 @@ def main():
             if p.get("c") == "S" and "size" not in p:
                 r = recs.get(p["rec"], {})
                 p["size"], p["align"] = r.get("size"), r.get("align")
+                p["fp"] = [f["off"] for f in r.get("fields", []) if "(*" in f["type"]]	# function pointers inside the struct (TCallBack, TCleanupItem)
                 p["float"] = any(re.search(r"\b(float|double|TReal\w*)\b", f["type"]) for f in r.get("fields", []))
     for e in ex:
         e.pop("_f", None)

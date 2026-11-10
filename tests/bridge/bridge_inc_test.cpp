@@ -29,6 +29,8 @@ struct BrArgs
 BR_STUB(BrOvr_Format16) BR_STUB(BrOvr_AppendFormat16) BR_STUB(BrOvr_AppendFormatOvf16) BR_STUB(BrOvr_FormatList16) BR_STUB(BrOvr_AppendFormatList16)
 BR_STUB(BrOvr_Format8) BR_STUB(BrOvr_AppendFormat8) BR_STUB(BrOvr_AppendFormatOvf8) BR_STUB(BrOvr_FormatList8) BR_STUB(BrOvr_AppendFormatList8)
 
+static uint32_t BrCb(CArmCpu&, uint32_t a) { return a; }
+static void BrCbField(CArmCpu&, uint8_t*) {}
 #include "../../os/src/proteus/gen/bridge_shapes.inc"
 #include "../../os/src/proteus/gen/bridge_euser.inc"
 #include "../../os/src/proteus/gen/bridge_efsrv.inc"

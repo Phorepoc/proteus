@@ -1476,6 +1476,8 @@ static uint32_t BridgeNativeExport(void*, const char* aDll, int aOrdinal)
 	return libs[i].iErr == KErrNone ? (uint32_t)(TUint)libs[i].iLib.Lookup(aOrdinal) : 0;
 	}
 
+static uint32_t BridgeNativeExportCtx(void* aCtx, const char* aDll, int aOrdinal) { return BridgeNativeExport(aCtx, aDll, aOrdinal); }
+
 // the guest's cleanup stack (e32base.h / ub_cln.cpp): trap handler = &CTrapCleanup::iHandler (TCleanupTrapHandler: vptr, CCleanup*);
 // CCleanup: vptr, iBase, iTop (end of the array), iNext (next free slot); items {TCleanupOperation iOperation, TAny* iPtr} (8 bytes). Logs the top aCount items.
 static void DumpCleanup(proteus::CArmCpu& aCpu, proteus::THle& aHle, TInt aCount)
@@ -1695,6 +1697,7 @@ static TInt MainL()
 		bf.Close();
 		}
 	}
+	proteus::BridgeSetLookup(BridgeNativeExportCtx, NULL);
 	const TBool nativeEuser = proteus::BridgeNative("euser.dll");
 	const TBool realEuser = !nativeEuser && (forceReal || (!forceHle && arg.Length() && euserState == KErrNone));
 	RDebug::Printf("PH: proteus euser: %s", nativeEuser ? "NATIVE (bridge.cfg)" : realEuser ? "real ARM" : "HLE");

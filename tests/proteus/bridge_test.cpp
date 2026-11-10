@@ -69,6 +69,23 @@ static U Fk_User_Free(U) { return 0; }
 static U Fk_memset(U p, U c, U n) { for (U i = 0; i < n; ++i) gCpu->Write8(p + i, (uint8_t)c); return p; }
 static U Fk_TBufBase16_C2_des(U self, U d, U max) { W32(self, 3u << 28); W32(self + 4, max); return Fk_TDes16_Copy(self, d); }
 static U Fk_TPtrC8_C1_ptr(U self, U p) { U n = 0; while (gCpu->Read8(p + n)) ++n; W32(self, (1u << 28) | n); W32(self + 4, p); return 0; }
+// RArrayBase: iCount, iEntries, iEntrySize, iAllocated, iGranularity ... (e32cmn.h): inline elements of iEntrySize bytes
+static U Fk_RAB_C2(U self, U esz) { W32(self, 0); W32(self + 4, 0); W32(self + 8, esz); W32(self + 12, 0); return 0; }
+static U Fk_RAB_Append(U self, U p) { U c = R32(self), esz = R32(self + 8), cap = R32(self + 12); if (c == cap) { U ncap = cap ? cap * 2 : 8, ne = Alloc(esz * ncap); for (U i = 0; i < c * esz; ++i) gCpu->Write8(ne + i, gCpu->Read8(R32(self + 4) + i)); W32(self + 4, ne); W32(self + 12, ncap); }
+	for (U i = 0; i < esz; ++i) gCpu->Write8(R32(self + 4) + c * esz + i, gCpu->Read8(p + i)); W32(self, c + 1); return 0; }
+static U Fk_RAB_At(U self, U i) { return R32(self + 4) + i * R32(self + 8); }
+static U Fk_RAB_Close(U self) { W32(self, 0); W32(self + 4, 0); W32(self + 12, 0); return 0; }
+// HeapSort(order): the native side calls the guest comparator through the reverse stub the bridge made for it
+static U Fk_RAB_HeapSort(U self, U order)
+{
+	typedef U (*Cmp)(U, U, U, U);
+	Cmp cmp = (Cmp)BridgeStubFn(order);
+	U n = R32(self), esz = R32(self + 8), base = R32(self + 4);
+	for (U i = 1; i < n; ++i)
+		for (U j = i; j > 0 && (int)cmp(base + (j - 1) * esz, base + j * esz, 0, 0) > 0; --j)
+			for (U k = 0; k < esz; ++k) { uint8_t t = gCpu->Read8(base + (j - 1) * esz + k); gCpu->Write8(base + (j - 1) * esz + k, gCpu->Read8(base + j * esz + k)); gCpu->Write8(base + j * esz + k, t); }
+	return 0;
+}
 static U Fk_nop() { return 0; }
 // TDes::(Append)FormatList against the x32/SysV va_list the bridge builds (here the host's LP64 __va_list_tag, same layout): the conversions are
 // done by libc's snprintf for the numbers and by hand for %S (a guest descriptor pointer) -- a wrong slot layout gives a wrong string
@@ -121,6 +138,8 @@ static const TFake KFakes[] = {
 	{ "_ZN5TDes86FormatE11TRefByValueIK6TDesC8Ez", (void*)Fk_nop },		// (the variadic rows' own natives: resolved, never called -- the handler calls FormatList)
 	{ "_ZN10TBufBase16C2ERK7TDesC16i", (void*)Fk_TBufBase16_C2_des },
 	{ "_ZN6TPtrC8C1EPKh", (void*)Fk_TPtrC8_C1_ptr },
+	{ "_ZN10RArrayBaseC2Ei", (void*)Fk_RAB_C2 }, { "_ZN10RArrayBase6AppendEPKv", (void*)Fk_RAB_Append }, { "_ZNK10RArrayBase2AtEi", (void*)Fk_RAB_At },
+	{ "_ZN10RArrayBase5CloseEv", (void*)Fk_RAB_Close }, { "_ZN10RArrayBase8HeapSortEPFiPKvS1_E", (void*)Fk_RAB_HeapSort },
 	{ "memset", (void*)Fk_memset }, { "_ZN4User15HandleExceptionEPv", (void*)Fk_nop }, { "_ZN4User9InvariantEv", (void*)Fk_nop },
 };
 static std::vector<void*> gFnTable;		// host: iNativeExport returns a 32-bit number, so the (64-bit) function pointers are handed out as indices
@@ -152,7 +171,16 @@ int main(int argc, char** argv)
 	static TProcess proc;
 	proc.iRealEuser = false;		// the gate: no ARM euser and no real-euser executive
 	BridgeSetResolver(Resolve);
+	BridgeSetLookup([](void*, const char*, int o) -> uint32_t { return 0xC0DE0000u | (uint32_t)o; }, 0);
 	BridgeConfigure("# the euser imports go native\nnative euser.dll\n");
+	{	// DATA imports: a vtable export (euser ordinal 1359 _ZTV5CBase) is the native address itself; a function export is not data
+		uint32_t a = 0;
+		const bool vt = BridgeDataImport("euser{000a0000}[100039e5].dll", 1359, a) && a == (0xC0DE0000u | 1359);
+		const bool fn = !BridgeDataImport("euser.dll", 646, a);		// User::Alloc
+		const bool other = !BridgeDataImport("efsrv.dll", 1359, a);	// efsrv is not native in this configuration
+		printf("DATA imports: vtable %s, function stays a trap %s, other DLL %s\n", vt ? "ok" : "BAD", fn ? "ok" : "BAD", other ? "ok" : "BAD");
+		if (!(vt && fn && other)) return 1;
+	}
 	if (!LoadProcess(cpu, img.data(), (uint32_t)img.size(), cpu.iBase + 0x1000, FindDll, 0, proc)) { printf("LOAD FAILED: %s\n", proc.iError); return 1; }
 	TIpcBridge ipc; memset(&ipc, 0, sizeof ipc); ipc.iNativeExport = NativeExport;
 	THle hle = { &proc.iMod[0], &proc, Log, 0, 0 };

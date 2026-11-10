@@ -41,12 +41,15 @@ RET_FROM_CLASS = {"u8": "b", "s8": "B", "u16": "h", "s16": "H"}
 
 def arg_code(p: dict) -> str:
     c = p["c"]
-    if c in ("w", "p", "cb"):
+    if c in ("w", "p"):
         return "w"
+    if c == "cb":
+        return "k"			# a function pointer: a guest function becomes a reverse stub (BrCb)
     if c in ("l", "d", "f"):
         return c
     if c == "S":
-        return f"S{p['size']}x{p['align']}"
+        fp = p.get("fp") or []
+        return f"S{p['size']}x{p['align']}" + ("f" + ".".join(map(str, fp)) if fp else "")
     return "?"
 
 
@@ -70,7 +73,7 @@ def shape_of(e: dict) -> tuple[str | None, int]:
         return None, fl
     rc = r["c"]
     if rc == "S":
-        rcode = f"S{r['size']}x{r['align']}"
+        rcode = f"S{r['size']}x{r['align']}"		# (a returned struct is never rewritten: no function pointer comes back from native)
     elif rc in RET_FROM_CLASS:
         rcode = RET_FROM_CLASS[rc]
     elif rc == "cb":
@@ -81,7 +84,7 @@ def shape_of(e: dict) -> tuple[str | None, int]:
 
 
 def struct_name(code: str) -> str:
-    m = re.match(r"S(\d+)x(\d+)$", code)
+    m = re.match(r"S([0-9]+)x([0-9]+)", code)
     return f"BrS{m.group(1)}A{m.group(2)}"
 
 
@@ -101,6 +104,9 @@ def emit_shape(idx: int, shape: str) -> list[str]:
         if t == "w":
             ctypes.append("uint32_t")
             L.append(f"\tconst uint32_t {n} = a.W();")
+        elif t == "k":
+            ctypes.append("uint32_t")
+            L.append(f"	const uint32_t {n} = BrCb(aCpu, a.W());")
         elif t == "l":
             ctypes.append("uint64_t")
             L.append(f"\tconst uint64_t {n} = a.L();")
@@ -114,6 +120,9 @@ def emit_shape(idx: int, shape: str) -> list[str]:
             sn = struct_name(t)
             ctypes.append(sn)
             L.append(f"\t{sn} {n}; a.S(&{n}, sizeof({sn}), __alignof__({sn}));")
+            mf = re.search(r"f([0-9.]+)$", t)
+            for off in (mf.group(1).split(".") if mf else []):
+                L.append(f"\tBrCbField(aCpu, (uint8_t*)&{n} + {off});\t// a function pointer inside the struct")
     if rcode == "c":
         rt = "void"
     elif rcode.startswith("S"):
