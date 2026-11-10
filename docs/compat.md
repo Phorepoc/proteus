@@ -31,7 +31,14 @@ feasibility stage. Until that bridge lands, an app run still needs its ARM closu
 install them there anyway: it refuses any subdirectory of `\sys\bin\` (`SecurityCheckUtil::CheckProtectedDirectoriesL`,
 also in developer mode). The handler now looks for `\sys\bin\arm\` on every drive (Z:, then Y: .. A:), not only Z:.
 
-Not yet verified: the CI build of the package and an install of `proteus.sis` on a PC image without the layer.
+**Install test (2026-11-10, local, QEMU, PC image built without this layer, `SSM_TEST=bootui` + `c:ootui.txt`).** Built the way the Action does
+(cxxrt + `build_dynarmic.sh`, `phe component build cpuhandler_arm proteusimg`, `recipes/sis.sh`): `proteus.sis` 1308656 B, 12 files. The
+first install failed `-30475` (`Executable capabilities do not match header capabilities`): x32 images are built with every capability
+and only the ROM builder stamps the mmp's; pdk `make_sis.py` now stamps them into an installed image too. Then, in order:
+`00proteus.sis: INSTALLED (0)`, PyS60 `01python.sis` and `02shell.sis: INSTALLED (0)`, `loader: C:\sysin\PythonScriptShell_0x20022eec.EXE
+is an ARM program -> cpuhandler_arm.exe`. **The handler then dies at once**: `Exc 14 ... fault addr 00780b30`, `eip 0040fce9`,
+`cpuhandler_arm.exe::Main Panic KERN-EXEC 3`, before its first `PH: proteus` line. Open: the handler has only run XIP from Z: so far; this
+is its first start as a RAM-loaded (installed) EXE (3.7 MB code, WSD + static constructors, 151 KB bss). Let's Golf 2 not run yet.
 
 ## The SIS flow (2026-11-04)
 
