@@ -54,9 +54,10 @@ void CImgSession::ServiceL(const RMessage2& aMessage)
 		aMessage.Complete(KErrNotSupported);
 		return;
 		}
-	const TInt r = Open(aMessage, aMessage.Function() == EProteusImgOpen);
-	if (r != KErrNone)
-		aMessage.Complete(r);		// on success TransferToClient completed it
+	const TBool open = aMessage.Function() == EProteusImgOpen;
+	const TInt r = Open(aMessage, open);
+	if (r != KErrNone || !open)
+		aMessage.Complete(r);		// an open that succeeded was completed by TransferToClient
 	}
 
 // (path, TPckgBuf<TInt> sub-session handle) -> the file server session handle; aTransfer false (EProteusImgExists): (path) -> KErrNone
