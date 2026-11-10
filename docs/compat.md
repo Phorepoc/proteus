@@ -183,6 +183,13 @@ sees (hardware layout state / alternate screen mode of the layout config), not s
 Next: log `iAvkonEnv->SettingCache().HardwareLayoutState()` and the layout config's modes in `CEikSgcServer::SetLayoutL` (core `akncapserver_trace`) and compare with the Sparkle run. Keys and taps were not retried (they go to the
 same window, whose size is the portrait one).
 
+**3b. Cause of the left-360-px Input Name (2026-11-10): the run ISO had no landscape screen mode.** The Nov 5/6 regression ISOs
+(`reg.iso`, `pri.iso`, `lim.iso`) were built without the PC board layer, so wsini.ini lacked the board's `os/board/wsini.txt` lines
+(mode 2 = 640x360 rotated 90, `S60_HWSTATE_*`). Avkon then takes its hardware states from AknPriv (`hwstate init array 0..7 ... mode 0 alt 0`)
+and `CalculateScreenMode` returns mode 0 for a landscape request. The Nov 4 ISOs that reached a hole had the lines (`mode 0 alt 1`,
+`top wg 41 -> mode 1`). Build a run ISO with `PHOREPOC_ADAPTATIONS` naming the PC board layer, and check that the ISO contains the UTF-16 string
+`SCR_WIDTH2`. Natively the same game rotates correctly (`-> mode 1`). A re-run on a fixed ISO is still open (the build volume needs a fresh source export).
+
 **4. About: not run** (no time left in the 60 minutes).
 
 ## Calculator USER 23: clean ARM rebuild A/B (2026-11-06)
