@@ -53,7 +53,7 @@ The same run installed `dav-sync-x32.sis` built with the new `make_sis.py` (`INS
 Let's Golf 2 on a fresh copy of the same plain disk: `00proteus.sis`, `codecpack-x32.sis`, `letsgolf2.sis: INSTALLED (0)` (the 167 MB
 package in ~11 min under QEMU TCG), `euser: real ARM`, `cpu: jit`, both intro clips through the hosted controller (`vc done: fed 220
 ... drawn 220`, `fed 1459 ... drawn 1422`), `[cycle] LetsGolf2: ALIVE after 300 s`. The QEMU screendumps of the game are no use: the
-one at 900 s (mid-clip) is a mis-strided picture of the rotated 640x360 surface and the one at the end is black; a VirtualBox shot of
+one at 900 s (mid-clip) is a mis-strided picture of the rotated 640x360 surface and the one at the end is black; a VM-manager screenshot of
 the installed state is still to take.
 
 ## The SIS flow (2026-11-04)
