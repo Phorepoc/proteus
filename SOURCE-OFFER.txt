@@ -1,7 +1,7 @@
 Proteus -- licences and source
 
 This package contains the Proteus ARM handler (cpuhandler_arm.exe) and image broker (proteusimg.exe), our own code under
-Apache-2.0. Linked into the handler: dynarmic (0BSD) and its externals fmt, mcl, Zydis/Zycore, xbyak and robin-map (their
+Apache-2.0. Linked into the handler: dynarmic (0BSD) and its externals fmt, mcl, Zydis, Zycore, robin-map (MIT) and xbyak (BSD-3-Clause) (their
 licence texts are installed with this package in \resource\proteus\), Boost headers (BSL-1.0) and the GCC runtime
 libraries libstdc++ and libgcc (GPL-3.0-or-later WITH GCC-exception-3.1).
 

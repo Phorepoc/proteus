@@ -18,8 +18,8 @@ add "$HERE/LICENSES/Apache-2.0.txt" Apache-2.0.txt
 add "$HERE/NOTICE" NOTICE.txt
 add "$HERE/SOURCE-OFFER.txt" SOURCE-OFFER.txt
 add "$SRC/LICENSE.txt" dynarmic-LICENSE.txt
-for e in fmt mcl Zydis zycore xbyak robin-map; do     # the externals linked or compiled in (whichever the tree has)
-  f=$(ls "$SRC"/externals/$e/LICENSE* "$SRC"/externals/zydis/dependencies/$e/LICENSE* 2>/dev/null | head -n 1 || true)
+for e in fmt mcl zydis zycore xbyak robin-map; do     # the externals linked or compiled in
+  f=$(ls "$SRC"/externals/$e/LICENSE* "$SRC"/externals/$e/COPYRIGHT 2>/dev/null | head -n 1 || true)
   [ -n "$f" ] && add "$f" "$e-LICENSE.txt"
 done
 python3 "$PHOREPOC_PDK/tools/make_sis.py" cpuhandler_arm proteusimg --unsigned --version "${PHOREPOC_PACKAGE_VERSION:-1.0.0}" \

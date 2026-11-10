@@ -21,7 +21,7 @@ public:
 	void CreateL();
 	void ServiceL(const RMessage2& aMessage);
 private:
-	TInt Open(const RMessage2& aMessage);
+	TInt Open(const RMessage2& aMessage, TBool aTransfer);
 	CImgServer& Server() { return *(CImgServer*)const_cast<CServer2*>(CSession2::Server()); }
 	};
 
@@ -49,18 +49,19 @@ void CImgSession::CreateL() { Server().AddSession(); }
 
 void CImgSession::ServiceL(const RMessage2& aMessage)
 	{
-	if (aMessage.Function() != EProteusImgOpen)
+	if (aMessage.Function() != EProteusImgOpen && aMessage.Function() != EProteusImgExists)
 		{
 		aMessage.Complete(KErrNotSupported);
 		return;
 		}
-	const TInt r = Open(aMessage);
+	const TInt r = Open(aMessage, aMessage.Function() == EProteusImgOpen);
 	if (r != KErrNone)
 		aMessage.Complete(r);		// on success TransferToClient completed it
 	}
 
-// (path, TPckgBuf<TInt> sub-session handle) -> the file server session handle
-TInt CImgSession::Open(const RMessage2& aMessage)
+// (path, TPckgBuf<TInt> sub-session handle) -> the file server session handle; aTransfer false (EProteusImgExists): (path) -> KErrNone
+// when it is an ARM image there, else the error the open would give
+TInt CImgSession::Open(const RMessage2& aMessage, TBool aTransfer)
 	{
 	RThread client;
 	TInt r = aMessage.Client(client);
@@ -97,7 +98,7 @@ TInt CImgSession::Open(const RMessage2& aMessage)
 		f.Close();
 		return r != KErrNone ? r : KErrPermissionDenied;	// only ARM E32Images (a native one the handler never needs)
 		}
-	r = f.TransferToClient(aMessage, 1);
+	r = aTransfer ? f.TransferToClient(aMessage, 1) : KErrNone;
 	f.Close();
 	return r;
 	}

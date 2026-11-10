@@ -1661,10 +1661,10 @@ static TInt MainL()
 	User::LeaveIfError(fs.Connect());
 	CleanupClosePushL(fs);
 	TEntry euserEntry;
-	// installed = the entry is there; a handler holding only the program's capabilities may not look into \sys\ (denied = there)
-	// on any drive: Z: in a ROM built with this layer, C: on a PC image with Proteus installed from its SIS (a staged ARM closure)
+	// installed = the entry is there, on any drive: Z: in a ROM built with this layer, C: on a PC image with Proteus installed from its
+	// SIS (a staged ARM closure). A handler holding only the program's capabilities may not look into \sys\: then the broker answers
 	TInt euserState = KErrNotFound;
-	for (TInt k = 0; k < 26 && euserState != KErrNone && euserState != KErrPermissionDenied; ++k)
+	for (TInt k = 0; k < 26 && euserState != KErrNone; ++k)
 		{
 		TChar ch;
 		if (RFs::DriveToChar(k == 0 ? EDriveZ : EDriveY - (k - 1), ch) != KErrNone) continue;
@@ -1672,8 +1672,10 @@ static TInt MainL()
 		eu.Append(ch);
 		eu.Append(_L(":\\sys\\bin\\arm\\euser.dll"));
 		euserState = fs.Entry(eu, euserEntry);
+		if (euserState == KErrPermissionDenied)
+			euserState = ProteusImgExists(eu);
 		}
-	const TBool realEuser = forceReal || (!forceHle && arg.Length() && (euserState == KErrNone || euserState == KErrPermissionDenied));
+	const TBool realEuser = forceReal || (!forceHle && arg.Length() && euserState == KErrNone);
 	RDebug::Printf("PH: proteus euser: %s", realEuser ? "real ARM" : "HLE");
 	RFile f;
 	TInt r = OpenImage(fs, path, f);
