@@ -649,7 +649,14 @@ static bool LeaveOverride(CArmCpu& aCpu, const char* aName, uintptr_t aNative)
 	if (!strcmp(aName, "_ZN4User16MarkCleanupStackEv"))
 	{
 		typedef uint32_t (*F)();
-		const uint32_t h = aNative ? ((F)aNative)() : 0;
+		uint32_t h = aNative ? ((F)aNative)() : 0;
+		if (!h && !gThr.iTrapLeave && sizeof(void*) == 4)
+		{	// the native euser is the setjmp model: its MarkCleanupStack is a stub returning 0 (us_exec.cpp). Mark the level here, as the
+			// leave-as-throw euser does: the thread's trap handler (CTrapCleanup) -> Trap() = slot 0 (TTrapHandler: Trap, UnTrap, Leave)
+			const uintptr_t th = NativeByName("_ZN4User11TrapHandlerEv");
+			h = th ? ((F)th)() : 0;
+			if (h) ((void (*)(uint32_t))(uintptr_t)((const uint32_t*)(uintptr_t)*(const uint32_t*)(uintptr_t)h)[0])(h);
+		}
 		TLeaveState* s = LeaveState(aCpu);
 		if (s && s->iMarks < KMaxMarks)
 		{
@@ -665,7 +672,11 @@ static bool LeaveOverride(CArmCpu& aCpu, const char* aName, uintptr_t aNative)
 		TLeaveState* s = LeaveState(aCpu);
 		if (s && s->iMarks) --s->iMarks;
 		typedef void (*F)(uint32_t);
-		if (aNative) ((F)aNative)(aCpu.R[0]);
+		const uint32_t h = aCpu.R[0];
+		if (h && !gThr.iTrapLeave && sizeof(void*) == 4)		// (the matching UnTrap = slot 1; the native UnMarkCleanupStack is a stub)
+			((F)(uintptr_t)((const uint32_t*)(uintptr_t)*(const uint32_t*)(uintptr_t)h)[1])(h);
+		else if (aNative)
+			((F)aNative)(h);
 	}
 	else if (!strcmp(aName, "_ZNK15XLeaveException9GetReasonEv"))
 		aCpu.R[0] = aCpu.Read32(aCpu.R[0] + 4);
