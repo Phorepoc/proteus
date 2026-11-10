@@ -94,6 +94,7 @@ uint32_t BridgeCallGuest(CArmCpu& aCpu, uint32_t aFn, uint32_t a0, uint32_t a1, 
 // calling native code that calls back) runs the callback nested on it. The cpu<->thread table is keyed by the embedder's thread id.
 namespace
 {
+bool gTrace;
 volatile int gLockWord;
 struct TLock
 {
@@ -138,7 +139,9 @@ static void RegisterPrimary(CArmCpu& aCpu)
 static uint32_t RunOnNewCpu(uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3)
 {
 	if (!gPrimary || !gThr.iAlloc) return 0;
+	if (gTrace && gThr.iLog) gThr.iLog("[proteus] newcpu enter");
 	const uint32_t stack = gThr.iAlloc(KGuestStack);
+	if (gTrace && gThr.iLog) gThr.iLog("[proteus] newcpu stack");
 	if (!stack) return 0;
 	CArmCpu* c = new CArmCpu(*gPrimary);				// the memory view (region, page map, windows) and the hooks are shared
 	memset(c->R, 0, sizeof(c->R)); memset(c->iD, 0, sizeof(c->iD));
@@ -154,6 +157,7 @@ static uint32_t RunOnNewCpu(uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2,
 	c->R[13] = (stack + KGuestStack) & ~7u;
 	c->R[14] = KReturnToHost;
 	c->Branch(aFn);
+	if (gTrace && gThr.iLog) gThr.iLog("[proteus] newcpu run");
 	NestEnter(*c);
 	c->Run(~0ull);
 	int32_t leave = 0;
@@ -249,7 +253,6 @@ struct TBridgeDll
 // imports that are not bridged even for a native DLL: the guest EXE's start-up and exit belong to Proteus, not to the native process
 const char* const KKeepHle[] = { "_ZN4User11InitProcessEv", "_ZN7UserSvr9DllSetTlsEiiPv", "_ZN4User4ExitEi", "_ZN6RDebug6PrintfEPKcz" };
 TBridgeDll gDll[2] = { { "euser.dll", KBridge_euser, 0, false, 0, 0, KBridgeVt_euser, 0, 0 }, { "efsrv.dll", KBridge_efsrv, 0, false, 0, 0, KBridgeVt_efsrv, 0, 0 } };
-bool gTrace;
 uint32_t gLo = 0x00010000, gHi = 0xC0000000;
 bool gMap;
 uintptr_t (*gResolve)(uint32_t);	// host tests: the "native address" the embedder returns is a 32-bit token, the function pointer is 64-bit

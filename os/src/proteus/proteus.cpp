@@ -1469,6 +1469,11 @@ static uint32_t BridgeNativeExport(void*, const char* aDll, int aOrdinal)
 		new (&libs[i].iLib) RLibrary;
 		libs[i].iName = name;
 		libs[i].iErr = libs[i].iLib.Load(name);
+		if (libs[i].iErr == KErrNone)
+			{	// a library handle is the loading thread's: guest threads (bridge.cpp, native threads) look exports up through it too
+			RLibrary own = libs[i].iLib;
+			if (own.Duplicate(RThread(), EOwnerProcess) == KErrNone) { libs[i].iLib.Close(); libs[i].iLib = own; }
+			}
 		if (libs[i].iErr != KErrNone)
 			RDebug::Printf("PH: proteus native %s not loaded: %d", aDll, libs[i].iErr);
 		++count;
