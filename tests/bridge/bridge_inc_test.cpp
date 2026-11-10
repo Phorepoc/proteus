@@ -24,6 +24,11 @@ struct BrArgs
 	}
 };
 
+// the hand-written handlers the tables name (bridge.cpp has them; here stand-ins so the tables link)
+#define BR_STUB(n) void n(CArmCpu&, uintptr_t) {}
+BR_STUB(BrOvr_Format16) BR_STUB(BrOvr_AppendFormat16) BR_STUB(BrOvr_AppendFormatOvf16) BR_STUB(BrOvr_FormatList16) BR_STUB(BrOvr_AppendFormatList16)
+BR_STUB(BrOvr_Format8) BR_STUB(BrOvr_AppendFormat8) BR_STUB(BrOvr_AppendFormatOvf8) BR_STUB(BrOvr_FormatList8) BR_STUB(BrOvr_AppendFormatList8)
+
 #include "../../os/src/proteus/gen/bridge_shapes.inc"
 #include "../../os/src/proteus/gen/bridge_euser.inc"
 #include "../../os/src/proteus/gen/bridge_efsrv.inc"
