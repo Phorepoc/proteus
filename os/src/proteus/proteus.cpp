@@ -1459,6 +1459,8 @@ static uint32_t BridgeNativeExport(void*, const char* aDll, int aOrdinal)
 	struct TNative { TBuf<32> iName; RLibrary iLib; TInt iErr; };
 	static TNative libs[8];
 	static TInt count = 0;
+	static volatile int lockWord = 0;		// guest threads (bridge.cpp) look exports up too: one loader at a time
+	struct TSpin { TSpin() { while (__atomic_exchange_n(&lockWord, 1, __ATOMIC_ACQUIRE)) User::AfterHighRes(0); } ~TSpin() { __atomic_store_n(&lockWord, 0, __ATOMIC_RELEASE); } } spin;
 	TBuf<32> name;
 	name.Copy(TPtrC8((const TUint8*)aDll).Left(32));
 	TInt i = 0;
