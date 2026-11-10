@@ -27,12 +27,22 @@ def main():
     ap.add_argument("--repo", required=True)
     ap.add_argument("--native")
     ap.add_argument("--json")
+    ap.add_argument("--write-native", help="write <dir>/<dll>.json = {name: native ordinal} (what gen_bridge.py binds by)")
     a = ap.parse_args()
     nat_dir = a.native or os.path.join(a.repo, ".phorepoc-x86-build")
     bad, res = 0, {}
     for dll in ("euser", "efsrv"):
         nat = json.load(open(os.path.join(nat_dir, f"{dll}-x32", f"{dll}_exports.json")))["ordinals"]
         native = {v[0] for v in nat.values() if v[0]}
+        if a.write_native:
+            os.makedirs(a.write_native, exist_ok=True)
+            inv = {}
+            for o, v in nat.items():
+                if v[0]:
+                    inv[v[0]] = int(o)
+            # the ARM spelling of the va_list functions is what the bridge looks up
+            inv.update({n: inv[x86_name(n)] for o, n, f, _ in L.read_def(os.path.join(a.repo, L.DEFS[dll])) if x86_name(n) in inv})
+            json.dump(inv, open(os.path.join(a.write_native, dll + ".json"), "w"), indent=0, sort_keys=True)
         arm = [(o, n, f) for o, n, f, _ in L.read_def(os.path.join(a.repo, L.DEFS[dll]))]
         live = [(o, n) for o, n, f in arm if "ABSENT" not in f]
         miss = [(o, n) for o, n in live if x86_name(n) not in native]

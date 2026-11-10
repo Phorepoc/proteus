@@ -5,7 +5,7 @@
 #include <stdint.h>
 extern "C" void* memcpy(void*, const void*, unsigned long);
 
-struct CArmCpu { uint32_t R[16]; uint32_t Stack[16]; };
+struct CArmCpu { uint32_t R[16]; uint32_t Stack[16]; uint8_t* HostPtr(uint32_t a) { return (uint8_t*)(uintptr_t)a; } };
 
 // the AAPCS cursor: r0-r3 then the stack; a 64-bit value takes an even register pair or an 8-aligned stack slot
 struct BrArgs

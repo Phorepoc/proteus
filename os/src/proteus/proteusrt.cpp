@@ -329,6 +329,8 @@ static void OnTrap(CArmCpu& cpu, uint32_t addr, void* ctx)
 	const char* dllName = img ? img->iDll[dll] : "";
 	if (IsGlDll(dllName) && GlTrap(cpu, h, dllName, ord))		// OpenGL ES / EGL: the native DLLs
 		return;
+	if (BridgeNative(dllName) && BridgeTrap(cpu, h, dllName, ord))		// a DLL bridge.cfg runs natively (R1)
+		return;
 	const char* name = (strncmp(dllName, "euser", 5) == 0) ? EuserName(ord) : "";
 	if (!strcmp(name, "_ZN6RDebug6PrintfEPKcz"))
 	{

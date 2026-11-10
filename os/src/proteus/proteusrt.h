@@ -230,6 +230,15 @@ uint32_t GuestBytes(CArmCpu& aCpu, TExecState& aExec, const void* aSrc, uint32_t
 bool IsGlDll(const char* aImport);
 bool GlTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd);
 bool GlTrapSlot(CArmCpu& aCpu, THle& aHle, uint32_t aSlotValue);
+// bridge.cpp (rung R1): the imports of the DLLs bridge.cfg lists as native run on the native x32 export of the same name.
+// BridgeConfigure = (re)read the cfg text; BridgeNative = an import of such a DLL; BridgeTrap = call it (false = not bridged: the HLE runs);
+// BridgeMapWanted = the host range to make guest memory as it is (the "map" line; false = off)
+void BridgeConfigure(const char* aText);
+bool BridgeNative(const char* aImport);
+bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd);
+bool BridgeMapWanted(uint32_t& aLo, uint32_t& aHi);
+void BridgeSetResolver(uintptr_t (*aFn)(uint32_t));	// (host tests)
+const char* BridgeNativeName(const char* aDll, uint32_t aNativeOrdinal);	// (host tests)
 // eglCreateWindowSurface(dpy, config, window, attribs) with the guest's RWindow (proteusglwin.cpp)
 extern int gExecTraceWindow;		// > 0: log the next that many executive calls
 bool GlWindowSurface(CArmCpu& aCpu, THle& aHle, uint32_t aNativeFn);

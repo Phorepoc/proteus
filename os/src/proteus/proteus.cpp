@@ -1675,8 +1675,29 @@ static TInt MainL()
 		if (euserState == KErrPermissionDenied)
 			euserState = ProteusImgExists(eu);
 		}
-	const TBool realEuser = forceReal || (!forceHle && arg.Length() && euserState == KErrNone);
-	RDebug::Printf("PH: proteus euser: %s", realEuser ? "real ARM" : "HLE");
+	// bridge.cfg (c:\proteus\ then z:\proteus\): the DLLs whose imports run on the NATIVE library (bridge.cpp, rung R1). A native euser
+	// replaces the ARM euser (and the HLE) altogether.
+	{
+	proteus::BridgeConfigure("");
+	TInt bsz = 0;
+	RFile bf;
+	if (bf.Open(fs, _L("c:\\proteus\\bridge.cfg"), EFileRead) == KErrNone || bf.Open(fs, _L("z:\\proteus\\bridge.cfg"), EFileRead) == KErrNone)
+		{
+		if (bf.Size(bsz) == KErrNone && bsz > 0 && bsz < 4096)
+			{
+			TBuf8<4096> cfg;
+			if (bf.Read(cfg) == KErrNone)
+				{
+				cfg.Append(0);
+				proteus::BridgeConfigure((const char*)cfg.Ptr());
+				}
+			}
+		bf.Close();
+		}
+	}
+	const TBool nativeEuser = proteus::BridgeNative("euser.dll");
+	const TBool realEuser = !nativeEuser && (forceReal || (!forceHle && arg.Length() && euserState == KErrNone));
+	RDebug::Printf("PH: proteus euser: %s", nativeEuser ? "NATIVE (bridge.cfg)" : realEuser ? "real ARM" : "HLE");
 	RFile f;
 	TInt r = OpenImage(fs, path, f);
 	RDebug::Printf("PH: proteus open %S -> %d", TLog8(path).P(), r);
@@ -1721,6 +1742,17 @@ static TInt MainL()
 	cpu->iJit = interpOnly || interpDisk ? NULL : proteus::JitNew(*cpu);
 	RDebug::Printf("PH: proteus cpu: %s", cpu->iJit ? "jit" : "interpreter");
 #endif
+	{
+	// bridge.cfg "map": the whole x32 user address space is guest memory, as it is (a native object's address is the guest's)
+	uint32_t mlo, mhi;
+	if (proteus::BridgeMapWanted(mlo, mhi) && cpu->AddWindow(mlo, mhi - mlo))
+		{
+#ifdef PROTEUS_JIT
+		proteus::JitMap(cpu->iJit, mlo, mhi - mlo);
+#endif
+		RDebug::Printf("PH: proteus bridge: guest memory = native %08x..%08x", mlo, mhi);
+		}
+	}
 	// the main thread's stack at the region top (proteusrt.cpp StartThreadStack: the thread data 4 KB below the top)
 	if (!cpu->Commit(cpu->iBase + guestBytes - proteus::KStackBytes, proteus::KStackBytes))
 		User::Leave(KErrNoMemory);
