@@ -31,6 +31,7 @@ static uint32_t U32(const uint8_t* p) { uint32_t v; memcpy(&v, p, 4); return v; 
 static void Err(TLoaded& o, const char* m) { strncpy(o.iError, m, sizeof(o.iError) - 1); }
 
 static bool LoadE32At(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at, TLoaded& o, TProcess* proc, TFindDllFn find, void* findCtx);
+static bool SameDllName(const char* a, const char* b) { for (; *a && *b; ++a, ++b) { char x = *a, y = *b; if (x >= 'A' && x <= 'Z') x += 32; if (y >= 'A' && y <= 'Z') y += 32; if (x != y) return false; } return *a == *b; }
 
 bool LoadE32(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at, TLoaded& o)
 {
@@ -57,14 +58,23 @@ void FreeProcess(TProcess& p)
 	p.iSlotCount = p.iSlotMax = 0;
 }
 
+// bridge.cpp BridgeDataAlias: a native DLL's DATA import the guest must see as an ARM DLL's object instead (XLeaveException's type_info and
+// vtable: the leave throw runs in the guest's drtaeabi.dll, and its catch matches the type_info it throws)
+namespace { struct TAliasFix { uint32_t iWhere, iAdj; const char* iDll; uint32_t iOrd; }; enum { KMaxAlias = 64 }; TAliasFix gAlias[KMaxAlias]; int gAliasCount; }
+
 bool LoadProcess(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at, TFindDllFn find, void* findCtx, TProcess& out)
 {
+	gAliasCount = 0;
 	const bool realEuser = out.iRealEuser;
 	memset(&out, 0, sizeof(out));
 	out.iRealEuser = realEuser;
 	out.iCount = 1;
 	const bool ok = LoadE32At(cpu, f, len, at, out.iMod[0], &out, find, findCtx);
 	if (!ok) strncpy(out.iError, out.iMod[0].iError, sizeof(out.iError) - 1);
+	for (int i = 0; ok && i < gAliasCount; ++i)
+		for (int m = 1; m < out.iCount; ++m)
+			if (SameDllName(out.iMod[m].iName, gAlias[i].iDll) && gAlias[i].iOrd <= out.iMod[m].iExportCount)
+				cpu.Write32(gAlias[i].iWhere, cpu.Read32(out.iMod[m].iExportDir + 4 * (gAlias[i].iOrd - 1)) + gAlias[i].iAdj);
 	return ok;
 }
 
@@ -231,6 +241,15 @@ static bool LoadE32At(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at,
 				else
 				{
 					uint32_t dataAddr = 0;
+					const char* aliasDll = 0;
+					uint32_t aliasOrd = 0;
+					if (proc && BridgeDataAlias(o.iDll[d], ord, aliasDll, aliasOrd) && gAliasCount < KMaxAlias)
+					{	// resolved against the guest's ARM DLL once the whole process is loaded (LoadProcess)
+						TAliasFix& x = gAlias[gAliasCount++];
+						x.iWhere = where; x.iAdj = adj; x.iDll = aliasDll; x.iOrd = aliasOrd;
+						cpu.Write32(where, 0);
+						continue;
+					}
 					if (proc && BridgeDataImport(o.iDll[d], ord, dataAddr))		// a native DLL's DATA (vtable, type_info, variable): its address, not a trap
 					{
 						cpu.Write32(where, dataAddr + adj);

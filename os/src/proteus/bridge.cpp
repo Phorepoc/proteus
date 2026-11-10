@@ -45,6 +45,11 @@ struct BrArgs
 // exception handler, a TCallBack in a struct) is an ARM address the native side cannot call: BrCb gives it a native stub from a pool; the
 // stub (called with up to 4 words, returning one -- every callback signature of euser and efsrv fits) runs the guest function on a nested
 // interpreter run (BridgeCallGuest). A pointer outside the guest region is a native one already and passes through.
+static void NestEnter(CArmCpu& aCpu);
+static bool NestLeave(CArmCpu& aCpu, int32_t& aReason);
+static void NativeLeave(int32_t aReason);
+static void ForgetLeaveState(CArmCpu& aCpu);
+
 uint32_t BridgeCallGuest(CArmCpu& aCpu, uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3)
 {
 	CArmCpu& c = aCpu;
@@ -62,9 +67,12 @@ uint32_t BridgeCallGuest(CArmCpu& aCpu, uint32_t aFn, uint32_t a0, uint32_t a1, 
 	c.R[13] = sp; c.R[14] = KReturnToHost;
 	c.iHalt = ERunning;
 	c.Branch(aFn);
+	NestEnter(c);
 	c.Run(~0ull);
 	const uint32_t result = c.R[0];
-	const bool ok = c.iHalt == EReturned;
+	int32_t leave = 0;
+	const bool left = NestLeave(c, leave);		// the guest left with no ARM TRAP inside this run: raise it natively, from here
+	const bool ok = c.iHalt == EReturned || left;
 	c.iJit = jit; c.iSliceSteps = slice; c.iNextSlice = next;
 	if (ok)											// back to the interrupted guest code, exactly as it was
 	{
@@ -72,6 +80,8 @@ uint32_t BridgeCallGuest(CArmCpu& aCpu, uint32_t aFn, uint32_t a0, uint32_t a1, 
 		c.iN = flags[0]; c.iZ = flags[1]; c.iC = flags[2]; c.iV = flags[3]; c.iT = flags[4]; c.iGE = flags[5];
 		c.iFpscr = fpscr; c.iHalt = halt; c.iExitCode = code;
 	}
+	if (left)
+		NativeLeave(leave);
 	return ok ? result : 0;						// (anything else: the guest stopped in the callback; the halt stays and ends the run)
 }
 
@@ -143,7 +153,11 @@ static uint32_t RunOnNewCpu(uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2,
 	c->R[13] = (stack + KGuestStack) & ~7u;
 	c->R[14] = KReturnToHost;
 	c->Branch(aFn);
+	NestEnter(*c);
 	c->Run(~0ull);
+	int32_t leave = 0;
+	const bool left = NestLeave(*c, leave);
+	if (left) c->iHalt = EReturned;
 	const uint32_t result = c->iHalt == EReturned ? c->R[0] : 0;
 	if (c->iHalt != EReturned && gThr.iLog)
 	{
@@ -153,8 +167,11 @@ static uint32_t RunOnNewCpu(uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2,
 	}
 	SetCpuOfThisThread(0, c);
 	if (c->iJit && gThr.iJitDelete) gThr.iJitDelete(c->iJit);
+	ForgetLeaveState(*c);
 	delete c;
 	if (gThr.iFree) gThr.iFree(stack);
+	if (left)
+		NativeLeave(leave);					// a guest thread function that left with no TRAP: the native thread leaves (and panics, as natively)
 	return result;
 }
 
@@ -223,10 +240,12 @@ struct TBridgeDll
 	bool iNativeOn;
 	uintptr_t* iFn;			// the native address per row, looked up once (0 = not yet)
 	bool* iKeepHle;			// per row: stays with the HLE (process and thread set-up the native process has already done, the exit)
+	const TBridgeVtArg* iVt;	// the generated polymorphic-argument list (KBridgeVt_<dll>)
+	int16_t* iVtRow;		// per row: its first entry there, -1 = none
 };
 // imports that are not bridged even for a native DLL: the guest EXE's start-up and exit belong to Proteus, not to the native process
 const char* const KKeepHle[] = { "_ZN4User11InitProcessEv", "_ZN7UserSvr9DllSetTlsEiiPv", "_ZN4User4ExitEi", "_ZN6RDebug6PrintfEPKcz" };
-TBridgeDll gDll[2] = { { "euser.dll", KBridge_euser, 0, false, 0, 0 }, { "efsrv.dll", KBridge_efsrv, 0, false, 0, 0 } };
+TBridgeDll gDll[2] = { { "euser.dll", KBridge_euser, 0, false, 0, 0, KBridgeVt_euser, 0 }, { "efsrv.dll", KBridge_efsrv, 0, false, 0, 0, KBridgeVt_efsrv, 0 } };
 bool gTrace;
 uint32_t gLo = 0x00010000, gHi = 0xC0000000;
 bool gMap;
@@ -284,6 +303,14 @@ void BridgeConfigure(const char* aText)
 		free(d.iFn); free(d.iKeepHle);
 		d.iFn = (uintptr_t*)calloc(d.iCount, sizeof(uintptr_t));
 		d.iKeepHle = (bool*)calloc(d.iCount, sizeof(bool));
+		free(d.iVtRow);
+		d.iVtRow = (int16_t*)malloc(d.iCount * sizeof(int16_t));
+		for (uint32_t r = 0; d.iVtRow && r < d.iCount; ++r)
+		{
+			d.iVtRow[r] = -1;
+			for (int k = 0; d.iVt[k].iName; ++k)
+				if (!strcmp(d.iVt[k].iName, d.iRows[r].iName)) { d.iVtRow[r] = (int16_t)k; break; }
+		}
 		for (uint32_t r = 0; r < d.iCount; ++r)
 			for (unsigned k = 0; k < sizeof(KKeepHle) / sizeof(KKeepHle[0]); ++k)
 				if (!strcmp(d.iRows[r].iName, KKeepHle[k])) d.iKeepHle[r] = true;
@@ -360,21 +387,10 @@ static uintptr_t NativeByName(const char* aName)
 // dtors store the vtable's address again, and every object of the class shares it. The ARM side then calls those slots through the stubs too: the
 // fetch outside the guest region maps a stub back to its ARM function (BridgeStubTarget). Slots the derived class adds stay ARM (only ARM calls
 // them); a slot that already holds a native address (an inherited native implementation) stays as it is. Slot counts from the class records
-// (tools/bridge/abi/euser.json). Open: generate this list from every export parameter of a polymorphic class type.
-namespace
-{
-struct TVtArg { const char* iName; int iArg; int iSlots; };
-const TVtArg KVtArgs[] = {
-	{ "_ZN16CActiveScheduler3AddEP7CActive", 0, 6 },		// CActive: ~D1 ~D0 Extension_ DoCancel RunL RunError
-	{ "_ZN16CActiveScheduler7InstallEPS_", 0, 9 },		// CActiveScheduler: ... WaitForAnyRequest Error OnStarting OnStopping Reserved_1/2
-	{ "_ZN12CleanupStack5PushLEP5CBase", 0, 3 },			// CBase: ~D1 ~D0 Extension_
-	{ "_ZN8CCleanup5PushLEP5CBase", 1, 3 },
-};
-}
-
+// (tools/bridge/abi/<dll>.json): gen_bridge.py lists every pointer/reference argument of a class with a vtable (KBridgeVt_<dll>).
 static void PatchVtable(CArmCpu& aCpu, uint32_t aObj, int aSlots)
 {
-	if (!aObj || !aCpu.InRegion(aObj, 4)) return;
+	if (!aObj || !aCpu.Valid(aObj, 4)) return;			// (the object may be on the native heap: a window, not the region)
 	const uint32_t vt = aCpu.Read32(aObj);
 	if (!aCpu.InRegion(vt, 4u * aSlots)) return;			// a native vtable (a native-created object): nothing to do
 	for (int k = 0; k < aSlots; ++k)
@@ -385,10 +401,13 @@ static void PatchVtable(CArmCpu& aCpu, uint32_t aObj, int aSlots)
 	}
 }
 
-static void PatchArgVtables(CArmCpu& aCpu, const char* aName)
+static void PatchArgVtables(CArmCpu& aCpu, const TBridgeDll& aDll, uint32_t aRow)
 {
-	for (const TVtArg& v : KVtArgs)
-		if (!strcmp(v.iName, aName)) { PatchVtable(aCpu, aCpu.R[v.iArg], v.iSlots); return; }
+	const int16_t k0 = aDll.iVtRow ? aDll.iVtRow[aRow] : -1;
+	if (k0 < 0) return;
+	BrArgs a(aCpu);
+	for (int k = k0; aDll.iVt[k].iName && !strcmp(aDll.iVt[k].iName, aDll.iRows[aRow].iName); ++k)
+		PatchVtable(aCpu, a.Raw(aDll.iVt[k].iWord), aDll.iVt[k].iSlots);
 }
 
 uint32_t BridgeNativeCall(CArmCpu& aCpu, uint32_t aPc)
@@ -416,6 +435,176 @@ uint32_t BridgeOnForeignPc(CArmCpu& aCpu, uint32_t aPc, void*)
 	return t ? t : BridgeNativeCall(aCpu, aPc);
 }
 
+// ---- leaves (R1). The ARM side is leave-as-throw: an ARM TRAP is User::MarkCleanupStack() + try/catch (XLeaveException&), and the unwinder,
+// __cxa_throw and XLeaveException's vtable/type_info live in the guest's ARM drtaeabi.dll. The native euser is the setjmp TRAP model. So, as
+// toolchain/euser_dll/dev_markcleanup.cpp does for the device euser, the bridge keeps a MARKER per ARM MarkCleanupStack (r4-r11, sp, lr at the
+// call, the native trap handler, the nested-run depth) and a guest User::Leave* becomes:
+//   * a marker at the current nested-run depth: the native cleanup stack is unwound to the level Mark opened (the handler's Leave), then the
+//     guest resumes AS IF drtaeabi's __cxa_throw(XLeaveException(reason)) had been called from the Mark call site -- its unwinder walks the
+//     ARM frames to the catch. The catch clause's _ZTI15XLeaveException import of euser is aliased to drtaeabi's (BridgeDataAlias), so the
+//     thrown and the caught type_info are one object.
+//   * no marker at this depth, inside a nested run (an ARM RunL called by the native scheduler, a callback): the nested run stops, the CPU is
+//     restored (BridgeCallGuest) and the native User::Leave is raised from the stub's own native frame, to the native TRAP around the call.
+//   * no marker at all on the primary: the native User::Leave (no trap: the panic the native euser gives).
+// Not yet: a NATIVE callee that leaves (a bridged ...L export failing) longjmps over the bridge frames to the nearest native TTrap.
+namespace
+{
+enum { KMaxMarks = 64, KMaxLeaveCpus = 128 };
+struct TMark { uint32_t iCtx[10]; uint32_t iHandler; int iDepth; };
+struct TLeaveState { CArmCpu* iCpu; int iDepth; int iMarks; TMark iMark[KMaxMarks]; bool iPending; int32_t iReason; };
+TLeaveState gLeave[KMaxLeaveCpus];
+TLeaveState* LeaveState(CArmCpu& aCpu)
+{
+	TLock lock;
+	for (int i = 0; i < KMaxLeaveCpus; ++i) if (gLeave[i].iCpu == &aCpu) return &gLeave[i];
+	for (int i = 0; i < KMaxLeaveCpus; ++i) if (!gLeave[i].iCpu) { memset(&gLeave[i], 0, sizeof(gLeave[i])); gLeave[i].iCpu = &aCpu; return &gLeave[i]; }
+	return 0;
+}
+// drtaeabiu.def ordinals (dev_markcleanup.cpp): __cxa_allocate_exception, __cxa_throw, XLeaveException type_info / vtable, the exception globals
+enum { KOrdAllocEx = 177, KOrdThrow = 191, KOrdTypeInfo = 206, KOrdVtable = 207, KOrdCtorGlobals = 204, KOrdGetGlobals = 216, KOrdInit2 = 226 };
+uint32_t DrtExport(uint32_t aOrd)
+{
+	if (!gCurHle || !gCurHle->iProcess || !gPrimary) return 0;
+	const TProcess& p = *gCurHle->iProcess;
+	for (int m = 1; m < p.iCount; ++m)
+		if (SameDll(p.iMod[m].iName, "drtaeabi.dll") && aOrd <= p.iMod[m].iExportCount)
+			return gPrimary->Read32(p.iMod[m].iExportDir + 4 * (aOrd - 1));
+	return 0;
+}
+typedef void (*TNatLeave)(int32_t);
+}
+
+static void ForgetLeaveState(CArmCpu& aCpu)
+{
+	TLock lock;
+	for (int i = 0; i < KMaxLeaveCpus; ++i) if (gLeave[i].iCpu == &aCpu) gLeave[i].iCpu = 0;
+}
+// the nested-run depth of a CPU (BridgeCallGuest) and the leave a nested run stopped with
+static void NestEnter(CArmCpu& aCpu) { if (TLeaveState* s = LeaveState(aCpu)) ++s->iDepth; }
+static bool NestLeave(CArmCpu& aCpu, int32_t& aReason)
+{
+	TLeaveState* s = LeaveState(aCpu);
+	if (!s) return false;
+	--s->iDepth;
+	while (s->iMarks && s->iMark[s->iMarks - 1].iDepth > s->iDepth) --s->iMarks;		// (markers of the abandoned frames)
+	if (!s->iPending) return false;
+	s->iPending = false;
+	aReason = s->iReason;
+	return true;
+}
+static void NativeLeave(int32_t aReason)
+{
+	const uintptr_t f = NativeByName("_ZN4User5LeaveEi");
+	if (f) ((TNatLeave)f)(aReason);
+}
+
+static void GuestLeave(CArmCpu& aCpu, int32_t aReason)
+{
+	TLeaveState* s = LeaveState(aCpu);
+	if (gTrace && gCurHle)
+	{
+		char line[120];
+		snprintf(line, sizeof(line), "[proteus] bridge leave %d depth %d marks %d lr %x", aReason, s ? s->iDepth : -1, s ? s->iMarks : -1, aCpu.R[14]);
+		Say(*gCurHle, "%s", line);
+	}
+	if (s && s->iMarks && s->iMark[s->iMarks - 1].iDepth == s->iDepth)
+	{
+		const TMark m = s->iMark[--s->iMarks];
+		if (m.iHandler && sizeof(void*) == 4)
+		{	// TTrapHandler: Trap, UnTrap, Leave -- slot 2 (no virtual destructor)
+			const uint32_t vt = *(const uint32_t*)(uintptr_t)m.iHandler;
+			typedef void (*TLeaveFn)(uint32_t, int32_t);
+			((TLeaveFn)(uintptr_t)((const uint32_t*)(uintptr_t)vt)[2])(m.iHandler, aReason);
+		}
+		const uint32_t alloc = DrtExport(KOrdAllocEx), thr = DrtExport(KOrdThrow), ti = DrtExport(KOrdTypeInfo), vt = DrtExport(KOrdVtable);
+		if (!alloc || !thr || !ti || !vt)
+		{
+			strncpy(aCpu.iNote, "bridge: a leave needs the guest's drtaeabi.dll", sizeof(aCpu.iNote) - 1);
+			aCpu.Halt(EHleStop);
+			return;
+		}
+		if (!BridgeCallGuest(aCpu, DrtExport(KOrdGetGlobals), 0, 0, 0, 0) && gThr.iAlloc)
+		{	// a thread with no exception globals yet (dev_markcleanup.cpp): give it drtaeabi's
+			const uint32_t g = gThr.iAlloc(1024);
+			BridgeCallGuest(aCpu, DrtExport(KOrdCtorGlobals), g, 0, 0, 0);
+			BridgeCallGuest(aCpu, DrtExport(KOrdInit2), g, 0, 0, 0);
+		}
+		const uint32_t ex = BridgeCallGuest(aCpu, alloc, 8, 0, 0, 0);
+		aCpu.Write32(ex, vt + 8);
+		aCpu.Write32(ex + 4, (uint32_t)aReason);
+		for (int i = 0; i < 8; ++i) aCpu.R[4 + i] = m.iCtx[i];
+		aCpu.R[13] = m.iCtx[8];
+		aCpu.R[14] = m.iCtx[9];
+		aCpu.R[0] = ex; aCpu.R[1] = ti; aCpu.R[2] = 0;
+		aCpu.Branch(thr);
+		return;
+	}
+	if (s && (s->iDepth > 0 || BridgeIsGuestThread(aCpu)))
+	{	// out of this nested run / guest thread: the native side raises it (BridgeCallGuest, RunOnNewCpu)
+		s->iPending = true;
+		s->iReason = aReason;
+		snprintf(aCpu.iNote, sizeof(aCpu.iNote), "leave %d", aReason);
+		aCpu.Halt(EHleStop);
+		return;
+	}
+	NativeLeave(aReason);
+}
+
+static bool IsLeaveRow(const char* n)
+{
+	static const char* const K[] = { "_ZN4User16MarkCleanupStackEv", "_ZN4User18UnMarkCleanupStackEP12TTrapHandler", "_ZNK15XLeaveException9GetReasonEv",
+		"_ZN4User5LeaveEi", "_ZN4User12LeaveIfErrorEi", "_ZN4User13LeaveNoMemoryEv", "_ZN4User11LeaveIfNullEPv" };
+	for (const char* k : K) if (!strcmp(n, k)) return true;
+	return false;
+}
+// the hand-written euser rows of the leave model; true = handled (the guest continues at lr, or was redirected)
+static bool LeaveOverride(CArmCpu& aCpu, const char* aName, uintptr_t aNative)
+{
+	if (strncmp(aName, "_ZN4User", 8) && strcmp(aName, "_ZNK15XLeaveException9GetReasonEv")) return false;
+	const int32_t r0 = (int32_t)aCpu.R[0];
+	if (!strcmp(aName, "_ZN4User16MarkCleanupStackEv"))
+	{
+		typedef uint32_t (*F)();
+		const uint32_t h = aNative ? ((F)aNative)() : 0;
+		TLeaveState* s = LeaveState(aCpu);
+		if (s && s->iMarks < KMaxMarks)
+		{
+			TMark& m = s->iMark[s->iMarks++];
+			for (int i = 0; i < 8; ++i) m.iCtx[i] = aCpu.R[4 + i];
+			m.iCtx[8] = aCpu.R[13]; m.iCtx[9] = aCpu.R[14];
+			m.iHandler = h; m.iDepth = s->iDepth;
+		}
+		aCpu.R[0] = h;
+	}
+	else if (!strcmp(aName, "_ZN4User18UnMarkCleanupStackEP12TTrapHandler"))
+	{
+		TLeaveState* s = LeaveState(aCpu);
+		if (s && s->iMarks) --s->iMarks;
+		typedef void (*F)(uint32_t);
+		if (aNative) ((F)aNative)(aCpu.R[0]);
+	}
+	else if (!strcmp(aName, "_ZNK15XLeaveException9GetReasonEv"))
+		aCpu.R[0] = aCpu.Read32(aCpu.R[0] + 4);
+	else if (!strcmp(aName, "_ZN4User5LeaveEi")) { GuestLeave(aCpu, r0); return true; }
+	else if (!strcmp(aName, "_ZN4User12LeaveIfErrorEi")) { if (r0 < 0) { GuestLeave(aCpu, r0); return true; } }
+	else if (!strcmp(aName, "_ZN4User13LeaveNoMemoryEv")) { GuestLeave(aCpu, -4); return true; }
+	else if (!strcmp(aName, "_ZN4User11LeaveIfNullEPv")) { if (!r0) { GuestLeave(aCpu, -4); return true; } }
+	else
+		return false;
+	aCpu.SetReturn();
+	return true;
+}
+
+// the guest's catch clause must see drtaeabi's XLeaveException type_info (the one the throw passes), not the native euser's
+bool BridgeDataAlias(const char* aDll, uint32_t aOrd, const char*& aArmDll, uint32_t& aArmOrd)
+{
+	if (!gDll[0].iNativeOn || !SameDll(aDll, "euser.dll") || aOrd < 1 || aOrd > gDll[0].iCount) return false;
+	const char* n = gDll[0].iRows[aOrd - 1].iName;
+	if (!strcmp(n, "_ZTI15XLeaveException")) { aArmDll = "drtaeabi.dll"; aArmOrd = KOrdTypeInfo; return true; }
+	if (!strcmp(n, "_ZTV15XLeaveException")) { aArmDll = "drtaeabi.dll"; aArmOrd = KOrdVtable; return true; }
+	return false;
+}
+
 bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 {
 	gCurHle = &aHle;
@@ -427,6 +616,8 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 	const uint32_t row = aOrd - 1;
 	const TBridgeExport& e = d->iRows[row];
 	RegisterPrimary(aCpu);
+	if (d == &gDll[0] && IsLeaveRow(e.iName) && LeaveOverride(aCpu, e.iName, NativeOf(d, row, aHle)))
+		return true;
 	if (d->iKeepHle[row] && (&aCpu == gPrimary || !strcmp(e.iName, "_ZN6RDebug6PrintfEPKcz")))
 		return false;		// (a native guest thread's User::Exit etc. go to the native euser: they end that native thread)
 	char note[160];
@@ -454,7 +645,7 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 		snprintf(line, sizeof(line), "[proteus] bridge %s (%x,%x,%x,%x)", e.iName, aCpu.R[0], aCpu.R[1], aCpu.R[2], aCpu.R[3]);
 		Say(aHle, "%s", line);
 	}
-	PatchArgVtables(aCpu, e.iName);
+	PatchArgVtables(aCpu, *d, row);
 	const uint32_t lr = aCpu.R[14];
 	e.iCall(aCpu, d->iFn[row]);
 	aCpu.R[14] = lr;
