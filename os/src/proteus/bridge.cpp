@@ -244,10 +244,11 @@ struct TBridgeDll
 	bool* iKeepHle;			// per row: stays with the HLE (process and thread set-up the native process has already done, the exit)
 	const TBridgeVtArg* iVt;	// the generated polymorphic-argument list (KBridgeVt_<dll>)
 	int16_t* iVtRow;		// per row: its first entry there, -1 = none
+	bool* iLeaves;			// per row: the function's name says it can leave (...L) and returns with a balanced cleanup stack
 };
 // imports that are not bridged even for a native DLL: the guest EXE's start-up and exit belong to Proteus, not to the native process
 const char* const KKeepHle[] = { "_ZN4User11InitProcessEv", "_ZN7UserSvr9DllSetTlsEiiPv", "_ZN4User4ExitEi", "_ZN6RDebug6PrintfEPKcz" };
-TBridgeDll gDll[2] = { { "euser.dll", KBridge_euser, 0, false, 0, 0, KBridgeVt_euser, 0 }, { "efsrv.dll", KBridge_efsrv, 0, false, 0, 0, KBridgeVt_efsrv, 0 } };
+TBridgeDll gDll[2] = { { "euser.dll", KBridge_euser, 0, false, 0, 0, KBridgeVt_euser, 0, 0 }, { "efsrv.dll", KBridge_efsrv, 0, false, 0, 0, KBridgeVt_efsrv, 0, 0 } };
 bool gTrace;
 uint32_t gLo = 0x00010000, gHi = 0xC0000000;
 bool gMap;
@@ -267,6 +268,27 @@ bool SameDll(const char* aImport, const char* aDll)
 	return *aImport == 0;
 }
 }
+
+// the unqualified function name of an Itanium-mangled symbol ends in L (Symbian: the function may leave)
+static bool NameLeaves(const char* m)
+{
+	if (strncmp(m, "_Z", 2)) return false;
+	m += 2;
+	if (*m == 'N') { ++m; while (*m == 'K' || *m == 'V' || *m == 'r') ++m; }
+	const char* last = 0; int lastLen = 0;
+	while (*m >= '0' && *m <= '9')
+	{
+		int n = 0;
+		while (*m >= '0' && *m <= '9') n = n * 10 + (*m++ - '0');
+		last = m; lastLen = n;
+		for (int i = 0; i < n && *m; ++i) ++m;
+	}
+	if (!last || lastLen < 2) return false;
+	const char c1 = last[lastLen - 1], c2 = last[lastLen - 2];
+	return c1 == 'L' && ((c2 >= 'a' && c2 <= 'z') || (c2 >= '0' && c2 <= '9'));
+	// (not ...LC / ...LD: they return with an item on the cleanup stack, which a TRAP around the call would panic on -- CBase 71)
+}
+namespace { struct TTrappedCall { CArmCpu* iCpu; void (*iCall)(CArmCpu&, uintptr_t); uintptr_t iFn; static void Run(void* a) { TTrappedCall& t = *(TTrappedCall*)a; t.iCall(*t.iCpu, t.iFn); } }; }
 
 void BridgeConfigure(const char* aText)
 {
@@ -305,6 +327,10 @@ void BridgeConfigure(const char* aText)
 		free(d.iFn); free(d.iKeepHle);
 		d.iFn = (uintptr_t*)calloc(d.iCount, sizeof(uintptr_t));
 		d.iKeepHle = (bool*)calloc(d.iCount, sizeof(bool));
+		free(d.iLeaves);
+		d.iLeaves = (bool*)calloc(d.iCount, sizeof(bool));
+		for (uint32_t r = 0; d.iLeaves && r < d.iCount; ++r)
+			d.iLeaves[r] = NameLeaves(d.iRows[r].iName);
 		free(d.iVtRow);
 		d.iVtRow = (int16_t*)malloc(d.iCount * sizeof(int16_t));
 		for (uint32_t r = 0; d.iVtRow && r < d.iCount; ++r)
@@ -705,7 +731,18 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 	}
 	PatchArgVtables(aCpu, *d, row);
 	const uint32_t lr = aCpu.R[14];
-	e.iCall(aCpu, d->iFn[row]);
+	if (d->iLeaves && d->iLeaves[row] && gThr.iTrapped)
+	{	// a native ...L export: a native leave inside it must not longjmp over this frame -- run it under a native TRAP, raise the leave in the guest
+		TTrappedCall t = { &aCpu, e.iCall, d->iFn[row] };
+		const int32_t r = gThr.iTrapped(&TTrappedCall::Run, &t);
+		if (r != 0)
+		{
+			GuestLeave(aCpu, r);
+			return true;
+		}
+	}
+	else
+		e.iCall(aCpu, d->iFn[row]);
 	aCpu.R[14] = lr;
 	aCpu.SetReturn();
 	return true;

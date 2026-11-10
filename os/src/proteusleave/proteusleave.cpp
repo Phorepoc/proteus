@@ -41,6 +41,9 @@ static TInt Traps()
 	CHECK(5, r4 == -9);
 	TRAPD(r5, User::LeaveIfError(3));
 	CHECK(6, r5 == 0);
+	// a NATIVE ...L export that leaves (the native AllocL): the bridge runs it under a native TRAP and raises the leave in the guest
+	TRAPD(r6, User::AllocL(0x7FFFFFF0));
+	CHECK(7, r6 == KErrNoMemory);
 	return 0;
 	}
 

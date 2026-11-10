@@ -1604,6 +1604,7 @@ static uint32_t BridgeThreadId() { return (uint32_t)RThread().Id(); }
 static uint32_t BridgeGuestAlloc(uint32_t aSize) { return (uint32_t)User::Alloc((TInt)aSize); }
 static void BridgeGuestFree(uint32_t aAddr) { User::Free((TAny*)aAddr); }
 static void BridgeThreadLog(const char* aLine) { RDebug::Printf("PH: %s", aLine); }
+static int32_t BridgeTrapped(void (*aFn)(void*), void* aArg) { TInt r = KErrNone; TRAP(r, aFn(aArg)); return r; }
 
 // ... and with a native euser (bridge.cfg), a native function no ARM twin maps: call it natively (a virtual of a native-created object)
 static uint32_t ForeignPc(proteus::CArmCpu& aCpu, uint32_t aPc, void* aHleP)
@@ -1725,6 +1726,7 @@ static TInt MainL()
 	thr.iJitDelete = proteus::JitDelete;
 	thr.iLog = BridgeThreadLog;
 	thr.iTrapLeave = NULL;
+	thr.iTrapped = BridgeTrapped;
 	proteus::BridgeSetThreads(thr);
 	}
 	const TBool nativeEuser = proteus::BridgeNative("euser.dll");

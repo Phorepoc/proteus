@@ -252,7 +252,8 @@ struct TBridgeThreads
 	TArmJit* (*iJitNew)(CArmCpu& aCpu);
 	void (*iJitDelete)(TArmJit* aJit);
 	void (*iLog)(const char* aLine);
-	void (*iTrapLeave)(uint32_t aHandler, int32_t aReason);	// (host tests) the native TTrapHandler::Leave; null = call it through its vtable
+	void (*iTrapLeave)(uint32_t aHandler, int32_t aReason);
+	int32_t (*iTrapped)(void (*aFn)(void*), void* aArg);	// run aFn under a NATIVE TRAP: its leave code, 0 = none (null = no trapping)	// (host tests) the native TTrapHandler::Leave; null = call it through its vtable
 };
 void BridgeSetThreads(const TBridgeThreads& aThreads);
 bool BridgeIsGuestThread(const CArmCpu& aCpu);			// a CPU of a native guest thread (not the process's primary): the HLE is not for it

@@ -110,6 +110,7 @@ static void TrapLeave(uint32_t, int32_t) { while (!gClean.empty() && !gClean.bac
 static U Fk_Leave(U r) { throw (int)r; }
 extern U gSchedVt;
 static U Fk_TrapCleanupNew() { U o = Alloc(16); W32(o, gSchedVt + 8); return o; }
+static U Fk_User_AllocL(U n) { if (n > (16u << 20)) throw (int)-4; return Alloc(n); }
 static U Fk_strlen(U a) { U n = 0; while (gCpu->Read8(a + n)) ++n; return n; }
 static U Fk_strcmp(U a, U b) { for (U i = 0;; ++i) { int x = gCpu->Read8(a + i) - gCpu->Read8(b + i); if (x || !gCpu->Read8(a + i)) return (U)x; } }
 // ---- R1 threads: RThread::Create starts a REAL host thread at Resume; its entry is the reverse stub the bridge made for the guest's ThreadFn,
@@ -240,7 +241,7 @@ static const TFake KFakes[] = {
 	{ "_ZN4User15RequestCompleteERP14TRequestStatusi", (void*)Fk_RequestComplete }, { "_ZN4User6AllocZEi", (void*)Fk_User_AllocZ },
 	{ "memset", (void*)Fk_memset }, { "memcpy", (void*)Fk_memcpy }, { "memmove", (void*)Fk_memmove }, { "memcmp", (void*)Fk_memcmp }, { "strlen", (void*)Fk_strlen }, { "strcmp", (void*)Fk_strcmp }, { "_ZN7UserSvr16RomHeaderAddressEv", (void*)Fk_RomHeader },
 	{ "_ZN4User16MarkCleanupStackEv", (void*)Fk_Mark }, { "_ZN4User18UnMarkCleanupStackEP12TTrapHandler", (void*)Fk_UnMark },
-	{ "_ZN12CleanupStack5PushLE12TCleanupItem", (void*)Fk_PushL_item }, { "_ZN12CleanupStack13PopAndDestroyEi", (void*)Fk_PopAndDestroyN }, { "_ZNK15XLeaveException9GetReasonEv", (void*)Fk_nop }, { "_ZN4User5LeaveEi", (void*)Fk_Leave }, { "_ZN12CTrapCleanup3NewEv", (void*)Fk_TrapCleanupNew },
+	{ "_ZN12CleanupStack5PushLE12TCleanupItem", (void*)Fk_PushL_item }, { "_ZN12CleanupStack13PopAndDestroyEi", (void*)Fk_PopAndDestroyN }, { "_ZNK15XLeaveException9GetReasonEv", (void*)Fk_nop }, { "_ZN4User5LeaveEi", (void*)Fk_Leave }, { "_ZN12CTrapCleanup3NewEv", (void*)Fk_TrapCleanupNew }, { "_ZN4User6AllocLEi", (void*)Fk_User_AllocL },
 	{ "_ZN4User12LeaveIfErrorEi", (void*)Fk_nop }, { "_ZN7UserSvr6DllTlsEii", (void*)Fk_nop }, { "_ZN7UserSvr9DllSetTlsEiiPv", (void*)Fk_nop },
 	{ "_ZN7UserSvr19ExceptionDescriptorEm", (void*)Fk_nop }, { "_ZN7UserSvr6DllTlsEi", (void*)Fk_nop }, { "_ZN7UserSvr9DllSetTlsEiPv", (void*)Fk_nop }, { "_ZN4User15HandleExceptionEPv", (void*)Fk_nop }, { "_ZN4User9InvariantEv", (void*)Fk_nop },
 };
@@ -311,6 +312,7 @@ int main(int argc, char** argv)
 		thr.iThreadId = []() -> uint32_t { return (uint32_t)syscall(SYS_gettid); };
 		thr.iAlloc = [](uint32_t n) -> uint32_t { return ::Alloc(n); };
 		thr.iTrapLeave = TrapLeave;
+		thr.iTrapped = [](void (*f)(void*), void* a) -> int32_t { try { f(a); } catch (int e) { return e; } return 0; };
 		thr.iLog = [](const char* l) { printf("  | %s%c", l, 10); };
 		BridgeSetThreads(thr);
 	}
