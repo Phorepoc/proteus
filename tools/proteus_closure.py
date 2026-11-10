@@ -73,7 +73,10 @@ def thumb_stats(img):
 # silent failure (`RLibrary::Load f32agent.dll -> -1` = no music; no ICL plug-ins = no images; a stale stub of iaupdateapi/drtrvct2_2
 # = `proteus wait 1`, no window group). The GL DLLs are not listed on purpose: they run natively (NATIVE_GL).
 APP_EXTRAS = {
-    "common": ["scdv.dll"],		# the ARM screen driver the window server loads (the OMAP draw devices; the generic one refuses the rotation)
+    # scdv: the ARM screen driver the window server loads (the OMAP draw devices; the generic one refuses the rotation). The Avkon UI's
+    # own run-time loads (every Avkon app: akninit at CEikonEnv construction, the CDL/FEP plug-ins): before 2026-11-10 a run disk often
+    # had them from an earlier staging; a plain disk does not (PyS60: `RLibrary::Load Z:\sysinkninit.dll -> -1`, User::Exit(-1))
+    "common": ["scdv.dll", "akninit.dll", "2001e2b1.dll", "eikcdlg.dll", "avkonfep.dll", "aknfepuiavkonplugin.dll"],
     "sparkle": ["f32agent.dll", "f32agentui.dll"],
     "letsgolf2": ["akninit.dll", "2001e2b1.dll", "eikcdlg.dll", "bitmaptransformsrefplugin.dll", "avkonfep.dll", "aknfepuiavkonplugin.dll",
                   "bmpcodec.dll", "gifcodec.dll", "icocodec.dll", "jpegcodec.dll", "mbmcodec.dll", "pngcodec.dll", "wbmpcodec.dll",
