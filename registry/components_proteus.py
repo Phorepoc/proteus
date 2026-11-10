@@ -35,9 +35,11 @@ COMPONENTS = {
                               r"Sys\Bin\arm\hal.dll=" + _ARM + "hal.dll",                     # the ARM hal.dll (HAL::Get ...) over the real euser's UserSvr::HalFunction
                               r"Sys\Bin\arm\proteusfs.exe=" + _ARM + "proteusfs.exe"]),
     # the same program under the name core's loader hands an ARM EXE to (sf_lepoc.cpp ForeignCpuRedirect): in every ROM built with this layer
-    "cpuhandler_arm": dict(mmp=os.path.join(OS_ROOT, "src/proteus/proteus.mmp"), cdriver=False, rom="cpuhandler_arm.exe", **_JIT),
+    # sis=True: it also ships in proteus.sis (recipes/sis.sh), loaded from RAM, so its %rip->static displacements go into the code
+    # relocations (pdk build_mmp_x32.py KX32PcRelRelocType); a ROM build ignores them
+    "cpuhandler_arm": dict(mmp=os.path.join(OS_ROOT, "src/proteus/proteus.mmp"), cdriver=False, rom="cpuhandler_arm.exe", sis=True, **_JIT),
     # the image broker: ARM images under \sys\bin\ for a handler holding the program's capabilities (no AllFiles)
-    "proteusimg": dict(mmp=os.path.join(OS_ROOT, "src/proteusimg/proteusimg.mmp"), cdriver=False),
+    "proteusimg": dict(mmp=os.path.join(OS_ROOT, "src/proteusimg/proteusimg.mmp"), cdriver=False, sis=True),
     # the ARM test programs (ARM builds only)
     "proteushello": dict(mmp=os.path.join(OS_ROOT, "src/proteushello/proteushello.mmp"), test=True),
     "proteusdll": dict(mmp=os.path.join(OS_ROOT, "src/proteusdll/proteusdll.mmp"), test=True,
