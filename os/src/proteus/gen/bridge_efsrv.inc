@@ -427,6 +427,14 @@ static const TBridgeExport KBridge_efsrv[] =
 	{ 421, "_ZNK15TFsNotification3UIDER4TUid", BrShape_2, 0, -1, 421 },
 };
 static const uint32_t KBridge_efsrv_Count = sizeof(KBridge_efsrv) / sizeof(KBridge_efsrv[0]);
+static const TBridgeVtArg KBridgeVt_efsrv[] =
+{
+	{ "_ZN8CFileMan4NewLER3RFsP16MFileManObserver", 1, 3 },
+	{ "_ZN9CFileBase11SetObserverEP16MFileManObserver", 1, 3 },
+	{ "_ZNK3RFs5ParseERK7TDesC16R6TParse", 2, 2 },
+	{ "_ZNK3RFs5ParseERK7TDesC16S2_R6TParse", 3, 2 },
+	{ 0, 0, 0 }
+};
 
 #ifdef BRIDGE_LAYOUT_ASSERTS		// the headers are included: the native layout equals the ARM one the app compiled in
 typedef char BrLayout_CDir[(sizeof(CDir) == 8 && __alignof__(CDir) == 4) ? 1 : -1];

@@ -156,6 +156,35 @@ def emit_shape(idx: int, shape: str) -> list[str]:
     return L
 
 
+def vt_args(abi, abis):
+    """(export name, AAPCS word index, slots) for every pointer/reference argument (not `this`) of a class with a vtable."""
+    classes = {}
+    for a in abis.values():
+        for c, r in a["classes"].items():
+            if r.get("slots"):
+                classes.setdefault(c, len(r["slots"]))
+    out = []
+    for e in abi["exports"]:
+        if e.get("status") == "absent" or "params" not in e or e.get("variadic"):
+            continue
+        word = 0
+        for p in e["params"]:
+            c, t = p["c"], p.get("t", "")
+            if c in ("l", "d"):
+                word += (word & 1) + 2
+                continue
+            if c == "S":
+                break                                   # (a by-value struct: its size is not here; later arguments are not tracked)
+            if c == "p" and t != "this":
+                base = re.sub(r"^const ", "", t).strip()
+                if re.fullmatch(r"[A-Za-z_][\w:]* *[*&]", base):
+                    cls = base.rstrip("*& ").strip()
+                    if cls in classes:
+                        out.append((e["name"], word, classes[cls]))
+            word += 1
+    return out
+
+
 def main():
     dlls = sys.argv[1:] or ["euser", "efsrv"]
     abis = {d: json.load(open(os.path.join(ABI, d + ".json"))) for d in dlls}
@@ -221,7 +250,8 @@ def main():
     out.append("};")
     out += ["", "struct TBridgeExport", "{", "\tuint16_t iOrdinal;", "\tconst char* iName;",
             "\tvoid (*iCall)(CArmCpu& aCpu, uintptr_t aFn);\t// 0 = data, absent, or needs a handler (see iFlags)",
-            "\tuint32_t iFlags;", "\tint16_t iVSlot;\t\t\t// the vtable slot of an exported virtual, else -1", "	uint16_t iNative;		// the ordinal of the same NAME in the native x32 DLL (tools/bridge/native/<dll>.json), 0 = none", "};", ""]
+            "\tuint32_t iFlags;", "\tint16_t iVSlot;\t\t\t// the vtable slot of an exported virtual, else -1", "	uint16_t iNative;		// the ordinal of the same NAME in the native x32 DLL (tools/bridge/native/<dll>.json), 0 = none", "};", "",
+            "struct TBridgeVtArg { const char* iName; int iWord; int iSlots; };	// an argument of a polymorphic class type (bridge.cpp PatchVtable)", ""]
     structs = sorted({t for s in shapes for t in re.findall(r"S\d+x\d+", s)})
     for t in structs:
         n, al = map(int, re.match(r"S(\d+)x(\d+)", t).groups())
@@ -244,6 +274,16 @@ def main():
             L.append(f'\t{{ {ordn}, "{name}", {fn}, {fl}, {slot}, {native[d].get(name, 0)} }},')
         L.append("};")
         L.append(f"static const uint32_t KBridge_{d}_Count = sizeof(KBridge_{d}) / sizeof(KBridge_{d}[0]);")
+        # the pointer/reference arguments of a polymorphic class type: an ARM-derived object handed to native code, whose base-class vtable
+        # slots the bridge patches to reverse stubs (bridge.cpp PatchVtable). {export, AAPCS word index, slot count of the declared class}
+        vt = vt_args(abis[d], abis)
+        L.append(f"static const TBridgeVtArg KBridgeVt_{d}[] =")
+        L.append("{")
+        for name, word, n in vt:
+            L.append(f'	{{ "{name}", {word}, {n} }},')
+        L.append('	{ 0, 0, 0 }')
+        L.append("};")
+        stats[d]["vtargs"] = len(vt)
         L.append("")
         L.append("#ifdef BRIDGE_LAYOUT_ASSERTS\t\t// the headers are included: the native layout equals the ARM one the app compiled in")
         for c, r in sorted(abi["classes"].items()):

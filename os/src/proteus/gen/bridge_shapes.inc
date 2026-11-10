@@ -31,6 +31,8 @@ struct TBridgeExport
 	uint16_t iNative;		// the ordinal of the same NAME in the native x32 DLL (tools/bridge/native/<dll>.json), 0 = none
 };
 
+struct TBridgeVtArg { const char* iName; int iWord; int iSlots; };	// an argument of a polymorphic class type (bridge.cpp PatchVtable)
+
 struct BrS12A4 { uint8_t b[12] __attribute__((aligned(4))); };	// a 12-byte struct, alignment 4
 struct BrS16A4 { uint8_t b[16] __attribute__((aligned(4))); };	// a 16-byte struct, alignment 4
 struct BrS264A4 { uint8_t b[264] __attribute__((aligned(4))); };	// a 264-byte struct, alignment 4
