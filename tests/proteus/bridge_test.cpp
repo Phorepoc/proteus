@@ -303,7 +303,6 @@ int main(int argc, char** argv)
 		printf("DATA imports: vtable %s, function stays a trap %s, other DLL %s\n", vt ? "ok" : "BAD", fn ? "ok" : "BAD", other ? "ok" : "BAD");
 		if (!(vt && fn && other)) return 1;
 	}
-	if (!LoadProcess(cpu, img.data(), (uint32_t)img.size(), cpu.iBase + 0x1000, FindDll, 0, proc)) { printf("LOAD FAILED: %s\n", proc.iError); return 1; }
 	TIpcBridge ipc; memset(&ipc, 0, sizeof ipc); ipc.iNativeExport = NativeExport;
 	THle hle = { &proc.iMod[0], &proc, Log, 0, 0 };
 	hle.iIpc = &ipc;
@@ -316,6 +315,7 @@ int main(int argc, char** argv)
 		thr.iLog = [](const char* l) { printf("  | %s%c", l, 10); };
 		BridgeSetThreads(thr);
 	}
+	if (!LoadProcess(cpu, img.data(), (uint32_t)img.size(), cpu.iBase + 0x1000, FindDll, 0, proc)) { printf("LOAD FAILED: %s\n", proc.iError); return 1; }
 	{	// the native CActiveScheduler's vtable: [offset, typeinfo, D1, D0, ...] in guest memory, slot D0 = a native function (a token gResolve maps)
 		gFnTable.push_back((void*)Fk_Sched_D0);
 		gSchedVt = Alloc(64);

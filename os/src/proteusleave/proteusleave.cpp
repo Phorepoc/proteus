@@ -99,10 +99,32 @@ static TInt ThreadLeave()
 	return 0;
 	}
 
+// dynamic_cast over euser classes: the guest's drtaeabi walks the type_info chain the bridge synthesized for the native (-fno-rtti) euser
+class CCastee : public CActive
+	{
+public:
+	CCastee() : CActive(EPriorityStandard) {}
+private:
+	void RunL() {}
+	void DoCancel() {}
+	};
+
+static TInt Casts()
+	{
+	CBase* b = new CCastee;
+	CHECK(30, b != NULL);
+	CHECK(31, dynamic_cast<CActive*>(b) == static_cast<CActive*>(static_cast<CCastee*>(b)));
+	CHECK(32, dynamic_cast<CTimer*>(b) == NULL);
+	CHECK(33, dynamic_cast<CCastee*>(static_cast<CActive*>(static_cast<CCastee*>(b))) != NULL);
+	delete b;
+	return 0;
+	}
+
 GLDEF_C TInt E32Main()
 	{
 	TInt r = Traps();
 	if (!r) r = ActiveLeave();
 	if (!r) r = ThreadLeave();
+	if (!r) r = Casts();
 	return r;
 	}

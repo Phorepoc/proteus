@@ -238,7 +238,8 @@ bool BridgeNative(const char* aImport);
 bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd);
 void BridgeSetLookup(uint32_t (*aFn)(void* aCtx, const char* aDll, int aOrdinal), void* aCtx);	// before LoadProcess: where native DATA imports are looked up
 bool BridgeDataImport(const char* aDll, uint32_t aOrd, uint32_t& aAddr);
-bool BridgeDataAlias(const char* aDll, uint32_t aOrd, const char*& aArmDll, uint32_t& aArmOrd);	// that DATA import is an ARM DLL's export instead
+bool BridgeDataAlias(const char* aDll, uint32_t aOrd, const char*& aArmDll, uint32_t& aArmOrd);
+uint32_t BridgeTypeInfo(CArmCpu& aCpu, const TProcess& aProc, uint32_t aKey);	// the ARM type_info for a "*ti" alias (dll << 16 | table index)	// that DATA import is an ARM DLL's export instead
 bool BridgeMapWanted(uint32_t& aLo, uint32_t& aHi);
 uintptr_t BridgeStubFn(uint32_t aAddr);	// (host tests) the callable function behind a reverse stub address
 void BridgeSetResolver(uintptr_t (*aFn)(uint32_t));	// (host tests)

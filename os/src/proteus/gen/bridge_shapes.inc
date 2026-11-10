@@ -32,6 +32,7 @@ struct TBridgeExport
 };
 
 struct TBridgeVtArg { const char* iName; int iWord; int iSlots; };	// an argument of a polymorphic class type (bridge.cpp PatchVtable)
+struct TBridgeTi { const char* iName; const char* iMangled; int iBase; };	// an ARM type_info the bridge synthesizes (bridge.cpp BridgeTypeInfo)
 
 struct BrS12A4 { uint8_t b[12] __attribute__((aligned(4))); };	// a 12-byte struct, alignment 4
 struct BrS16A4 { uint8_t b[16] __attribute__((aligned(4))); };	// a 16-byte struct, alignment 4

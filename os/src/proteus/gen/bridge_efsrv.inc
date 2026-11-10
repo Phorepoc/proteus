@@ -435,6 +435,21 @@ static const TBridgeVtArg KBridgeVt_efsrv[] =
 	{ "_ZNK3RFs5ParseERK7TDesC16S2_R6TParse", 3, 2 },
 	{ 0, 0, 0 }
 };
+static const TBridgeTi KBridgeTi_efsrv[] =
+{
+	{ "_ZTI10TParsePtrC", "10TParsePtrC", 1 },
+	{ "", "10TParseBase", -1 },
+	{ "_ZTI16MFileManObserver", "16MFileManObserver", -1 },
+	{ "_ZTI4CDir", "4CDir", 4 },
+	{ "", "5CBase", -1 },
+	{ "_ZTI6TParse", "6TParse", 1 },
+	{ "_ZTI9CFileBase", "9CFileBase", 4 },
+	{ "_ZTI9TParsePtr", "9TParsePtr", 1 },
+	{ "_ZTI13CFsNotifyBody", "13CFsNotifyBody", -1 },
+	{ "_ZTI19CFsNotificationList", "19CFsNotificationList", -1 },
+	{ "_ZTI9CFsNotify", "9CFsNotify", 4 },
+	{ 0, 0, -1 }
+};
 
 #ifdef BRIDGE_LAYOUT_ASSERTS		// the headers are included: the native layout equals the ARM one the app compiled in
 typedef char BrLayout_CDir[(sizeof(CDir) == 8 && __alignof__(CDir) == 4) ? 1 : -1];

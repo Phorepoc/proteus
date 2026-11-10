@@ -62,6 +62,23 @@ void FreeProcess(TProcess& p)
 // vtable: the leave throw runs in the guest's drtaeabi.dll, and its catch matches the type_info it throws)
 namespace { struct TAliasFix { uint32_t iWhere, iAdj; const char* iDll; uint32_t iOrd; }; enum { KMaxAlias = 64 }; TAliasFix gAlias[KMaxAlias]; int gAliasCount; }
 
+// the alias fix-ups of the modules just loaded: an ARM DLL's export ("*ti": a type_info the bridge synthesizes, BridgeTypeInfo)
+static void ResolveAliases(CArmCpu& cpu, const TProcess& out)
+{
+	for (int i = 0; i < gAliasCount; ++i)
+	{
+		if (gAlias[i].iDll[0] == '*')
+		{
+			cpu.Write32(gAlias[i].iWhere, BridgeTypeInfo(cpu, out, gAlias[i].iOrd) + gAlias[i].iAdj);
+			continue;
+		}
+		for (int m = 1; m < out.iCount; ++m)
+			if (SameDllName(out.iMod[m].iName, gAlias[i].iDll) && gAlias[i].iOrd <= out.iMod[m].iExportCount)
+				cpu.Write32(gAlias[i].iWhere, cpu.Read32(out.iMod[m].iExportDir + 4 * (gAlias[i].iOrd - 1)) + gAlias[i].iAdj);
+	}
+	gAliasCount = 0;
+}
+
 bool LoadProcess(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at, TFindDllFn find, void* findCtx, TProcess& out)
 {
 	gAliasCount = 0;
@@ -71,10 +88,7 @@ bool LoadProcess(CArmCpu& cpu, const uint8_t* f, uint32_t len, uint32_t at, TFin
 	out.iCount = 1;
 	const bool ok = LoadE32At(cpu, f, len, at, out.iMod[0], &out, find, findCtx);
 	if (!ok) strncpy(out.iError, out.iMod[0].iError, sizeof(out.iError) - 1);
-	for (int i = 0; ok && i < gAliasCount; ++i)
-		for (int m = 1; m < out.iCount; ++m)
-			if (SameDllName(out.iMod[m].iName, gAlias[i].iDll) && gAlias[i].iOrd <= out.iMod[m].iExportCount)
-				cpu.Write32(gAlias[i].iWhere, cpu.Read32(out.iMod[m].iExportDir + 4 * (gAlias[i].iOrd - 1)) + gAlias[i].iAdj);
+	if (ok) ResolveAliases(cpu, out);
 	return ok;
 }
 
@@ -546,8 +560,10 @@ int LoadLibraryModule(CArmCpu& aCpu, TProcess& aProc, const char* aName, TFindDl
 	if (!LoadE32At(aCpu, img, len, next, aProc.iMod[m], &aProc, aFind, aFindCtx))
 	{
 		strncpy(aProc.iError, aProc.iMod[m].iError, sizeof(aProc.iError) - 1);
+		gAliasCount = 0;
 		return -20;
 	}
+	ResolveAliases(aCpu, aProc);		// (a run-time load: its type_info / XLeaveException imports too)
 	return m;
 }
 

@@ -191,6 +191,45 @@ def vt_args(abi, abis):
     return out
 
 
+def mangle_cls(c: str) -> str | None:
+    """The Itanium source-name of a plain class (no templates, no namespaces): `7CActive`."""
+    return f"{len(c)}{c}" if re.fullmatch(r"[A-Za-z_]\w*", c) else None
+
+
+def ti_table(abi):
+    """ARM type_info objects the bridge synthesizes for the DLL's `_ZTI*` DATA exports (the native build is -fno-rtti; the guest's own
+    drtaeabi runs dynamic_cast and the catch matching): (export name or "" for a base that is not exported, mangled name, base index or -1).
+    Single non-virtual bases at offset 0 only (every euser/efsrv case); a base that cannot be named (a template) is left out."""
+    classes = abi["classes"]
+    out, index = [], {}
+
+    def add(cls, export):
+        m = mangle_cls(cls)
+        if m is None:
+            return -1
+        if m in index:
+            if export and not out[index[m]][0]:
+                out[index[m]] = (export, m, out[index[m]][2])
+            return index[m]
+        index[m] = len(out)
+        out.append((export, m, -1))
+        bases = (classes.get(cls) or {}).get("bases") or []
+        if len(bases) == 1 and not bases[0].get("virtual") and bases[0].get("off", 0) == 0:
+            b = add(bases[0]["name"], "")
+            out[index[m]] = (out[index[m]][0], m, b)
+        return index[m]
+
+    for e in abi["exports"]:
+        if e.get("kind") == "typeinfo" and e["name"].startswith("_ZTI"):
+            m = e["name"][4:]
+            if re.fullmatch(r"\d+[A-Za-z_]\w*", m):
+                add(e["cls"], e["name"])
+            else:		# a template instance: no base information, a plain __class_type_info with the export's own name
+                index[m] = len(out)
+                out.append((e["name"], m, -1))
+    return out
+
+
 def main():
     dlls = sys.argv[1:] or ["euser", "efsrv"]
     abis = {d: json.load(open(os.path.join(ABI, d + ".json"))) for d in dlls}
@@ -257,7 +296,8 @@ def main():
     out += ["", "struct TBridgeExport", "{", "\tuint16_t iOrdinal;", "\tconst char* iName;",
             "\tvoid (*iCall)(CArmCpu& aCpu, uintptr_t aFn);\t// 0 = data, absent, or needs a handler (see iFlags)",
             "\tuint32_t iFlags;", "\tint16_t iVSlot;\t\t\t// the vtable slot of an exported virtual, else -1", "	uint16_t iNative;		// the ordinal of the same NAME in the native x32 DLL (tools/bridge/native/<dll>.json), 0 = none", "};", "",
-            "struct TBridgeVtArg { const char* iName; int iWord; int iSlots; };	// an argument of a polymorphic class type (bridge.cpp PatchVtable)", ""]
+            "struct TBridgeVtArg { const char* iName; int iWord; int iSlots; };	// an argument of a polymorphic class type (bridge.cpp PatchVtable)",
+            "struct TBridgeTi { const char* iName; const char* iMangled; int iBase; };	// an ARM type_info the bridge synthesizes (bridge.cpp BridgeTypeInfo)", ""]
     structs = sorted({t for s in shapes for t in re.findall(r"S\d+x\d+", s)})
     for t in structs:
         n, al = map(int, re.match(r"S(\d+)x(\d+)", t).groups())
@@ -290,6 +330,15 @@ def main():
         L.append('	{ 0, 0, 0 }')
         L.append("};")
         stats[d]["vtargs"] = len(vt)
+        # ARM type_info objects for the `_ZTI*` imports (bridge.cpp BridgeTypeInfo): {export or "", mangled name, base index or -1}
+        ti = ti_table(abis[d])
+        L.append(f"static const TBridgeTi KBridgeTi_{d}[] =")
+        L.append("{")
+        for name, m, b in ti:
+            L.append(f'	{{ "{name}", "{m}", {b} }},')
+        L.append('	{ 0, 0, -1 }')
+        L.append("};")
+        stats[d]["typeinfo"] = len(ti)
         L.append("")
         L.append("#ifdef BRIDGE_LAYOUT_ASSERTS\t\t// the headers are included: the native layout equals the ARM one the app compiled in")
         for c, r in sorted(abi["classes"].items()):

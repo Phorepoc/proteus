@@ -247,12 +247,13 @@ struct TBridgeDll
 	uintptr_t* iFn;			// the native address per row, looked up once (0 = not yet)
 	bool* iKeepHle;			// per row: stays with the HLE (process and thread set-up the native process has already done, the exit)
 	const TBridgeVtArg* iVt;	// the generated polymorphic-argument list (KBridgeVt_<dll>)
+	const TBridgeTi* iTi;		// the ARM type_info objects of its _ZTI exports (KBridgeTi_<dll>)
 	int16_t* iVtRow;		// per row: its first entry there, -1 = none
 	bool* iLeaves;			// per row: the function's name says it can leave (...L) and returns with a balanced cleanup stack
 };
 // imports that are not bridged even for a native DLL: the guest EXE's start-up and exit belong to Proteus, not to the native process
 const char* const KKeepHle[] = { "_ZN4User11InitProcessEv", "_ZN7UserSvr9DllSetTlsEiiPv", "_ZN4User4ExitEi", "_ZN6RDebug6PrintfEPKcz" };
-TBridgeDll gDll[2] = { { "euser.dll", KBridge_euser, 0, false, 0, 0, KBridgeVt_euser, 0, 0 }, { "efsrv.dll", KBridge_efsrv, 0, false, 0, 0, KBridgeVt_efsrv, 0, 0 } };
+TBridgeDll gDll[2] = { { "euser.dll", KBridge_euser, 0, false, 0, 0, KBridgeVt_euser, KBridgeTi_euser, 0, 0 }, { "efsrv.dll", KBridge_efsrv, 0, false, 0, 0, KBridgeVt_efsrv, KBridgeTi_efsrv, 0, 0 } };
 uint32_t gLo = 0x00010000, gHi = 0xC0000000;
 bool gMap;
 uintptr_t (*gResolve)(uint32_t);	// host tests: the "native address" the embedder returns is a 32-bit token, the function pointer is 64-bit
@@ -695,12 +696,76 @@ static bool LeaveOverride(CArmCpu& aCpu, const char* aName, uintptr_t aNative)
 }
 
 // the guest's catch clause must see drtaeabi's XLeaveException type_info (the one the throw passes), not the native euser's
+static bool TypeInfoAlias(int aDll, const char* aName, const char*& aArmDll, uint32_t& aArmOrd);
 bool BridgeDataAlias(const char* aDll, uint32_t aOrd, const char*& aArmDll, uint32_t& aArmOrd)
 {
+	if (gDll[1].iNativeOn && SameDll(aDll, "efsrv.dll") && aOrd >= 1 && aOrd <= gDll[1].iCount)
+		return TypeInfoAlias(1, gDll[1].iRows[aOrd - 1].iName, aArmDll, aArmOrd);
 	if (!gDll[0].iNativeOn || !SameDll(aDll, "euser.dll") || aOrd < 1 || aOrd > gDll[0].iCount) return false;
 	const char* n = gDll[0].iRows[aOrd - 1].iName;
+	if (strcmp(n, "_ZTI15XLeaveException") && strcmp(n, "_ZTV15XLeaveException")) return TypeInfoAlias(0, n, aArmDll, aArmOrd);
 	if (!strcmp(n, "_ZTI15XLeaveException")) { aArmDll = "drtaeabi.dll"; aArmOrd = KOrdTypeInfo; return true; }
 	if (!strcmp(n, "_ZTV15XLeaveException")) { aArmDll = "drtaeabi.dll"; aArmOrd = KOrdVtable; return true; }
+	return false;
+}
+
+// RTTI (rung R1): the native euser/efsrv are -fno-rtti, the guest's drtaeabi runs dynamic_cast and the catch matching. A guest _ZTI import of a
+// bridged DLL resolves to an ARM-layout type_info built here once per process: {drtaeabi's __class_type_info / __si_class_type_info vptr, the
+// mangled name, the base's type_info}. One object per class, so the address identity drtaeabi compares holds across all the app's modules.
+namespace
+{
+enum { KOrdClassTiVt = 123, KOrdSiClassTiVt = 127, KMaxTi = 128 };
+uint32_t gTiAddr[2][KMaxTi];
+const TProcess* gTiProc;
+uint32_t ProcExport(CArmCpu& aCpu, const TProcess& aProc, const char* aDll, uint32_t aOrd)
+{
+	for (int m = 1; m < aProc.iCount; ++m)
+		if (SameDll(aProc.iMod[m].iName, aDll) && aOrd >= 1 && aOrd <= aProc.iMod[m].iExportCount)
+			return aCpu.Read32(aProc.iMod[m].iExportDir + 4 * (aOrd - 1));
+	return 0;
+}
+uint32_t MakeTi(CArmCpu& aCpu, const TProcess& aProc, int aDll, int aIdx)
+{
+	if (aIdx < 0 || aIdx >= KMaxTi) return 0;
+	if (gTiAddr[aDll][aIdx]) return gTiAddr[aDll][aIdx];
+	const TBridgeTi& t = gDll[aDll].iTi[aIdx];
+	const uint32_t base = t.iBase >= 0 ? MakeTi(aCpu, aProc, aDll, t.iBase) : 0;
+	// the vptr = the vtable export + the offset drtaeabi's own type_info objects use (its XLeaveException type_info is a __class_type_info)
+	const uint32_t clsVt = ProcExport(aCpu, aProc, "drtaeabi.dll", KOrdClassTiVt), siVt = ProcExport(aCpu, aProc, "drtaeabi.dll", KOrdSiClassTiVt);
+	const uint32_t own = ProcExport(aCpu, aProc, "drtaeabi.dll", KOrdTypeInfo);
+	uint32_t adj = own && aCpu.Valid(own, 4) ? aCpu.Read32(own) - clsVt : 8;
+	if (adj > 16) adj = 8;
+	if (!clsVt) return 0;
+	const uint32_t nl = (uint32_t)strlen(t.iMangled) + 1;
+	const uint32_t at = gThr.iAlloc ? gThr.iAlloc(12 + nl) : 0;		// guest memory (the embedder's guest allocator)
+	if (!at) return 0;
+	for (uint32_t k = 0; k < nl; ++k) aCpu.Write8(at + 12 + k, (uint8_t)t.iMangled[k]);
+	aCpu.Write32(at, (base && siVt ? siVt : clsVt) + adj);
+	aCpu.Write32(at + 4, at + 12);
+	aCpu.Write32(at + 8, base);
+	gTiAddr[aDll][aIdx] = at;
+	if (gTrace && gThr.iLog)
+	{
+		char line[160];
+		snprintf(line, sizeof(line), "[proteus] bridge type_info %s at %x vptr %x (cls %x si %x adj %u) base %x", t.iMangled, at, aCpu.Read32(at), clsVt, siVt, adj, base);
+		gThr.iLog(line);
+	}
+	return at;
+}
+}
+
+uint32_t BridgeTypeInfo(CArmCpu& aCpu, const TProcess& aProc, uint32_t aKey)
+{
+	if (gTiProc != &aProc) { memset(gTiAddr, 0, sizeof(gTiAddr)); gTiProc = &aProc; }
+	const int dll = (int)(aKey >> 16), idx = (int)(aKey & 0xFFFF);
+	return dll < 2 && gDll[dll].iTi ? MakeTi(aCpu, aProc, dll, idx) : 0;
+}
+
+static bool TypeInfoAlias(int aDll, const char* aName, const char*& aArmDll, uint32_t& aArmOrd)
+{
+	if (strncmp(aName, "_ZTI", 4) || !gDll[aDll].iTi) return false;
+	for (int i = 0; gDll[aDll].iTi[i].iMangled && i < KMaxTi; ++i)
+		if (!strcmp(gDll[aDll].iTi[i].iName, aName)) { aArmDll = "*ti"; aArmOrd = (uint32_t)aDll << 16 | (uint32_t)i; return true; }
 	return false;
 }
 
