@@ -241,6 +241,24 @@ bool BridgeDataImport(const char* aDll, uint32_t aOrd, uint32_t& aAddr);
 bool BridgeMapWanted(uint32_t& aLo, uint32_t& aHi);
 uintptr_t BridgeStubFn(uint32_t aAddr);	// (host tests) the callable function behind a reverse stub address
 void BridgeSetResolver(uintptr_t (*aFn)(uint32_t));	// (host tests)
+// native threads for guest threads (R1): what the embedder provides -- the current native thread's id, guest memory for a guest thread's stack
+// (a guest address; on the board the native heap is guest memory), and the translator per CPU (null = the interpreter)
+struct TBridgeThreads
+{
+	uint32_t (*iThreadId)();
+	uint32_t (*iAlloc)(uint32_t aSize);
+	void (*iFree)(uint32_t aAddr);
+	TArmJit* (*iJitNew)(CArmCpu& aCpu);
+	void (*iJitDelete)(TArmJit* aJit);
+	void (*iLog)(const char* aLine);
+};
+void BridgeSetThreads(const TBridgeThreads& aThreads);
+bool BridgeIsGuestThread(const CArmCpu& aCpu);			// a CPU of a native guest thread (not the process's primary): the HLE is not for it
+// objects across the boundary: the guest function behind a reverse stub (0 = none); the guest called a native address (a native object's
+// virtual function): call it with r0-r3 + two stack words, result in r0/r1, and return lr (0 = the bridge is off)
+uint32_t BridgeStubTarget(uint32_t aPc);
+uint32_t BridgeNativeCall(CArmCpu& aCpu, uint32_t aPc);
+uint32_t BridgeOnForeignPc(CArmCpu& aCpu, uint32_t aPc, void* aCtx);	// the two above, for an embedder with no other foreign-pc mapping
 const char* BridgeNativeName(const char* aDll, uint32_t aNativeOrdinal);	// (host tests)
 // eglCreateWindowSurface(dpy, config, window, attribs) with the guest's RWindow (proteusglwin.cpp)
 extern int gExecTraceWindow;		// > 0: log the next that many executive calls

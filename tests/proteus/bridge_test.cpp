@@ -14,6 +14,10 @@
 #include <vector>
 #include <map>
 #include <stdarg.h>
+#include <thread>
+#include <mutex>
+#include <unistd.h>
+#include <sys/syscall.h>
 
 using namespace proteus;
 typedef uint32_t U;
@@ -55,7 +59,8 @@ static TPtrC16V Fk_TDesC16_Left(U self, U n) { TPtrC16V v; v.len = (1u << 28) | 
 static U Fk_TDesC8_AtC(U self, U i) { return self + 8 + i; }
 // RPointerArrayBase: iCount, iEntries, iAllocated, iGranularity (e32cmn.h)
 static U Fk_RPAB_C2(U self) { W32(self, 0); W32(self + 4, 0); W32(self + 8, 0); W32(self + 12, 8); return 0; }
-static U Alloc(U n) { U a = gHeapTop; gHeapTop += (n + 15) & ~15u; return a; }
+static std::mutex gHeapLock;
+static U Alloc(U n) { std::lock_guard<std::mutex> l(gHeapLock); if (n > (16u << 20)) return 0; U a = gHeapTop; gHeapTop += (n + 15) & ~15u; return a; }
 static void Grow(U self) { U cnt = R32(self), ent = R32(self + 4), cap = R32(self + 8); if (cnt < cap) return; U ncap = cap ? cap * 2 : 8, ne = Alloc(4 * ncap); for (U i = 0; i < cnt; ++i) W32(ne + 4 * i, R32(ent + 4 * i)); W32(self + 4, ne); W32(self + 8, ncap); }
 static U Fk_RPAB_Append(U self, U p) { Grow(self); U c = R32(self); W32(R32(self + 4) + 4 * c, p); W32(self, c + 1); return 0; }
 static U Fk_RPAB_Insert(U self, U p, U at) { Grow(self); U c = R32(self), e = R32(self + 4); for (U i = c; i > at; --i) W32(e + 4 * i, R32(e + 4 * (i - 1))); W32(e + 4 * at, p); W32(self, c + 1); return 0; }
@@ -87,6 +92,65 @@ static U Fk_RAB_HeapSort(U self, U order)
 	return 0;
 }
 static U Fk_nop() { return 0; }
+// ---- R1 threads: RThread::Create starts a REAL host thread at Resume; its entry is the reverse stub the bridge made for the guest's ThreadFn,
+// which runs on a new guest CPU (bridge.cpp RunOnNewCpu)
+struct TFakeThread { U iFn, iArg, iStatus; int iExit; std::thread iT; };
+static std::vector<TFakeThread*> gThreads;
+static U Fk_RThread_Create(U self, U name, U fn, U stack, U heap, U arg, U owner)
+{
+	TFakeThread* t = new TFakeThread(); t->iFn = fn; t->iArg = arg; t->iStatus = 0; t->iExit = -1;
+	gThreads.push_back(t); W32(self, (U)gThreads.size()); return 0;
+}
+static TFakeThread* Th(U self) { U h = R32(self); return h && h <= gThreads.size() ? gThreads[h - 1] : 0; }
+static U Fk_RThread_Logon(U self, U st) { W32(st, 0x80000001u); Th(self)->iStatus = st; return 0; }
+static U Fk_RThread_Resume(U self)
+{
+	TFakeThread* t = Th(self);
+	t->iT = std::thread([t]() {
+		typedef U (*F)(U, U, U, U);
+		t->iExit = (int)((F)BridgeStubFn(t->iFn))(t->iArg, 0, 0, 0);
+		printf("  native thread %ld: guest thread function returned %d\n", (long)syscall(SYS_gettid), t->iExit);
+	});
+	return 0;
+}
+static U Fk_User_WaitForRequest(U st)
+{
+	for (TFakeThread* t : gThreads) if (t->iStatus == st && t->iT.joinable()) { t->iT.join(); W32(st, (U)t->iExit); }
+	return 0;
+}
+static U Fk_RThread_ExitReason(U self) { return (U)Th(self)->iExit; }
+static U Fk_RHandleBase_Close(U self) { W32(self, 0); return 0; }
+// ---- R1 active objects: a native CActiveScheduler that calls RunL through the object's vtable (patched to reverse stubs by the bridge), and a
+// natively constructed scheduler whose own vtable is NATIVE (its destructor is a native address the guest calls: BridgeNativeCall)
+static std::vector<U> gActive;
+static U gSchedVt, gStop, gNativeDtorCalls;
+static U Fk_CActive_C2(U self, U pri) { W32(self + 4, 0); W32(self + 8, 0); W32(self + 20, pri); return self; }
+static U Fk_CActive_D2(U self) { for (size_t i = 0; i < gActive.size(); ++i) if (gActive[i] == self) gActive.erase(gActive.begin() + i); return self; }
+static U Fk_CActive_SetActive(U self) { W32(self + 8, R32(self + 8) | 1); return 0; }
+static U Fk_CActive_Cancel(U self) { W32(self + 8, R32(self + 8) & ~1u); return 0; }
+static U Fk_Sched_Add(U a) { gActive.push_back(a); return 0; }
+static U Fk_Sched_Install(U) { return 0; }
+static U Fk_Sched_Stop() { gStop = 1; return 0; }
+static U Fk_Sched_Start()
+{
+	gStop = 0;
+	for (int guard = 0; !gStop && guard < 100; ++guard)
+		for (U a : std::vector<U>(gActive))
+			if ((R32(a + 8) & 1) && R32(a + 4) != 0x80000001u)
+			{
+				W32(a + 8, R32(a + 8) & ~1u);
+				const U runl = R32(R32(a) + 16);			// slot 4: RunL
+				if ((runl & 0xFF000000u) != 0xE0000000u) { printf("  RunL slot %x is not a reverse stub: the vtable was not patched\n", runl); return 0; }
+				typedef U (*F)(U, U, U, U);
+				((F)BridgeStubFn(runl))(a, 0, 0, 0);
+				break;
+			}
+	return 0;
+}
+static U Fk_Sched_D0(U) { ++gNativeDtorCalls; return 0; }
+static U Fk_Sched_C2(U self) { W32(self, gSchedVt + 8); return self; }
+static U Fk_RequestComplete(U pp, U r) { W32(R32(pp), r); W32(pp, 0); return 0; }
+static U Fk_User_AllocZ(U n) { U a = Alloc(n); for (U i = 0; i < n; ++i) gCpu->Write8(a + i, 0); return a; }
 // TDes::(Append)FormatList against the x32/SysV va_list the bridge builds (here the host's LP64 __va_list_tag, same layout): the conversions are
 // done by libc's snprintf for the numbers and by hand for %S (a guest descriptor pointer) -- a wrong slot layout gives a wrong string
 static void FormatInto(U self, U fmtd, void* va, bool append, bool wide)
@@ -140,6 +204,14 @@ static const TFake KFakes[] = {
 	{ "_ZN6TPtrC8C1EPKh", (void*)Fk_TPtrC8_C1_ptr },
 	{ "_ZN10RArrayBaseC2Ei", (void*)Fk_RAB_C2 }, { "_ZN10RArrayBase6AppendEPKv", (void*)Fk_RAB_Append }, { "_ZNK10RArrayBase2AtEi", (void*)Fk_RAB_At },
 	{ "_ZN10RArrayBase5CloseEv", (void*)Fk_RAB_Close }, { "_ZN10RArrayBase8HeapSortEPFiPKvS1_E", (void*)Fk_RAB_HeapSort },
+	{ "_ZN7RThread6CreateERK7TDesC16PFiPvEiP10RAllocatorS3_10TOwnerType", (void*)Fk_RThread_Create }, { "_ZNK7RThread5LogonER14TRequestStatus", (void*)Fk_RThread_Logon },
+	{ "_ZNK7RThread6ResumeEv", (void*)Fk_RThread_Resume }, { "_ZN4User14WaitForRequestER14TRequestStatus", (void*)Fk_User_WaitForRequest },
+	{ "_ZNK7RThread10ExitReasonEv", (void*)Fk_RThread_ExitReason }, { "_ZN11RHandleBase5CloseEv", (void*)Fk_RHandleBase_Close },
+	{ "_ZN7CActiveC2Ei", (void*)Fk_CActive_C2 }, { "_ZN7CActiveD2Ev", (void*)Fk_CActive_D2 }, { "_ZN7CActive9SetActiveEv", (void*)Fk_CActive_SetActive },
+	{ "_ZN7CActive6CancelEv", (void*)Fk_CActive_Cancel }, { "_ZN16CActiveScheduler3AddEP7CActive", (void*)Fk_Sched_Add },
+	{ "_ZN16CActiveScheduler7InstallEPS_", (void*)Fk_Sched_Install }, { "_ZN16CActiveScheduler4StopEv", (void*)Fk_Sched_Stop },
+	{ "_ZN16CActiveScheduler5StartEv", (void*)Fk_Sched_Start }, { "_ZN16CActiveSchedulerC1Ev", (void*)Fk_Sched_C2 }, { "_ZN16CActiveSchedulerC2Ev", (void*)Fk_Sched_C2 },
+	{ "_ZN4User15RequestCompleteERP14TRequestStatusi", (void*)Fk_RequestComplete }, { "_ZN4User6AllocZEi", (void*)Fk_User_AllocZ },
 	{ "memset", (void*)Fk_memset }, { "_ZN4User15HandleExceptionEPv", (void*)Fk_nop }, { "_ZN4User9InvariantEv", (void*)Fk_nop },
 };
 static std::vector<void*> gFnTable;		// host: iNativeExport returns a 32-bit number, so the (64-bit) function pointers are handed out as indices
@@ -152,12 +224,14 @@ static uint32_t NativeExport(void*, const char* aDll, int aOrd)
 	printf("  no fake for native %s ordinal %d (%s)\n", aDll, aOrd, n);
 	return 0;
 }
-static uintptr_t Resolve(uint32_t t) { return (uintptr_t)gFnTable[t - 1]; }
+static uintptr_t Resolve(uint32_t t) { if (t >= 0x200000u && t < 0x300000u) t = (t - 0x200000u) >> 1;	// an even token (a vtable slot the guest branches to: bit 0 would be Thumb)
+	if (!t || t > gFnTable.size()) { printf("  foreign pc %x is no native function\n", t); return 0; } return (uintptr_t)gFnTable[t - 1]; }
 static void Log(const char* l, void*) { printf("  | %s\n", l); }
 static const uint8_t* FindDll(const char*, uint32_t&, char&, void*) { return 0; }
 
 int main(int argc, char** argv)
 {
+	setvbuf(stdout, 0, _IONBF, 0);
 	const char* path = argc > 1 ? argv[1] : "emitter/proteusbridge.exe";
 	FILE* f = fopen(path, "rb");
 	if (!f) { printf("cannot open %s\n", path); return 2; }
@@ -172,7 +246,7 @@ int main(int argc, char** argv)
 	proc.iRealEuser = false;		// the gate: no ARM euser and no real-euser executive
 	BridgeSetResolver(Resolve);
 	BridgeSetLookup([](void*, const char*, int o) -> uint32_t { return 0xC0DE0000u | (uint32_t)o; }, 0);
-	BridgeConfigure("# the euser imports go native\nnative euser.dll\n");
+	BridgeConfigure(getenv("BRTRACE") ? "native euser.dll\ntrace\n" : "# the euser imports go native\nnative euser.dll\n");
 	{	// DATA imports: a vtable export (euser ordinal 1359 _ZTV5CBase) is the native address itself; a function export is not data
 		uint32_t a = 0;
 		const bool vt = BridgeDataImport("euser{000a0000}[100039e5].dll", 1359, a) && a == (0xC0DE0000u | 1359);
@@ -185,9 +259,23 @@ int main(int argc, char** argv)
 	TIpcBridge ipc; memset(&ipc, 0, sizeof ipc); ipc.iNativeExport = NativeExport;
 	THle hle = { &proc.iMod[0], &proc, Log, 0, 0 };
 	hle.iIpc = &ipc;
+	{	// R1 threads: host thread ids, guest stacks from the fake heap, the interpreter on every CPU
+		TBridgeThreads thr; memset(&thr, 0, sizeof thr);
+		thr.iThreadId = []() -> uint32_t { return (uint32_t)syscall(SYS_gettid); };
+		thr.iAlloc = [](uint32_t n) -> uint32_t { return ::Alloc(n); };
+		thr.iLog = [](const char* l) { printf("  | %s%c", l, 10); };
+		BridgeSetThreads(thr);
+	}
+	{	// the native CActiveScheduler's vtable: [offset, typeinfo, D1, D0, ...] in guest memory, slot D0 = a native function (a token gResolve maps)
+		gFnTable.push_back((void*)Fk_Sched_D0);
+		gSchedVt = Alloc(64);
+		for (U k = 0; k < 16; ++k) W32(gSchedVt + 4 * k, 0);
+		W32(gSchedVt + 8 + 4, 0x200000u + 2 * (U)gFnTable.size());	}
+	cpu.iOnForeignPc = BridgeOnForeignPc;
 	RunExe(cpu, hle, 50000000);
+	printf("native destructor calls from ARM code: %u%c", gNativeDtorCalls, 10);
 	printf("halt %d exit %d steps %llu note '%s' natives bound %u\n", (int)cpu.iHalt, cpu.iExitCode, (unsigned long long)cpu.iSteps, cpu.iNote, gCalls);
-	const bool ok = cpu.iHalt == EExited && cpu.iExitCode == 0 && gCalls >= 20;
+	const bool ok = cpu.iHalt == EExited && cpu.iExitCode == 0 && gCalls >= 20 && gNativeDtorCalls == 1;
 	printf("bridge: %s\n", ok ? "PASS" : "FAIL");
 	return ok ? 0 : 1;
 }

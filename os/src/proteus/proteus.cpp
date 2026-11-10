@@ -1540,9 +1540,11 @@ void proteus::JitDiag(const char* aText)
 // the native fntstr.dll. The guest has the ARM twin of that DLL with the same class layouts, so run the twin's function on the
 // object: the native function is export i of the native DLL -> export i of the ARM DLL; else slot k of an exported native vtable
 // (_ZTV.., the export points at its first slot) -> slot k of the ARM vtable of the same ordinal. 0 = none (the fetch faults).
-static uint32_t ForeignPc(proteus::CArmCpu& aCpu, uint32_t aPc, void* aHleP)
+static uint32_t ForeignTwin(proteus::CArmCpu& aCpu, uint32_t aPc, void* aHleP)
 	{
 	const proteus::THle& hle = *(const proteus::THle*)aHleP;
+	if (const TUint32 stub = proteus::BridgeStubTarget(aPc))		// a reverse stub in a patched vtable slot: its ARM function (bridge.cpp)
+		return stub;
 	if (!hle.iProcess)
 		return 0;
 	const TRomHeader* rom = (const TRomHeader*)hle.iRomHeader;
@@ -1596,6 +1598,18 @@ static uint32_t ForeignPc(proteus::CArmCpu& aCpu, uint32_t aPc, void* aHleP)
 		cacheTo[cached++] = to;
 		}
 	return to;
+	}
+
+static uint32_t BridgeThreadId() { return (uint32_t)RThread().Id(); }
+static uint32_t BridgeGuestAlloc(uint32_t aSize) { return (uint32_t)User::Alloc((TInt)aSize); }
+static void BridgeGuestFree(uint32_t aAddr) { User::Free((TAny*)aAddr); }
+static void BridgeThreadLog(const char* aLine) { RDebug::Printf("PH: %s", aLine); }
+
+// ... and with a native euser (bridge.cfg), a native function no ARM twin maps: call it natively (a virtual of a native-created object)
+static uint32_t ForeignPc(proteus::CArmCpu& aCpu, uint32_t aPc, void* aHleP)
+	{
+	const TUint32 to = ForeignTwin(aCpu, aPc, aHleP);
+	return to ? to : proteus::BridgeNativeCall(aCpu, aPc);
 	}
 
 static void BreakHit(proteus::CArmCpu& aCpu, TInt aIndex, void* aHleP)
@@ -1698,6 +1712,20 @@ static TInt MainL()
 		}
 	}
 	proteus::BridgeSetLookup(BridgeNativeExportCtx, NULL);
+	{	// native threads for guest threads (bridge.cpp): the kernel thread id, guest stacks from the native heap (guest memory under the map)
+	proteus::TBridgeThreads thr;
+	thr.iThreadId = BridgeThreadId;
+	thr.iAlloc = BridgeGuestAlloc;
+	thr.iFree = BridgeGuestFree;
+#ifdef PROTEUS_JIT
+	thr.iJitNew = interpOnly ? NULL : proteus::JitNew;
+#else
+	thr.iJitNew = NULL;
+#endif
+	thr.iJitDelete = proteus::JitDelete;
+	thr.iLog = BridgeThreadLog;
+	proteus::BridgeSetThreads(thr);
+	}
 	const TBool nativeEuser = proteus::BridgeNative("euser.dll");
 	const TBool realEuser = !nativeEuser && (forceReal || (!forceHle && arg.Length() && euserState == KErrNone));
 	RDebug::Printf("PH: proteus euser: %s", nativeEuser ? "NATIVE (bridge.cfg)" : realEuser ? "real ARM" : "HLE");

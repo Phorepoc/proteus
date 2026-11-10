@@ -338,6 +338,12 @@ static void OnTrap(CArmCpu& cpu, uint32_t addr, void* ctx)
 	if (BridgeNative(dllName) && BridgeTrap(cpu, h, dllName, ord))		// a DLL bridge.cfg runs natively (R1)
 		return;
 	const char* name = (strncmp(dllName, "euser", 5) == 0) ? EuserName(ord) : "";
+	if (BridgeIsGuestThread(cpu) && strcmp(name, "_ZN6RDebug6PrintfEPKcz"))
+	{	// a native guest thread (bridge.cpp RunOnNewCpu): the HLE executive belongs to the primary thread and is not thread-safe
+		snprintf(cpu.iNote, sizeof(cpu.iNote), "HLE import %s ordinal %u on a native guest thread", dllName, (unsigned)ord);
+		cpu.Halt(EHleStop);
+		return;
+	}
 	if (!strcmp(name, "_ZN6RDebug6PrintfEPKcz"))
 	{
 		char buf[200];

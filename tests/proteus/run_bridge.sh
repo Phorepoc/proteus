@@ -7,7 +7,7 @@
 set -eu
 cd "$(dirname "$0")/../.."
 EXE=$(cd "$(dirname "${1:?proteusbridge.exe}")" && (pwd -W 2>/dev/null || pwd))
-MSYS_NO_PATHCONV=1 docker.exe run --rm -v "$(pwd -W 2>/dev/null || pwd)":/repo:ro -v "$EXE":/x:ro phorepoc-x86 bash -c '
+MSYS_NO_PATHCONV=1 docker.exe run --rm -e BRTRACE -v "$(pwd -W 2>/dev/null || pwd)":/repo:ro -v "$EXE":/x:ro phorepoc-x86 bash -c '
 S=os/src/proteus; cd /repo
 g++ -std=c++17 -O1 -w -o /tmp/bridge_test tests/proteus/bridge_test.cpp tests/proteus/glstub.cpp $S/armcpu.cpp $S/thumb.cpp $S/proteusrt.cpp \
-  $S/e32decomp.cpp $S/proteusgl.cpp $S/bridge.cpp $S/proteusexec.cpp && /tmp/bridge_test /x/'"$(basename "$1")"
+  $S/e32decomp.cpp $S/proteusgl.cpp $S/bridge.cpp $S/proteusexec.cpp -lpthread && /tmp/bridge_test /x/'"$(basename "$1")"

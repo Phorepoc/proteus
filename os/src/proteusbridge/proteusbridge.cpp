@@ -1,6 +1,7 @@
 // Copyright The Phorepoc Authors
 // SPDX-License-Identifier: Apache-2.0
-// proteusbridge.cpp -- rung R1 gate 1: ARM code calling the NATIVE euser through the bridge (no varargs, no comparator).
+// proteusbridge.cpp -- rung R1 gates: ARM code calling the NATIVE euser through the bridge (descriptors, arrays with a comparator, the heap,
+// varargs Format, a guest thread as a native thread, an ARM CActive under the native active scheduler).
 // Exit code = the number of the first failing check, 0 = all pass. Run: bash tests/proteus/run.sh --bridge (host, fake natives) or on the board.
 #include <e32std.h>
 #include <e32base.h>
@@ -89,11 +90,70 @@ static TInt Formats()
 	return 0;
 	}
 
+// R1: a guest thread is a native thread (the native RThread::Create calls the thread function back through a reverse stub on a new CPU)
+struct TShared { TInt iIn; TInt iOut; };
+static TInt ThreadFn(TAny* aArg)
+	{
+	TShared& s = *(TShared*)aArg;
+	TBuf<16> b;
+	b.Num(s.iIn * 3);			// bridged euser calls from the guest thread's own CPU
+	s.iOut = b.Length() * 100 + s.iIn * 3;
+	return 7;
+	}
+
+static TInt Threads()
+	{
+	TShared s = { 41, 0 };
+	RThread t;
+	CHECK(50, t.Create(_L("proteusbridge-worker"), ThreadFn, 0x2000, NULL, &s) == KErrNone);
+	TRequestStatus st;
+	t.Logon(st);
+	t.Resume();
+	User::WaitForRequest(st);
+	CHECK(51, st.Int() == 7);
+	CHECK(52, s.iOut == 3 * 100 + 123);
+	CHECK(53, t.ExitReason() == 7);
+	t.Close();
+	return 0;
+	}
+
+// R1: an ARM CActive run by the NATIVE CActiveScheduler (its RunL is called from native code: the vtable slot is a reverse stub), and an ARM
+// call through the vtable of a natively constructed object (the CActiveScheduler's virtual destructor: a native address the guest calls)
+class CTick : public CActive
+	{
+public:
+	CTick() : CActive(EPriorityStandard) { CActiveScheduler::Add(this); }
+	~CTick() { Cancel(); }
+	void Go() { iStatus = KRequestPending; SetActive(); TRequestStatus* p = &iStatus; User::RequestComplete(p, KErrNone); }
+	TInt iRuns;
+private:
+	void RunL() { if (++iRuns < 3) Go(); else CActiveScheduler::Stop(); }
+	void DoCancel() {}
+	};
+
+static TInt ActiveObjects()
+	{
+	CActiveScheduler* s = new CActiveScheduler;
+	CHECK(60, s != NULL);
+	CActiveScheduler::Install(s);
+	CTick* t = new CTick;
+	CHECK(61, t != NULL);
+	t->Go();
+	CActiveScheduler::Start();
+	CHECK(62, t->iRuns == 3);
+	delete t;					// the ARM destructor through the patched slot (ARM -> stub -> back to ARM)
+	CActiveScheduler::Install(NULL);
+	delete s;					// a native object's virtual destructor called from ARM code
+	return 0;
+	}
+
 GLDEF_C TInt E32Main()
 	{
 	TInt r = Descriptors();
 	if (!r) r = Arrays();
 	if (!r) r = Heap();
 	if (!r) r = Formats();
+	if (!r) r = Threads();
+	if (!r) r = ActiveObjects();
 	return r;
 	}

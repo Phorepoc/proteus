@@ -75,14 +75,100 @@ uint32_t BridgeCallGuest(CArmCpu& aCpu, uint32_t aFn, uint32_t a0, uint32_t a1, 
 	return ok ? result : 0;						// (anything else: the guest stopped in the callback; the halt stays and ends the run)
 }
 
+// ---- one guest CPU per native thread. A guest thread is a NATIVE thread: the guest's RThread::Create goes to the native euser with the thread
+// function turned into a reverse stub (BrCb), the kernel starts a real thread, and its first entry into the stub finds no CPU for that thread:
+// RunOnNewCpu gives it its own CArmCpu (a copy of the primary's memory view and hooks, its own registers, a guest stack from the native heap,
+// its own translator when the embedder provides one) and runs the function to its return there. Guest memory is the one shared region/map;
+// code is translated per CPU (dynarmic has no shared cache across instances). A thread that already has a CPU (the primary, or a guest thread
+// calling native code that calls back) runs the callback nested on it. The cpu<->thread table is keyed by the embedder's thread id.
 namespace
 {
-enum { KMaxStubs = 64 };
+volatile int gLockWord;
+struct TLock
+{
+	TLock() { while (__atomic_exchange_n(&gLockWord, 1, __ATOMIC_ACQUIRE)) {} }
+	~TLock() { __atomic_store_n(&gLockWord, 0, __ATOMIC_RELEASE); }
+};
+enum { KMaxCpus = 128, KGuestStack = 64 * 1024 };
+struct TCpuOf { uint32_t iId; CArmCpu* iCpu; };
+TCpuOf gCpus[KMaxCpus];
+CArmCpu* gPrimary;
+TBridgeThreads gThr;
+uint32_t ThreadId() { return gThr.iThreadId ? gThr.iThreadId() : 0; }
+CArmCpu* CpuOfThisThread()
+{
+	const uint32_t id = ThreadId();
+	TLock lock;
+	for (int i = 0; i < KMaxCpus; ++i)
+		if (gCpus[i].iCpu && gCpus[i].iId == id) return gCpus[i].iCpu;
+	return 0;
+}
+bool SetCpuOfThisThread(CArmCpu* aCpu, CArmCpu* aWas)
+{
+	const uint32_t id = ThreadId();
+	TLock lock;
+	for (int i = 0; i < KMaxCpus; ++i)
+		if (gCpus[i].iCpu == aWas && (aWas ? gCpus[i].iId == id : true)) { gCpus[i].iId = id; gCpus[i].iCpu = aCpu; return true; }
+	return false;
+}
+}
+
+void BridgeSetThreads(const TBridgeThreads& aThreads) { gThr = aThreads; }
+bool BridgeIsGuestThread(const CArmCpu& aCpu) { return gPrimary && &aCpu != gPrimary; }
+
+// the primary CPU of the process (the main thread's): registered by the first bridged call it makes
+static void RegisterPrimary(CArmCpu& aCpu)
+{
+	if (gPrimary) return;
+	gPrimary = &aCpu;
+	SetCpuOfThisThread(&aCpu, 0);
+}
+
+static uint32_t RunOnNewCpu(uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3)
+{
+	if (!gPrimary || !gThr.iAlloc) return 0;
+	const uint32_t stack = gThr.iAlloc(KGuestStack);
+	if (!stack) return 0;
+	CArmCpu* c = new CArmCpu(*gPrimary);				// the memory view (region, page map, windows) and the hooks are shared
+	memset(c->R, 0, sizeof(c->R)); memset(c->iD, 0, sizeof(c->iD));
+	c->iN = c->iZ = c->iC = c->iV = c->iT = c->iGE = 0;
+	c->iFpscr = 0; c->iTpidrurw = c->iTpidruro = 0;
+	c->iHalt = ERunning; c->iExitCode = 0; c->iSteps = 0; c->iExcl = false;
+	c->iSliceSteps = 0; c->iNextSlice = 0;				// no guest scheduler: the kernel schedules the thread
+	c->iStatSlow = c->iStatSvc = c->iStatTrap = c->iStatMem = 0;
+	c->iNote[0] = 0;
+	c->iJit = gThr.iJitNew ? gThr.iJitNew(*c) : 0;
+	if (!SetCpuOfThisThread(c, 0)) { if (c->iJit && gThr.iJitDelete) gThr.iJitDelete(c->iJit); delete c; if (gThr.iFree) gThr.iFree(stack); return 0; }
+	c->R[0] = a0; c->R[1] = a1; c->R[2] = a2; c->R[3] = a3;
+	c->R[13] = (stack + KGuestStack) & ~7u;
+	c->R[14] = KReturnToHost;
+	c->Branch(aFn);
+	c->Run(~0ull);
+	const uint32_t result = c->iHalt == EReturned ? c->R[0] : 0;
+	if (c->iHalt != EReturned && gThr.iLog)
+	{
+		char line[200];
+		snprintf(line, sizeof(line), "[proteus] guest thread %x stopped: halt %d exit %d pc %x fault %x sp %x note '%s'", ThreadId(), (int)c->iHalt, c->iExitCode, c->iLastPc, c->iFaultAddr, c->R[13], c->iNote);
+		gThr.iLog(line);
+	}
+	SetCpuOfThisThread(0, c);
+	if (c->iJit && gThr.iJitDelete) gThr.iJitDelete(c->iJit);
+	delete c;
+	if (gThr.iFree) gThr.iFree(stack);
+	return result;
+}
+
+namespace
+{
+enum { KMaxStubs = 512 };
 struct TRevStub { uint32_t iFn; };
 TRevStub gStub[KMaxStubs];
 int gStubCount;
-CArmCpu* gStubCpu;
-template <int K> uint32_t RevStub(uint32_t a, uint32_t b, uint32_t c, uint32_t d) { return BridgeCallGuest(*gStubCpu, gStub[K].iFn, a, b, c, d); }
+template <int K> uint32_t RevStub(uint32_t a, uint32_t b, uint32_t c, uint32_t d)
+{
+	CArmCpu* cpu = CpuOfThisThread();
+	return cpu ? BridgeCallGuest(*cpu, gStub[K].iFn, a, b, c, d) : RunOnNewCpu(gStub[K].iFn, a, b, c, d);
+}
 typedef uint32_t (*TStubFn)(uint32_t, uint32_t, uint32_t, uint32_t);
 template <int K> struct TStubTable { static void Fill(TStubFn* t) { t[K] = &RevStub<K>; TStubTable<K - 1>::Fill(t); } };
 template <> struct TStubTable<-1> { static void Fill(TStubFn*) {} };
@@ -93,17 +179,27 @@ TStubFn gStubFn[KMaxStubs];
 static uint32_t StubAddress(int k) { return sizeof(void*) == 4 ? (uint32_t)(uintptr_t)gStubFn[k] : 0xE0000000u | (uint32_t)k; }
 uintptr_t BridgeStubFn(uint32_t aAddr) { return (aAddr & 0xFF000000u) == 0xE0000000u ? (uintptr_t)gStubFn[aAddr & 0xFFFFFF] : (uintptr_t)aAddr; }
 
+// the guest function behind a reverse stub address (0 = not a stub): guest code reached a stub through a patched vtable slot (see PatchVtable)
+uint32_t BridgeStubTarget(uint32_t aPc)
+{
+	const int n = __atomic_load_n(&gStubCount, __ATOMIC_ACQUIRE);
+	for (int k = 0; k < n; ++k)
+		if (StubAddress(k) == (aPc & ~1u)) return gStub[k].iFn;
+	return 0;
+}
+
 static uint32_t BrCb(CArmCpu& aCpu, uint32_t aGuestFn)
 {
 	if (!aGuestFn || !aCpu.InRegion(aGuestFn & ~1u, 2))
 		return aGuestFn;
 	if (!gStubFn[0]) TStubTable<KMaxStubs - 1>::Fill(gStubFn);
-	gStubCpu = &aCpu;
+	TLock lock;
 	for (int k = 0; k < gStubCount; ++k)
 		if (gStub[k].iFn == aGuestFn) return StubAddress(k);
 	if (gStubCount == KMaxStubs) { aCpu.Halt(EHleStop); strncpy(aCpu.iNote, "bridge: out of callback stubs", sizeof(aCpu.iNote) - 1); return 0; }
 	gStub[gStubCount].iFn = aGuestFn;
-	return StubAddress(gStubCount++);
+	__atomic_store_n(&gStubCount, gStubCount + 1, __ATOMIC_RELEASE);
+	return StubAddress(gStubCount - 1);
 }
 static void BrCbField(CArmCpu& aCpu, uint8_t* aField)
 {
@@ -257,6 +353,69 @@ static uintptr_t NativeByName(const char* aName)
 	return 0;
 }
 
+// ---- ARM-derived objects called from native code (the plan's shadow vtables). An ARM class that derives from a native one (a CActive with its
+// own RunL, a CBase the native cleanup stack destroys, an own CActiveScheduler with Error) has an ARM vtable whose slots hold ARM code addresses
+// native code cannot call. When such an object crosses into native code (the exports below take one), the base class's slots of its vtable are
+// patched IN PLACE to reverse stubs (the vtable is in the guest's own image, which the host can write). In place, not a copy: the ARM ctors and
+// dtors store the vtable's address again, and every object of the class shares it. The ARM side then calls those slots through the stubs too: the
+// fetch outside the guest region maps a stub back to its ARM function (BridgeStubTarget). Slots the derived class adds stay ARM (only ARM calls
+// them); a slot that already holds a native address (an inherited native implementation) stays as it is. Slot counts from the class records
+// (tools/bridge/abi/euser.json). Open: generate this list from every export parameter of a polymorphic class type.
+namespace
+{
+struct TVtArg { const char* iName; int iArg; int iSlots; };
+const TVtArg KVtArgs[] = {
+	{ "_ZN16CActiveScheduler3AddEP7CActive", 0, 6 },		// CActive: ~D1 ~D0 Extension_ DoCancel RunL RunError
+	{ "_ZN16CActiveScheduler7InstallEPS_", 0, 9 },		// CActiveScheduler: ... WaitForAnyRequest Error OnStarting OnStopping Reserved_1/2
+	{ "_ZN12CleanupStack5PushLEP5CBase", 0, 3 },			// CBase: ~D1 ~D0 Extension_
+	{ "_ZN8CCleanup5PushLEP5CBase", 1, 3 },
+};
+}
+
+static void PatchVtable(CArmCpu& aCpu, uint32_t aObj, int aSlots)
+{
+	if (!aObj || !aCpu.InRegion(aObj, 4)) return;
+	const uint32_t vt = aCpu.Read32(aObj);
+	if (!aCpu.InRegion(vt, 4u * aSlots)) return;			// a native vtable (a native-created object): nothing to do
+	for (int k = 0; k < aSlots; ++k)
+	{
+		const uint32_t f = aCpu.Read32(vt + 4 * k);
+		if (f && aCpu.InRegion(f & ~1u, 2))
+			aCpu.Write32(vt + 4 * k, BrCb(aCpu, f));
+	}
+}
+
+static void PatchArgVtables(CArmCpu& aCpu, const char* aName)
+{
+	for (const TVtArg& v : KVtArgs)
+		if (!strcmp(v.iName, aName)) { PatchVtable(aCpu, aCpu.R[v.iArg], v.iSlots); return; }
+}
+
+uint32_t BridgeNativeCall(CArmCpu& aCpu, uint32_t aPc)
+{
+	if (!gDll[0].iNativeOn) return 0;
+	const uintptr_t fn = gResolve ? gResolve(aPc) : (uintptr_t)aPc;
+	if (!fn) return 0;
+	if (gTrace && gCurHle)
+	{
+		char line[120];
+		snprintf(line, sizeof(line), "[proteus] bridge native-call %x (%x,%x,%x,%x)", aPc, aCpu.R[0], aCpu.R[1], aCpu.R[2], aCpu.R[3]);
+		Say(*gCurHle, "%s", line);
+	}
+	const uint32_t sp = aCpu.R[13];
+	const uint32_t s0 = aCpu.Valid(sp, 4) ? aCpu.Read32(sp) : 0, s1 = aCpu.Valid(sp + 4, 4) ? aCpu.Read32(sp + 4) : 0;
+	typedef uint64_t (*F)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+	const uint64_t r = ((F)fn)(aCpu.R[0], aCpu.R[1], aCpu.R[2], aCpu.R[3], s0, s1);
+	aCpu.R[0] = (uint32_t)r; aCpu.R[1] = (uint32_t)(r >> 32);
+	return aCpu.R[14] ? aCpu.R[14] : 0;
+}
+
+uint32_t BridgeOnForeignPc(CArmCpu& aCpu, uint32_t aPc, void*)
+{
+	const uint32_t t = BridgeStubTarget(aPc);
+	return t ? t : BridgeNativeCall(aCpu, aPc);
+}
+
 bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 {
 	gCurHle = &aHle;
@@ -267,8 +426,9 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 		return false;
 	const uint32_t row = aOrd - 1;
 	const TBridgeExport& e = d->iRows[row];
-	if (d->iKeepHle[row])
-		return false;
+	RegisterPrimary(aCpu);
+	if (d->iKeepHle[row] && (&aCpu == gPrimary || !strcmp(e.iName, "_ZN6RDebug6PrintfEPKcz")))
+		return false;		// (a native guest thread's User::Exit etc. go to the native euser: they end that native thread)
 	char note[160];
 	if (!NativeOf(d, row, aHle))
 	{
@@ -294,6 +454,7 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 		snprintf(line, sizeof(line), "[proteus] bridge %s (%x,%x,%x,%x)", e.iName, aCpu.R[0], aCpu.R[1], aCpu.R[2], aCpu.R[3]);
 		Say(aHle, "%s", line);
 	}
+	PatchArgVtables(aCpu, e.iName);
 	const uint32_t lr = aCpu.R[14];
 	e.iCall(aCpu, d->iFn[row]);
 	aCpu.R[14] = lr;
