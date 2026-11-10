@@ -60,10 +60,29 @@ static TInt Heap()
 	return 0;
 	}
 
+// gate 2: Format with %d %Ld %f %S -- the varargs (r2.., a 64-bit value in an even pair after a skipped r3, a double, a descriptor pointer on the stack)
+static TInt Formats()
+	{
+	TBuf<64> f;
+	TBuf<8> name(_L("abc"));
+	TInt64 big = I64LIT(-5000000000);
+	TReal r = 2.5;
+	f.Format(_L("%d %Ld %f %S"), 42, big, r, &name);
+	CHECK(40, f.Find(_L("42 -5000000000 2.5")) == 0);
+	CHECK(41, f.Find(_L("abc")) > 0);
+	f.AppendFormat(_L(" [%x|%c]"), 0xBEEF, 'z');
+	CHECK(42, f.Find(_L("[beef|z]")) > 0);
+	TBuf8<32> g;
+	g.Format(_L8("%d-%u"), -7, 9u);
+	CHECK(43, g.Length() == 4 && g[0] == '-' && g[1] == '7' && g[3] == '9');
+	return 0;
+	}
+
 GLDEF_C TInt E32Main()
 	{
 	TInt r = Descriptors();
 	if (!r) r = Arrays();
 	if (!r) r = Heap();
+	if (!r) r = Formats();
 	return r;
 	}

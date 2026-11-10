@@ -141,8 +141,33 @@ bool BridgeMapWanted(uint32_t& aLo, uint32_t& aHi)
 	return gMap;
 }
 
+static THle* gCurHle;		// the guest being served (the hand-written handlers look natives up through it)
+
+// the native address of row aRow of aDll (looked up once); 0 = the native DLL does not export it
+static uintptr_t NativeOf(TBridgeDll* d, uint32_t aRow, THle& aHle)
+{
+	const TBridgeExport& e = d->iRows[aRow];
+	if (!d->iFn[aRow] && e.iNative && aHle.iIpc && aHle.iIpc->iNativeExport)
+	{
+		d->iFn[aRow] = aHle.iIpc->iNativeExport(aHle.iIpc->iCtx, d->iName, e.iNative);
+		if (d->iFn[aRow] && gResolve)
+			d->iFn[aRow] = gResolve((uint32_t)d->iFn[aRow]);
+	}
+	return d->iFn[aRow];
+}
+
+// a native export of euser by its (ARM-spelled) name -- for a handler that calls a different function than the one imported
+static uintptr_t NativeByName(const char* aName)
+{
+	TBridgeDll* d = &gDll[0];
+	for (uint32_t r = 0; r < d->iCount; ++r)
+		if (!strcmp(d->iRows[r].iName, aName)) return gCurHle ? NativeOf(d, r, *gCurHle) : 0;
+	return 0;
+}
+
 bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 {
+	gCurHle = &aHle;
 	TBridgeDll* d = 0;
 	for (int i = 0; i < 2 && !d; ++i)
 		if (gDll[i].iNativeOn && SameDll(aDll, gDll[i].iName)) d = &gDll[i];
@@ -153,13 +178,8 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 	if (d->iKeepHle[row])
 		return false;
 	char note[160];
-	if (!d->iFn[row])
+	if (!NativeOf(d, row, aHle))
 	{
-		if (e.iNative && aHle.iIpc && aHle.iIpc->iNativeExport)
-			d->iFn[row] = aHle.iIpc->iNativeExport(aHle.iIpc->iCtx, d->iName, e.iNative);
-		if (d->iFn[row] && gResolve)
-			d->iFn[row] = gResolve((uint32_t)d->iFn[row]);
-		if (!d->iFn[row])
 		{
 			snprintf(note, sizeof(note), "bridge: native %s does not export %s", d->iName, e.iName);
 			Say(aHle, "[proteus] %s", note);
@@ -201,4 +221,122 @@ const char* BridgeNativeName(const char* aDll, uint32_t aNativeOrdinal)
 				if (gDll[i].iRows[r].iNative == aNativeOrdinal) return gDll[i].iRows[r].iName;
 	return "";
 }
+}
+
+// ---- the varargs of descriptor formatting (R1 gate 2). An ARM caller passes `...` in the AAPCS layout (r2.. then the stack; a 64-bit value or a
+// double in an even register pair / 8-aligned slot; a float is promoted to double); the native TDes::FormatList / AppendFormatList want an x32
+// SysV va_list. The format string says what each argument is, so the ARM layout is read argument by argument into 8-byte slots (the overflow
+// area of a va_list whose register areas are marked used) and the native function is called with that va_list.
+namespace proteus
+{
+namespace
+{
+struct TVaTag { unsigned iGp, iFp; void* iOverflow; void* iRegSave; };	// the SysV x86-64 / x32 __va_list_tag
+// where the next ARM variadic argument comes from: the registers + stack of the call, or (an ARM va_list) guest memory at a pointer
+struct TArmVa
+{
+	BrArgs* iArgs;
+	CArmCpu& iCpu;
+	uint32_t iAp;
+	bool iMem;
+	uint32_t W() { if (!iMem) return iArgs->W(); const uint32_t v = iCpu.Read32(iAp); iAp += 4; return v; }
+	uint64_t L() { if (!iMem) return iArgs->L(); iAp = (iAp + 7) & ~7u; const uint64_t v = iCpu.Read32(iAp) | (uint64_t)iCpu.Read32(iAp + 4) << 32; iAp += 8; return v; }
+};
+enum { KMaxVaSlots = 64, KMaxFmt = 512 };
+
+// the characters of a descriptor (guest address aDesc) as bytes: narrow, or the low byte of a 16-bit character; the type is in the top nibble
+// of iLength (EBufC 0 / EPtrC 1 / EPtr 2 / EBuf 3)
+int DescBytes(CArmCpu& aCpu, uint32_t aDesc, bool aWide, char* aOut, int aMax)
+{
+	const uint32_t w = aCpu.Read32(aDesc);
+	uint32_t len = w & 0x0FFFFFFF, p;
+	switch (w >> 28)
+	{
+	case 1: p = aCpu.Read32(aDesc + 4); break;
+	case 2: p = aCpu.Read32(aDesc + 8); break;
+	case 3: p = aDesc + 8; break;
+	default: p = aDesc + 4; break;
+	}
+	if ((int)len > aMax - 1) len = (uint32_t)aMax - 1;
+	for (uint32_t i = 0; i < len; ++i) aOut[i] = (char)(aWide ? aCpu.Read16(p + 2 * i) : aCpu.Read8(p + i));
+	aOut[len] = 0;
+	return (int)len;
+}
+
+// the format's conversions -> the slots (Symbian: %d %i %u %x %X %o %c = a word, %Ld %Lu %Lx = 64 bits, %e %f %g = a double, %s %S %p = a pointer,
+// '*' = a word for the width / precision, %% = none)
+int BuildSlots(const char* aFmt, TArmVa& aVa, uint64_t* aSlots)
+{
+	int n = 0;
+	for (const char* s = aFmt; *s && n < KMaxVaSlots - 4; ++s)
+	{
+		if (*s != '%') continue;
+		++s;
+		while (*s == '-' || *s == '+' || *s == '0' || *s == ' ' || *s == '#') ++s;
+		if (*s == '*') { aSlots[n++] = aVa.W(); ++s; } else while (*s >= '0' && *s <= '9') ++s;
+		if (*s == '.')
+		{
+			++s;
+			if (*s == '*') { aSlots[n++] = aVa.W(); ++s; } else while (*s >= '0' && *s <= '9') ++s;
+		}
+		bool big = false;
+		while (*s == 'l' || *s == 'L' || *s == 'h') { if (*s == 'L') big = true; ++s; }
+		switch (*s)
+		{
+		case 'd': case 'i': case 'u': case 'x': case 'X': case 'o': case 'c':
+			if (big) aSlots[n++] = aVa.L(); else aSlots[n++] = aVa.W();
+			break;
+		case 'e': case 'E': case 'f': case 'g': case 'G':
+			aSlots[n++] = aVa.L();
+			break;
+		case 's': case 'S': case 'p':
+			aSlots[n++] = aVa.W();
+			break;
+		case 0: return n;
+		default: break;			// %% and unknown conversions take nothing
+		}
+	}
+	return n;
+}
+
+// kinds: 0 Format(this, fmt, ...)  1 AppendFormat(this, fmt, ...)  2 AppendFormat(this, fmt, overflow, ...)  3 FormatList(this, fmt, va)  4 AppendFormatList(this, fmt, va, overflow)
+void FormatCall(CArmCpu& aCpu, bool aWide, int aKind)
+{
+	BrArgs a(aCpu);
+	const uint32_t self = a.W(), fmtDesc = a.W();
+	uint32_t overflow = 0, vaPtr = 0;
+	if (aKind == 2) overflow = a.W();
+	if (aKind == 3 || aKind == 4) vaPtr = a.W();
+	if (aKind == 4) overflow = a.W();
+	char fmt[KMaxFmt];
+	DescBytes(aCpu, fmtDesc, aWide, fmt, sizeof(fmt));
+	TArmVa va = { &a, aCpu, vaPtr, aKind >= 3 };
+	uint64_t slots[KMaxVaSlots];
+	BuildSlots(fmt, va, slots);
+	TVaTag tag = { 48, 176, slots, 0 };
+	static const char* const KList[2] = { "_ZN5TDes810FormatListERK6TDesC8St9__va_list", "_ZN6TDes1610FormatListERK7TDesC16St9__va_list" };
+	static const char* const KAppend[2] = { "_ZN5TDes816AppendFormatListERK6TDesC8St9__va_listP13TDes8Overflow", "_ZN6TDes1616AppendFormatListERK7TDesC16St9__va_listP14TDes16Overflow" };
+	const bool replace = aKind == 0 || aKind == 3;
+	const uintptr_t fn = NativeByName((replace ? KList : KAppend)[aWide]);
+	if (!fn)
+	{
+		strncpy(aCpu.iNote, "bridge: native TDes::(Append)FormatList is not exported", sizeof(aCpu.iNote) - 1);
+		aCpu.Halt(EHleStop);
+		return;
+	}
+	typedef void (*F)(uint32_t, uint32_t, void*, uint32_t);
+	((F)fn)(self, fmtDesc, &tag, overflow);
+}
+}
+
+void BrOvr_Format16(CArmCpu& c, uintptr_t) { FormatCall(c, true, 0); }
+void BrOvr_AppendFormat16(CArmCpu& c, uintptr_t) { FormatCall(c, true, 1); }
+void BrOvr_AppendFormatOvf16(CArmCpu& c, uintptr_t) { FormatCall(c, true, 2); }
+void BrOvr_FormatList16(CArmCpu& c, uintptr_t) { FormatCall(c, true, 3); }
+void BrOvr_AppendFormatList16(CArmCpu& c, uintptr_t) { FormatCall(c, true, 4); }
+void BrOvr_Format8(CArmCpu& c, uintptr_t) { FormatCall(c, false, 0); }
+void BrOvr_AppendFormat8(CArmCpu& c, uintptr_t) { FormatCall(c, false, 1); }
+void BrOvr_AppendFormatOvf8(CArmCpu& c, uintptr_t) { FormatCall(c, false, 2); }
+void BrOvr_FormatList8(CArmCpu& c, uintptr_t) { FormatCall(c, false, 3); }
+void BrOvr_AppendFormatList8(CArmCpu& c, uintptr_t) { FormatCall(c, false, 4); }
 }

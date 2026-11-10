@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <stdarg.h>
 
 using namespace proteus;
 typedef uint32_t U;
@@ -66,7 +67,38 @@ static U Fk_User_Alloc(U n) { return Alloc(n); }
 static U Fk_User_ReAlloc(U p, U n, U) { U q = Alloc(n); for (U i = 0; i < n; ++i) gCpu->Write8(q + i, gCpu->Read8(p + i)); return q; }
 static U Fk_User_Free(U) { return 0; }
 static U Fk_memset(U p, U c, U n) { for (U i = 0; i < n; ++i) gCpu->Write8(p + i, (uint8_t)c); return p; }
+static U Fk_TBufBase16_C2_des(U self, U d, U max) { W32(self, 3u << 28); W32(self + 4, max); return Fk_TDes16_Copy(self, d); }
+static U Fk_TPtrC8_C1_ptr(U self, U p) { U n = 0; while (gCpu->Read8(p + n)) ++n; W32(self, (1u << 28) | n); W32(self + 4, p); return 0; }
 static U Fk_nop() { return 0; }
+// TDes::(Append)FormatList against the x32/SysV va_list the bridge builds (here the host's LP64 __va_list_tag, same layout): the conversions are
+// done by libc's snprintf for the numbers and by hand for %S (a guest descriptor pointer) -- a wrong slot layout gives a wrong string
+static void FormatInto(U self, U fmtd, void* va, bool append, bool wide)
+{
+	va_list ap; memcpy(ap, va, sizeof(ap));
+	auto chars = [&](U d, std::string& out) { U p = Type(d) == 1 ? R32(d + 4) : Type(d) == 2 ? R32(d + 8) : Type(d) == 3 ? d + 8 : d + 4; for (U i = 0; i < Len(d); ++i) out += (char)(wide ? R16(p + 2 * i) : gCpu->Read8(p + i)); };
+	std::string f, out; chars(fmtd, f);
+	for (size_t i = 0; i < f.size(); ++i)
+	{
+		if (f[i] != '%') { out += f[i]; continue; }
+		std::string piece = "%"; ++i;
+		while (i < f.size() && strchr("-+0 #", f[i])) piece += f[i++];
+		if (f[i] == '*') { piece += std::to_string(va_arg(ap, int)); ++i; } else while (isdigit((unsigned char)f[i])) piece += f[i++];
+		if (f[i] == '.') { piece += f[i++]; if (f[i] == '*') { piece += std::to_string(va_arg(ap, int)); ++i; } else while (isdigit((unsigned char)f[i])) piece += f[i++]; }
+		bool big = false; while (f[i] == 'l' || f[i] == 'L') { big |= f[i] == 'L'; ++i; }
+		char buf[80]; const char c = f[i];
+		if (strchr("diuxXoc", c)) { piece += big ? std::string("ll") + c : std::string(1, c); if (big) snprintf(buf, sizeof buf, piece.c_str(), va_arg(ap, long long)); else snprintf(buf, sizeof buf, piece.c_str(), va_arg(ap, int)); out += buf; }
+		else if (strchr("efgEG", c)) { piece += c; snprintf(buf, sizeof buf, piece.c_str(), va_arg(ap, double)); out += buf; }
+		else if (c == 'S') { U d = (U)(uintptr_t)va_arg(ap, void*); chars(d, out); }
+		else if (c == '%') out += '%';
+	}
+	U n = append ? Len(self) : 0, base = wide ? Ptr16(self) : self + 8;
+	for (char ch : out) { if (wide) gCpu->Write16(base + 2 * n, (uint8_t)ch); else gCpu->Write8(base + n, (uint8_t)ch); ++n; }
+	SetLen(self, n);
+}
+static void Fk_FormatList16(U self, U f, void* va, U) { FormatInto(self, f, va, false, true); }
+static void Fk_AppendFormatList16(U self, U f, void* va, U) { FormatInto(self, f, va, true, true); }
+static void Fk_FormatList8(U self, U f, void* va, U) { FormatInto(self, f, va, false, false); }
+static void Fk_AppendFormatList8(U self, U f, void* va, U) { FormatInto(self, f, va, true, false); }
 
 struct TFake { const char* iName; void* iFn; };
 static const TFake KFakes[] = {
@@ -83,6 +115,12 @@ static const TFake KFakes[] = {
 	{ "_ZN17RPointerArrayBase6RemoveEi", (void*)Fk_RPAB_Remove }, { "_ZN17RPointerArrayBase5CloseEv", (void*)Fk_RPAB_Close },
 	{ "_ZNK17RPointerArrayBase2AtEi", (void*)Fk_RPAB_At }, { "_ZNK17RPointerArrayBase5CountEv", (void*)Fk_RPAB_Count },
 	{ "_ZN4User5AllocEi", (void*)Fk_User_Alloc }, { "_ZN4User7ReAllocEPvii", (void*)Fk_User_ReAlloc }, { "_ZN4User4FreeEPv", (void*)Fk_User_Free },
+	{ "_ZN6TDes1610FormatListERK7TDesC16St9__va_list", (void*)Fk_FormatList16 }, { "_ZN6TDes1616AppendFormatListERK7TDesC16St9__va_listP14TDes16Overflow", (void*)Fk_AppendFormatList16 },
+	{ "_ZN5TDes810FormatListERK6TDesC8St9__va_list", (void*)Fk_FormatList8 }, { "_ZN5TDes816AppendFormatListERK6TDesC8St9__va_listP13TDes8Overflow", (void*)Fk_AppendFormatList8 },
+	{ "_ZN6TDes166FormatE11TRefByValueIK7TDesC16Ez", (void*)Fk_nop }, { "_ZN6TDes1612AppendFormatE11TRefByValueIK7TDesC16Ez", (void*)Fk_nop },
+	{ "_ZN5TDes86FormatE11TRefByValueIK6TDesC8Ez", (void*)Fk_nop },		// (the variadic rows' own natives: resolved, never called -- the handler calls FormatList)
+	{ "_ZN10TBufBase16C2ERK7TDesC16i", (void*)Fk_TBufBase16_C2_des },
+	{ "_ZN6TPtrC8C1EPKh", (void*)Fk_TPtrC8_C1_ptr },
 	{ "memset", (void*)Fk_memset }, { "_ZN4User15HandleExceptionEPv", (void*)Fk_nop }, { "_ZN4User9InvariantEv", (void*)Fk_nop },
 };
 static std::vector<void*> gFnTable;		// host: iNativeExport returns a 32-bit number, so the (64-bit) function pointers are handed out as indices

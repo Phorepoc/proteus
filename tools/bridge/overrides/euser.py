@@ -25,4 +25,18 @@ MANUAL = {
     "KHeapMinCellSize": {"kind": "data", "size": 4},
     "KHeapShrinkHysRatio": {"kind": "data", "size": 4},
 }
-OVERRIDES: dict[str, str] = {}
+# the varargs of descriptor formatting (R1 gate 2): bridge.cpp reads the ARM argument layout (r2.. then the stack, 64-bit values in even pairs;
+# or an ARM va_list = a pointer to that layout), walks the format string for the argument classes and builds the native x32 va_list the
+# native TDes::FormatList / AppendFormatList read. (The plan's "AppendFormatListArm in euser" is this translation, done in Proteus: no core change.)
+OVERRIDES: dict[str, str] = {
+    "_ZN6TDes166FormatE11TRefByValueIK7TDesC16Ez": "BrOvr_Format16",
+    "_ZN6TDes1612AppendFormatE11TRefByValueIK7TDesC16Ez": "BrOvr_AppendFormat16",
+    "_ZN6TDes1612AppendFormatE11TRefByValueIK7TDesC16EP14TDes16Overflowz": "BrOvr_AppendFormatOvf16",
+    "_ZN6TDes1610FormatListERK7TDesC16St9__va_list": "BrOvr_FormatList16",
+    "_ZN6TDes1616AppendFormatListERK7TDesC16St9__va_listP14TDes16Overflow": "BrOvr_AppendFormatList16",
+    "_ZN5TDes86FormatE11TRefByValueIK6TDesC8Ez": "BrOvr_Format8",
+    "_ZN5TDes812AppendFormatE11TRefByValueIK6TDesC8Ez": "BrOvr_AppendFormat8",
+    "_ZN5TDes812AppendFormatE11TRefByValueIK6TDesC8EP13TDes8Overflowz": "BrOvr_AppendFormatOvf8",
+    "_ZN5TDes810FormatListERK6TDesC8St9__va_list": "BrOvr_FormatList8",
+    "_ZN5TDes816AppendFormatListERK6TDesC8St9__va_listP13TDes8Overflow": "BrOvr_AppendFormatList8",
+}

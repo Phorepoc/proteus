@@ -198,7 +198,8 @@ def main():
                 fl |= 1 << FLAGS.index("OVERRIDE")
             needs = shape is None and not (fl & ((1 << FLAGS.index("ABSENT")) | (1 << FLAGS.index("DATA")) |
                                                  (1 << FLAGS.index("VTABLE")) | (1 << FLAGS.index("TYPEINFO"))))
-            st["override"] += needs
+            st["override"] += needs and not handler
+            st["handled"] = st.get("handled", 0) + (bool(handler) and needs)
             rows[d].append((e["ordinal"], e["name"], shape, fl, slot, handler))
     os.makedirs(GEN, exist_ok=True)
     # ---- shapes
