@@ -31,14 +31,30 @@ feasibility stage. Until that bridge lands, an app run still needs its ARM closu
 install them there anyway: it refuses any subdirectory of `\sys\bin\` (`SecurityCheckUtil::CheckProtectedDirectoriesL`,
 also in developer mode). The handler now looks for `\sys\bin\arm\` on every drive (Z:, then Y: .. A:), not only Z:.
 
-**Install test (2026-11-10, local, QEMU, PC image built without this layer, `SSM_TEST=bootui` + `c:ootui.txt`).** Built the way the Action does
+**Install test (2026-11-10, local, QEMU, PC image built without this layer, `SSM_TEST=bootui` + `c:\bootui.txt`).** Built the way the Action does
 (cxxrt + `build_dynarmic.sh`, `phe component build cpuhandler_arm proteusimg`, `recipes/sis.sh`): `proteus.sis` 1308656 B, 12 files. The
 first install failed `-30475` (`Executable capabilities do not match header capabilities`): x32 images are built with every capability
 and only the ROM builder stamps the mmp's; pdk `make_sis.py` now stamps them into an installed image too. Then, in order:
 `00proteus.sis: INSTALLED (0)`, PyS60 `01python.sis` and `02shell.sis: INSTALLED (0)`, `loader: C:\sys\bin\PythonScriptShell_0x20022eec.EXE
 is an ARM program -> cpuhandler_arm.exe`. **The handler then dies at once**: `Exc 14 ... fault addr 00780b30`, `eip 0040fce9`,
-`cpuhandler_arm.exe::Main Panic KERN-EXEC 3`, before its first `PH: proteus` line. Open: the handler has only run XIP from Z: so far; this
-is its first start as a RAM-loaded (installed) EXE (3.7 MB code, WSD + static constructors, 151 KB bss). Let's Golf 2 not run yet.
+`cpuhandler_arm.exe::Main Panic KERN-EXEC 3`, before its first `PH: proteus` line.
+
+Cause: `eip 0040fce9` = code + 0xFBE9 = ELF 0x20de9, the static constructor of `proteusgl.cpp` (`movl $1, gMainThread(%rip)`); the fault
+address = code base + the linked offset of `gMainThread` (ELF 0x391c30, `.bss`). x32 code reaches statics %rip-relative; a ROM image has
+them re-aimed by the prelinker (the `.pcrel` sidecar), a RAM-loaded one only if the registry entry says `sis=True` (pdk
+`build_mmp_x32.py` then writes them as `KX32PcRelRelocType` code relocations, which core's loader applies). `cpuhandler_arm` and
+`proteusimg` lacked `sis=True` (fixed; pdk `make_sis.py` now refuses such a component). The loader was right; no core change. Two more
+fixes on the way: `proteusimg` never completed a successful `EProteusImgExists` (the handler's euser probe hung), and the Avkon run-time
+loads (`akninit` and the CDL/FEP plug-ins) are now common closure extras (PyS60: `RLibrary::Load Z:\sys\bin\akninit.dll -> -1`).
+
+Result, same plain image: `00proteus.sis: INSTALLED (0)`, PyS60 installed, `PH: proteus euser: real ARM`, `PH: proteus cpu: jit`,
+`[cycle] PythonScriptShell_0x20022eec: ALIVE after 300 s`, the Python screen in front (`img/compat-pys60-sisinstalled-20261110.png`).
+The same run installed `dav-sync-x32.sis` built with the new `make_sis.py` (`INSTALLED (0)`, `phedav --help` ran and exited).
+Let's Golf 2 on a fresh copy of the same plain disk: `00proteus.sis`, `codecpack-x32.sis`, `letsgolf2.sis: INSTALLED (0)` (the 167 MB
+package in ~11 min under QEMU TCG), `euser: real ARM`, `cpu: jit`, both intro clips through the hosted controller (`vc done: fed 220
+... drawn 220`, `fed 1459 ... drawn 1422`), `[cycle] LetsGolf2: ALIVE after 300 s`. The QEMU screendumps of the game are no use: the
+one at 900 s (mid-clip) is a mis-strided picture of the rotated 640x360 surface and the one at the end is black; a VirtualBox shot of
+the installed state is still to take.
 
 ## The SIS flow (2026-11-04)
 
