@@ -39,6 +39,10 @@ RETCODE = {"v": "void", "w": "uint32_t", "p": "uint32_t", "b": "uint8_t", "B": "
 RET_FROM_CLASS = {"u8": "b", "s8": "B", "u16": "h", "s16": "H"}
 
 
+# structs whose function-pointer field is a typedef the symabi dump's "(*" test misses (TCleanupOperation, TInt (*)(TAny*) via a typedef)
+KNOWN_FP = {"TCleanupItem": [0], "TCallBack": [0]}
+
+
 def arg_code(p: dict) -> str:
     c = p["c"]
     if c in ("w", "p"):
@@ -48,7 +52,7 @@ def arg_code(p: dict) -> str:
     if c in ("l", "d", "f"):
         return c
     if c == "S":
-        fp = p.get("fp") or []
+        fp = p.get("fp") or KNOWN_FP.get(p.get("rec"), [])
         return f"S{p['size']}x{p['align']}" + ("f" + ".".join(map(str, fp)) if fp else "")
     return "?"
 
@@ -181,6 +185,8 @@ def vt_args(abi, abis):
                     cls = base.rstrip("*& ").strip()
                     if cls in classes:
                         out.append((e["name"], word, classes[cls]))
+                    elif cls in KNOWN_FP:		# a TCallBack / TCleanupItem by reference: slots = -1 - the field offset (bridge.cpp)
+                        out.append((e["name"], word, -1 - KNOWN_FP[cls][0]))
             word += 1
     return out
 

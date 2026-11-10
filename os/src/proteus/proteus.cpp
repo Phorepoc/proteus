@@ -1724,6 +1724,7 @@ static TInt MainL()
 #endif
 	thr.iJitDelete = proteus::JitDelete;
 	thr.iLog = BridgeThreadLog;
+	thr.iTrapLeave = NULL;
 	proteus::BridgeSetThreads(thr);
 	}
 	const TBool nativeEuser = proteus::BridgeNative("euser.dll");

@@ -255,11 +255,12 @@ static void BrShape_21(CArmCpu& aCpu, uintptr_t aFn)
 	typedef void (*F)(uint32_t, BrS4A4, uint32_t);
 	((F)(uintptr_t)aFn)(a0, a1, a2);
 }
-// v:S8x4
+// v:S8x4f0
 static void BrShape_22(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	BrS8A4 a0; a.S(&a0, sizeof(BrS8A4), __alignof__(BrS8A4));
+	BrCbField(aCpu, (uint8_t*)&a0 + 0);	// a function pointer inside the struct
 	typedef void (*F)(BrS8A4);
 	((F)(uintptr_t)aFn)(a0);
 }
@@ -822,17 +823,8 @@ static void BrShape_75(CArmCpu& aCpu, uintptr_t aFn)
 	typedef void (*F)(uint32_t, uint32_t, uint32_t, uint64_t);
 	((F)(uintptr_t)aFn)(a0, a1, a2, a3);
 }
-// v:w_S8x4
-static void BrShape_76(CArmCpu& aCpu, uintptr_t aFn)
-{
-	BrArgs a(aCpu);
-	const uint32_t a0 = a.W();
-	BrS8A4 a1; a.S(&a1, sizeof(BrS8A4), __alignof__(BrS8A4));
-	typedef void (*F)(uint32_t, BrS8A4);
-	((F)(uintptr_t)aFn)(a0, a1);
-}
 // c:w_S4x4_S4x4
-static void BrShape_77(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_76(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -843,7 +835,7 @@ static void BrShape_77(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = a0;			// ARM constructors and non-deleting destructors return `this`
 }
 // c:w_S4x4_S4x4_S4x4
-static void BrShape_78(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_77(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -855,7 +847,7 @@ static void BrShape_78(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = a0;			// ARM constructors and non-deleting destructors return `this`
 }
 // S40x4:w
-static void BrShape_79(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_78(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
@@ -866,7 +858,7 @@ static void BrShape_79(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ret;
 }
 // p:S4x4_w_w_w_w_w_w
-static void BrShape_80(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_79(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	BrS4A4 a0; a.S(&a0, sizeof(BrS4A4), __alignof__(BrS4A4));
@@ -880,7 +872,7 @@ static void BrShape_80(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4, a5, a6);
 }
 // p:w_w_w_w_w_w
-static void BrShape_81(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_80(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -893,7 +885,7 @@ static void BrShape_81(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4, a5);
 }
 // v:w_S4x4_S4x4_S8x4f0
-static void BrShape_82(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_81(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -905,7 +897,7 @@ static void BrShape_82(CArmCpu& aCpu, uintptr_t aFn)
 	((F)(uintptr_t)aFn)(a0, a1, a2, a3);
 }
 // w:w_S4x4_w
-static void BrShape_83(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_82(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -915,7 +907,7 @@ static void BrShape_83(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2);
 }
 // w:w_S4x4_S4x4_w_w
-static void BrShape_84(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_83(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -927,7 +919,7 @@ static void BrShape_84(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4);
 }
 // v:w_w_S4x4_w_w
-static void BrShape_85(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_84(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -939,7 +931,7 @@ static void BrShape_85(CArmCpu& aCpu, uintptr_t aFn)
 	((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4);
 }
 // v:w_w_S4x4_S4x4_w_w
-static void BrShape_86(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_85(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -952,7 +944,7 @@ static void BrShape_86(CArmCpu& aCpu, uintptr_t aFn)
 	((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4, a5);
 }
 // v:w_w_w_w_w_w_w
-static void BrShape_87(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_86(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -966,7 +958,7 @@ static void BrShape_87(CArmCpu& aCpu, uintptr_t aFn)
 	((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4, a5, a6);
 }
 // w:S4x4_w_w
-static void BrShape_88(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_87(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	BrS4A4 a0; a.S(&a0, sizeof(BrS4A4), __alignof__(BrS4A4));
@@ -976,7 +968,7 @@ static void BrShape_88(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2);
 }
 // w:S4x4_w_w_w
-static void BrShape_89(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_88(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	BrS4A4 a0; a.S(&a0, sizeof(BrS4A4), __alignof__(BrS4A4));
@@ -987,7 +979,7 @@ static void BrShape_89(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2, a3);
 }
 // w:S4x4_w
-static void BrShape_90(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_89(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	BrS4A4 a0; a.S(&a0, sizeof(BrS4A4), __alignof__(BrS4A4));
@@ -996,7 +988,7 @@ static void BrShape_90(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1);
 }
 // w:w_w_w_w_w_w_w_w
-static void BrShape_91(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_90(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1011,7 +1003,7 @@ static void BrShape_91(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4, a5, a6, a7);
 }
 // c:w_w_w_w_w_w_w_w
-static void BrShape_92(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_91(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1027,7 +1019,7 @@ static void BrShape_92(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = a0;			// ARM constructors and non-deleting destructors return `this`
 }
 // w:w_w_w_k
-static void BrShape_93(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_92(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1038,7 +1030,7 @@ static void BrShape_93(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2, a3);
 }
 // w:w_w_w_k_w
-static void BrShape_94(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_93(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1050,7 +1042,7 @@ static void BrShape_94(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4);
 }
 // w:w_w_k
-static void BrShape_95(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_94(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1060,7 +1052,7 @@ static void BrShape_95(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2);
 }
 // S264x4:w
-static void BrShape_96(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_95(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
@@ -1071,7 +1063,7 @@ static void BrShape_96(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ret;
 }
 // S520x4:w
-static void BrShape_97(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_96(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
@@ -1082,7 +1074,7 @@ static void BrShape_97(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ret;
 }
 // S28x4:w
-static void BrShape_98(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_97(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
@@ -1093,7 +1085,7 @@ static void BrShape_98(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ret;
 }
 // S12x4:w_w_w
-static void BrShape_99(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_98(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
@@ -1106,7 +1098,7 @@ static void BrShape_99(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ret;
 }
 // S8x4:w_S4x4
-static void BrShape_100(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_99(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
@@ -1118,7 +1110,7 @@ static void BrShape_100(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ret;
 }
 // S8x4:w_w
-static void BrShape_101(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_100(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
@@ -1130,7 +1122,7 @@ static void BrShape_101(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ret;
 }
 // S4x4:w_S8x8
-static void BrShape_102(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_101(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1141,7 +1133,7 @@ static void BrShape_102(CArmCpu& aCpu, uintptr_t aFn)
 	memcpy(&aCpu.R[0], &r, sizeof(r));
 }
 // w:w_S8x8
-static void BrShape_103(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_102(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1150,7 +1142,7 @@ static void BrShape_103(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1);
 }
 // S8x8:w_S8x8
-static void BrShape_104(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_103(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
@@ -1162,7 +1154,7 @@ static void BrShape_104(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ret;
 }
 // S8x8:w_S4x4
-static void BrShape_105(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_104(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
@@ -1174,7 +1166,7 @@ static void BrShape_105(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ret;
 }
 // S8x8:w
-static void BrShape_106(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_105(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
@@ -1185,7 +1177,7 @@ static void BrShape_106(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ret;
 }
 // S16x4:w
-static void BrShape_107(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_106(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
@@ -1196,7 +1188,7 @@ static void BrShape_107(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ret;
 }
 // c:w_S4x4_w_w_w
-static void BrShape_108(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_107(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1209,7 +1201,7 @@ static void BrShape_108(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = a0;			// ARM constructors and non-deleting destructors return `this`
 }
 // w:S4x4_w_w_w_w_w
-static void BrShape_109(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_108(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	BrS4A4 a0; a.S(&a0, sizeof(BrS4A4), __alignof__(BrS4A4));
@@ -1222,7 +1214,7 @@ static void BrShape_109(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4, a5);
 }
 // w:w_S4x4_w_w_w_w_w
-static void BrShape_110(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_109(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1236,7 +1228,7 @@ static void BrShape_110(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4, a5, a6);
 }
 // S16x4:w_w
-static void BrShape_111(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_110(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
@@ -1248,7 +1240,7 @@ static void BrShape_111(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ret;
 }
 // S8x4:w_w_w
-static void BrShape_112(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_111(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
@@ -1261,7 +1253,7 @@ static void BrShape_112(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ret;
 }
 // v:w_w_w_w_w_w_w_w
-static void BrShape_113(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_112(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1276,7 +1268,7 @@ static void BrShape_113(CArmCpu& aCpu, uintptr_t aFn)
 	((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4, a5, a6, a7);
 }
 // c:w_k_k_w_w
-static void BrShape_114(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_113(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1289,7 +1281,7 @@ static void BrShape_114(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = a0;			// ARM constructors and non-deleting destructors return `this`
 }
 // v:w_w_w_w_w_w
-static void BrShape_115(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_114(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1302,7 +1294,7 @@ static void BrShape_115(CArmCpu& aCpu, uintptr_t aFn)
 	((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4, a5);
 }
 // w:S4x4
-static void BrShape_116(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_115(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	BrS4A4 a0; a.S(&a0, sizeof(BrS4A4), __alignof__(BrS4A4));
@@ -1310,7 +1302,7 @@ static void BrShape_116(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0);
 }
 // p:S4x4_w_w_w_w_w_w_w
-static void BrShape_117(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_116(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	BrS4A4 a0; a.S(&a0, sizeof(BrS4A4), __alignof__(BrS4A4));
@@ -1325,7 +1317,7 @@ static void BrShape_117(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4, a5, a6, a7);
 }
 // h:w_w
-static void BrShape_118(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_117(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1334,7 +1326,7 @@ static void BrShape_118(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = (uint32_t)((F)(uintptr_t)aFn)(a0, a1);			// the native side leaves the upper bits undefined
 }
 // l:w_l
-static void BrShape_119(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_118(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1345,7 +1337,7 @@ static void BrShape_119(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[1] = (uint32_t)(r >> 32);
 }
 // b:w_w
-static void BrShape_120(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_119(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1354,7 +1346,7 @@ static void BrShape_120(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = (uint32_t)((F)(uintptr_t)aFn)(a0, a1);			// the native side leaves the upper bits undefined
 }
 // h:w_w_w
-static void BrShape_121(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_120(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1364,7 +1356,7 @@ static void BrShape_121(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = (uint32_t)((F)(uintptr_t)aFn)(a0, a1, a2);			// the native side leaves the upper bits undefined
 }
 // l:w_l_l
-static void BrShape_122(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_121(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1376,7 +1368,7 @@ static void BrShape_122(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[1] = (uint32_t)(r >> 32);
 }
 // b:w_w_w
-static void BrShape_123(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_122(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1386,7 +1378,7 @@ static void BrShape_123(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = (uint32_t)((F)(uintptr_t)aFn)(a0, a1, a2);			// the native side leaves the upper bits undefined
 }
 // w:w_w_l
-static void BrShape_124(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_123(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1396,7 +1388,7 @@ static void BrShape_124(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2);
 }
 // h:w
-static void BrShape_125(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_124(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1404,7 +1396,7 @@ static void BrShape_125(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = (uint32_t)((F)(uintptr_t)aFn)(a0);			// the native side leaves the upper bits undefined
 }
 // b:w
-static void BrShape_126(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_125(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1412,7 +1404,7 @@ static void BrShape_126(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = (uint32_t)((F)(uintptr_t)aFn)(a0);			// the native side leaves the upper bits undefined
 }
 // H:w_w_w_w
-static void BrShape_127(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_126(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1423,7 +1415,7 @@ static void BrShape_127(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = (uint32_t)((F)(uintptr_t)aFn)(a0, a1, a2, a3);			// the native side leaves the upper bits undefined
 }
 // l:w_l_l_l
-static void BrShape_128(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_127(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1436,7 +1428,7 @@ static void BrShape_128(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[1] = (uint32_t)(r >> 32);
 }
 // B:w_w_w_w
-static void BrShape_129(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_128(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1447,7 +1439,7 @@ static void BrShape_129(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = (uint32_t)((F)(uintptr_t)aFn)(a0, a1, a2, a3);			// the native side leaves the upper bits undefined
 }
 // h:w_w_w_w
-static void BrShape_130(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_129(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1458,7 +1450,7 @@ static void BrShape_130(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = (uint32_t)((F)(uintptr_t)aFn)(a0, a1, a2, a3);			// the native side leaves the upper bits undefined
 }
 // b:w_w_w_w
-static void BrShape_131(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_130(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1469,7 +1461,7 @@ static void BrShape_131(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = (uint32_t)((F)(uintptr_t)aFn)(a0, a1, a2, a3);			// the native side leaves the upper bits undefined
 }
 // w:l
-static void BrShape_132(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_131(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint64_t a0 = a.L();
@@ -1477,7 +1469,7 @@ static void BrShape_132(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0);
 }
 // c:w_w_k_w_w
-static void BrShape_133(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_132(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1490,7 +1482,7 @@ static void BrShape_133(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = a0;			// ARM constructors and non-deleting destructors return `this`
 }
 // v:w_l_w_w
-static void BrShape_134(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_133(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1501,7 +1493,7 @@ static void BrShape_134(CArmCpu& aCpu, uintptr_t aFn)
 	((F)(uintptr_t)aFn)(a0, a1, a2, a3);
 }
 // S4x2:w
-static void BrShape_135(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_134(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1511,7 +1503,7 @@ static void BrShape_135(CArmCpu& aCpu, uintptr_t aFn)
 	memcpy(&aCpu.R[0], &r, sizeof(r));
 }
 // w:w_w_w_l_w
-static void BrShape_136(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_135(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1523,7 +1515,7 @@ static void BrShape_136(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4);
 }
 // w:w_w_l_w_w
-static void BrShape_137(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_136(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1535,7 +1527,7 @@ static void BrShape_137(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4);
 }
 // v:w_l_w_w_w
-static void BrShape_138(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_137(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1547,7 +1539,7 @@ static void BrShape_138(CArmCpu& aCpu, uintptr_t aFn)
 	((F)(uintptr_t)aFn)(a0, a1, a2, a3, a4);
 }
 // w:w_l
-static void BrShape_139(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_138(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1556,7 +1548,7 @@ static void BrShape_139(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1);
 }
 // w:w_l_l
-static void BrShape_140(CArmCpu& aCpu, uintptr_t aFn)
+static void BrShape_139(CArmCpu& aCpu, uintptr_t aFn)
 {
 	BrArgs a(aCpu);
 	const uint32_t a0 = a.W();
@@ -1566,5 +1558,5 @@ static void BrShape_140(CArmCpu& aCpu, uintptr_t aFn)
 	aCpu.R[0] = ((F)(uintptr_t)aFn)(a0, a1, a2);
 }
 
-static const uint32_t KBridgeShapeCount = 141;
+static const uint32_t KBridgeShapeCount = 140;
 

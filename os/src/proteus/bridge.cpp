@@ -49,6 +49,7 @@ static void NestEnter(CArmCpu& aCpu);
 static bool NestLeave(CArmCpu& aCpu, int32_t& aReason);
 static void NativeLeave(int32_t aReason);
 static void ForgetLeaveState(CArmCpu& aCpu);
+static void ForgetGuestTls(CArmCpu& aCpu);
 
 uint32_t BridgeCallGuest(CArmCpu& aCpu, uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3)
 {
@@ -168,6 +169,7 @@ static uint32_t RunOnNewCpu(uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2,
 	SetCpuOfThisThread(0, c);
 	if (c->iJit && gThr.iJitDelete) gThr.iJitDelete(c->iJit);
 	ForgetLeaveState(*c);
+	ForgetGuestTls(*c);
 	delete c;
 	if (gThr.iFree) gThr.iFree(stack);
 	if (left)
@@ -407,7 +409,16 @@ static void PatchArgVtables(CArmCpu& aCpu, const TBridgeDll& aDll, uint32_t aRow
 	if (k0 < 0) return;
 	BrArgs a(aCpu);
 	for (int k = k0; aDll.iVt[k].iName && !strcmp(aDll.iVt[k].iName, aDll.iRows[aRow].iName); ++k)
-		PatchVtable(aCpu, a.Raw(aDll.iVt[k].iWord), aDll.iVt[k].iSlots);
+	{
+		const uint32_t obj = a.Raw(aDll.iVt[k].iWord);
+		if (aDll.iVt[k].iSlots >= 0)
+			PatchVtable(aCpu, obj, aDll.iVt[k].iSlots);
+		else if (obj && aCpu.Valid(obj - 1 - aDll.iVt[k].iSlots, 4))		// a TCallBack / TCleanupItem by reference: its function becomes a stub in place
+		{
+			const uint32_t at = obj - 1 - aDll.iVt[k].iSlots;
+			aCpu.Write32(at, BrCb(aCpu, aCpu.Read32(at)));
+		}
+	}
 }
 
 uint32_t BridgeNativeCall(CArmCpu& aCpu, uint32_t aPc)
@@ -510,7 +521,9 @@ static void GuestLeave(CArmCpu& aCpu, int32_t aReason)
 	if (s && s->iMarks && s->iMark[s->iMarks - 1].iDepth == s->iDepth)
 	{
 		const TMark m = s->iMark[--s->iMarks];
-		if (m.iHandler && sizeof(void*) == 4)
+		if (m.iHandler && gThr.iTrapLeave)
+			gThr.iTrapLeave(m.iHandler, aReason);
+		else if (m.iHandler && sizeof(void*) == 4)
 		{	// TTrapHandler: Trap, UnTrap, Leave -- slot 2 (no virtual destructor)
 			const uint32_t vt = *(const uint32_t*)(uintptr_t)m.iHandler;
 			typedef void (*TLeaveFn)(uint32_t, int32_t);
@@ -550,18 +563,63 @@ static void GuestLeave(CArmCpu& aCpu, int32_t aReason)
 	NativeLeave(aReason);
 }
 
+// per guest CPU (thread) and DLL handle: the guest DLLs' Dll::Tls
+namespace { struct TGuestTls { CArmCpu* iCpu; uint32_t iHandle, iValue; }; enum { KMaxTls = 256 }; TGuestTls gTls[KMaxTls]; }
+static uint32_t GuestTls(CArmCpu& aCpu, uint32_t aHandle, bool aSet, uint32_t aValue)
+{
+	TLock lock;
+	int freeAt = -1;
+	for (int i = 0; i < KMaxTls; ++i)
+	{
+		if (gTls[i].iCpu == &aCpu && gTls[i].iHandle == aHandle) { if (aSet) gTls[i].iValue = aValue; return gTls[i].iValue; }
+		if (!gTls[i].iCpu && freeAt < 0) freeAt = i;
+	}
+	if (aSet && freeAt >= 0) { gTls[freeAt].iCpu = &aCpu; gTls[freeAt].iHandle = aHandle; gTls[freeAt].iValue = aValue; }
+	return aSet ? aValue : 0;
+}
+static void ForgetGuestTls(CArmCpu& aCpu)
+{
+	TLock lock;
+	for (int i = 0; i < KMaxTls; ++i) if (gTls[i].iCpu == &aCpu) gTls[i].iCpu = 0;
+}
 static bool IsLeaveRow(const char* n)
 {
 	static const char* const K[] = { "_ZN4User16MarkCleanupStackEv", "_ZN4User18UnMarkCleanupStackEP12TTrapHandler", "_ZNK15XLeaveException9GetReasonEv",
-		"_ZN4User5LeaveEi", "_ZN4User12LeaveIfErrorEi", "_ZN4User13LeaveNoMemoryEv", "_ZN4User11LeaveIfNullEPv" };
+		"_ZN4User5LeaveEi", "_ZN4User12LeaveIfErrorEi", "_ZN4User13LeaveNoMemoryEv", "_ZN4User11LeaveIfNullEPv",
+		"_ZN7UserSvr19ExceptionDescriptorEm", "_ZN7UserSvr6DllTlsEi", "_ZN7UserSvr6DllTlsEii", "_ZN7UserSvr9DllSetTlsEiPv", "_ZN7UserSvr9DllSetTlsEiiPv",
+		"_ZN7UserSvr10DllFreeTlsEi" };
 	for (const char* k : K) if (!strcmp(n, k)) return true;
 	return false;
 }
 // the hand-written euser rows of the leave model; true = handled (the guest continues at lr, or was redirected)
 static bool LeaveOverride(CArmCpu& aCpu, const char* aName, uintptr_t aNative)
 {
-	if (strncmp(aName, "_ZN4User", 8) && strcmp(aName, "_ZNK15XLeaveException9GetReasonEv")) return false;
 	const int32_t r0 = (int32_t)aCpu.R[0];
+	if (!strncmp(aName, "_ZN7UserSvr", 11))
+	{	// the guest's ARM modules are unknown to the native kernel: their unwind tables (the code address -> the module's exception descriptor,
+		// scodeseg.cpp) and their per-DLL TLS (keyed by the handle our loader gave the module) are answered here, per guest CPU (= thread)
+		if (!strcmp(aName, "_ZN7UserSvr19ExceptionDescriptorEm"))
+		{
+			uint32_t x = 0;
+			if (gCurHle && gCurHle->iProcess)
+				for (int m = 0; m < gCurHle->iProcess->iCount && !x; ++m)
+					if (aCpu.R[0] >= gCurHle->iProcess->iMod[m].iLoadAddr && aCpu.R[0] < gCurHle->iProcess->iMod[m].iEnd)
+						x = gCurHle->iProcess->iMod[m].iExceptionDescriptor;
+			aCpu.R[0] = x;
+		}
+		else if (!strncmp(aName, "_ZN7UserSvr6DllTls", 18))
+			aCpu.R[0] = GuestTls(aCpu, aCpu.R[0], false, 0);
+		else if (!strncmp(aName, "_ZN7UserSvr9DllSetTls", 21))
+		{
+			GuestTls(aCpu, aCpu.R[0], true, !strcmp(aName, "_ZN7UserSvr9DllSetTlsEiPv") ? aCpu.R[1] : aCpu.R[2]);
+			aCpu.R[0] = 0;
+		}
+		else
+			GuestTls(aCpu, aCpu.R[0], true, 0);
+		aCpu.SetReturn();
+		return true;
+	}
+	if (strncmp(aName, "_ZN4User", 8) && strcmp(aName, "_ZNK15XLeaveException9GetReasonEv")) return false;
 	if (!strcmp(aName, "_ZN4User16MarkCleanupStackEv"))
 	{
 		typedef uint32_t (*F)();

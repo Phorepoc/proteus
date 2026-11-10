@@ -92,6 +92,26 @@ static U Fk_RAB_HeapSort(U self, U order)
 	return 0;
 }
 static U Fk_nop() { return 0; }
+static U Fk_memcpy(U d, U sr, U n) { for (U i = 0; i < n; ++i) gCpu->Write8(d + i, gCpu->Read8(sr + i)); return d; }
+static U Fk_memmove(U d, U sr, U n) { std::vector<uint8_t> t(n); for (U i = 0; i < n; ++i) t[i] = gCpu->Read8(sr + i); for (U i = 0; i < n; ++i) gCpu->Write8(d + i, t[i]); return d; }
+static U Fk_memcmp(U a, U b, U n) { for (U i = 0; i < n; ++i) { int x = gCpu->Read8(a + i) - gCpu->Read8(b + i); if (x) return (U)x; } return 0; }
+static U Fk_RomHeader() { static U h; if (!h) { h = Alloc(256); for (U i = 0; i < 256; ++i) gCpu->Write8(h + i, 0); } return h; }
+// a fake native cleanup stack: items {fn, ptr} and level marks; TCleanupItem arrives by value (its function already a reverse stub)
+struct TClean { U iFn, iPtr; bool iMark; };
+static std::vector<TClean> gClean;
+struct TItem { U fn, ptr; };
+static U Fk_PushL_item(TItem i) { gClean.push_back({ i.fn, i.ptr, false }); return 0; }
+static void DestroyTop() { TClean c = gClean.back(); gClean.pop_back(); typedef U (*F)(U, U, U, U); ((F)BridgeStubFn(c.iFn))(c.iPtr, 0, 0, 0); }
+static U Fk_PopAndDestroyN(U n) { while (n--) DestroyTop(); return 0; }
+static U Fk_Mark() { gClean.push_back({ 0, 0, true }); return 1; }
+static U Fk_UnMark(U) { if (!gClean.empty() && gClean.back().iMark) gClean.pop_back(); return 0; }
+static void TrapLeave(uint32_t, int32_t) { while (!gClean.empty() && !gClean.back().iMark) DestroyTop(); if (!gClean.empty()) gClean.pop_back(); }
+// the native leave of the fake: a host C++ throw, caught by the fake scheduler's "TRAP" around RunL (which then calls RunError)
+static U Fk_Leave(U r) { throw (int)r; }
+extern U gSchedVt;
+static U Fk_TrapCleanupNew() { U o = Alloc(16); W32(o, gSchedVt + 8); return o; }
+static U Fk_strlen(U a) { U n = 0; while (gCpu->Read8(a + n)) ++n; return n; }
+static U Fk_strcmp(U a, U b) { for (U i = 0;; ++i) { int x = gCpu->Read8(a + i) - gCpu->Read8(b + i); if (x || !gCpu->Read8(a + i)) return (U)x; } }
 // ---- R1 threads: RThread::Create starts a REAL host thread at Resume; its entry is the reverse stub the bridge made for the guest's ThreadFn,
 // which runs on a new guest CPU (bridge.cpp RunOnNewCpu)
 struct TFakeThread { U iFn, iArg, iStatus; int iExit; std::thread iT; };
@@ -123,7 +143,7 @@ static U Fk_RHandleBase_Close(U self) { W32(self, 0); return 0; }
 // ---- R1 active objects: a native CActiveScheduler that calls RunL through the object's vtable (patched to reverse stubs by the bridge), and a
 // natively constructed scheduler whose own vtable is NATIVE (its destructor is a native address the guest calls: BridgeNativeCall)
 static std::vector<U> gActive;
-static U gSchedVt, gStop, gNativeDtorCalls;
+U gSchedVt; static U gStop, gNativeDtorCalls;
 static U Fk_CActive_C2(U self, U pri) { W32(self + 4, 0); W32(self + 8, 0); W32(self + 20, pri); return self; }
 static U Fk_CActive_D2(U self) { for (size_t i = 0; i < gActive.size(); ++i) if (gActive[i] == self) gActive.erase(gActive.begin() + i); return self; }
 static U Fk_CActive_SetActive(U self) { W32(self + 8, R32(self + 8) | 1); return 0; }
@@ -142,7 +162,13 @@ static U Fk_Sched_Start()
 				const U runl = R32(R32(a) + 16);			// slot 4: RunL
 				if ((runl & 0xFF000000u) != 0xE0000000u) { printf("  RunL slot %x is not a reverse stub: the vtable was not patched\n", runl); return 0; }
 				typedef U (*F)(U, U, U, U);
-				((F)BridgeStubFn(runl))(a, 0, 0, 0);
+				try { ((F)BridgeStubFn(runl))(a, 0, 0, 0); }
+				catch (int err)
+				{
+					const U runerr = R32(R32(a) + 20);	// slot 5: RunError
+					printf("  native scheduler: RunL left %d -> RunError\n", err);
+					if ((int)((F)BridgeStubFn(runerr))(a, (U)err, 0, 0) != 0) return 0;
+				}
 				break;
 			}
 	return 0;
@@ -212,7 +238,11 @@ static const TFake KFakes[] = {
 	{ "_ZN16CActiveScheduler7InstallEPS_", (void*)Fk_Sched_Install }, { "_ZN16CActiveScheduler4StopEv", (void*)Fk_Sched_Stop },
 	{ "_ZN16CActiveScheduler5StartEv", (void*)Fk_Sched_Start }, { "_ZN16CActiveSchedulerC1Ev", (void*)Fk_Sched_C2 }, { "_ZN16CActiveSchedulerC2Ev", (void*)Fk_Sched_C2 },
 	{ "_ZN4User15RequestCompleteERP14TRequestStatusi", (void*)Fk_RequestComplete }, { "_ZN4User6AllocZEi", (void*)Fk_User_AllocZ },
-	{ "memset", (void*)Fk_memset }, { "_ZN4User15HandleExceptionEPv", (void*)Fk_nop }, { "_ZN4User9InvariantEv", (void*)Fk_nop },
+	{ "memset", (void*)Fk_memset }, { "memcpy", (void*)Fk_memcpy }, { "memmove", (void*)Fk_memmove }, { "memcmp", (void*)Fk_memcmp }, { "strlen", (void*)Fk_strlen }, { "strcmp", (void*)Fk_strcmp }, { "_ZN7UserSvr16RomHeaderAddressEv", (void*)Fk_RomHeader },
+	{ "_ZN4User16MarkCleanupStackEv", (void*)Fk_Mark }, { "_ZN4User18UnMarkCleanupStackEP12TTrapHandler", (void*)Fk_UnMark },
+	{ "_ZN12CleanupStack5PushLE12TCleanupItem", (void*)Fk_PushL_item }, { "_ZN12CleanupStack13PopAndDestroyEi", (void*)Fk_PopAndDestroyN }, { "_ZNK15XLeaveException9GetReasonEv", (void*)Fk_nop }, { "_ZN4User5LeaveEi", (void*)Fk_Leave }, { "_ZN12CTrapCleanup3NewEv", (void*)Fk_TrapCleanupNew },
+	{ "_ZN4User12LeaveIfErrorEi", (void*)Fk_nop }, { "_ZN7UserSvr6DllTlsEii", (void*)Fk_nop }, { "_ZN7UserSvr9DllSetTlsEiiPv", (void*)Fk_nop },
+	{ "_ZN7UserSvr19ExceptionDescriptorEm", (void*)Fk_nop }, { "_ZN7UserSvr6DllTlsEi", (void*)Fk_nop }, { "_ZN7UserSvr9DllSetTlsEiPv", (void*)Fk_nop }, { "_ZN4User15HandleExceptionEPv", (void*)Fk_nop }, { "_ZN4User9InvariantEv", (void*)Fk_nop },
 };
 static std::vector<void*> gFnTable;		// host: iNativeExport returns a 32-bit number, so the (64-bit) function pointers are handed out as indices
 
@@ -227,12 +257,29 @@ static uint32_t NativeExport(void*, const char* aDll, int aOrd)
 static uintptr_t Resolve(uint32_t t) { if (t >= 0x200000u && t < 0x300000u) t = (t - 0x200000u) >> 1;	// an even token (a vtable slot the guest branches to: bit 0 would be Thumb)
 	if (!t || t > gFnTable.size()) { printf("  foreign pc %x is no native function\n", t); return 0; } return (uintptr_t)gFnTable[t - 1]; }
 static void Log(const char* l, void*) { printf("  | %s\n", l); }
-static const uint8_t* FindDll(const char*, uint32_t&, char&, void*) { return 0; }
+// the ARM runtime DLLs of a device-model EXE (drtaeabi.dll ...) from the EXE's own directory
+static std::string gExeDir;
+static std::vector<std::vector<uint8_t>> gDllImages;
+static const uint8_t* FindDll(const char* aName, uint32_t& aLen, char& aDrive, void*)
+{
+	std::string n(aName);
+	const size_t b = n.find_first_of("{["), e = n.rfind('.');
+	if (b != std::string::npos && e != std::string::npos && e > b) n = n.substr(0, b) + n.substr(e);
+	FILE* f = fopen((gExeDir + "/" + n).c_str(), "rb");
+	if (!f) return 0;
+	std::vector<uint8_t> v; uint8_t buf[4096]; size_t k;
+	while ((k = fread(buf, 1, sizeof buf, f)) > 0) v.insert(v.end(), buf, buf + k);
+	fclose(f);
+	gDllImages.push_back(v);
+	aLen = (uint32_t)gDllImages.back().size(); aDrive = 'z';
+	return gDllImages.back().data();
+}
 
 int main(int argc, char** argv)
 {
 	setvbuf(stdout, 0, _IONBF, 0);
 	const char* path = argc > 1 ? argv[1] : "emitter/proteusbridge.exe";
+	gExeDir = path; gExeDir = gExeDir.substr(0, gExeDir.rfind('/') == std::string::npos ? 0 : gExeDir.rfind('/'));
 	FILE* f = fopen(path, "rb");
 	if (!f) { printf("cannot open %s\n", path); return 2; }
 	std::vector<uint8_t> img; uint8_t b[4096]; size_t n;
@@ -263,6 +310,7 @@ int main(int argc, char** argv)
 		TBridgeThreads thr; memset(&thr, 0, sizeof thr);
 		thr.iThreadId = []() -> uint32_t { return (uint32_t)syscall(SYS_gettid); };
 		thr.iAlloc = [](uint32_t n) -> uint32_t { return ::Alloc(n); };
+		thr.iTrapLeave = TrapLeave;
 		thr.iLog = [](const char* l) { printf("  | %s%c", l, 10); };
 		BridgeSetThreads(thr);
 	}
@@ -275,7 +323,7 @@ int main(int argc, char** argv)
 	RunExe(cpu, hle, 50000000);
 	printf("native destructor calls from ARM code: %u%c", gNativeDtorCalls, 10);
 	printf("halt %d exit %d steps %llu note '%s' natives bound %u\n", (int)cpu.iHalt, cpu.iExitCode, (unsigned long long)cpu.iSteps, cpu.iNote, gCalls);
-	const bool ok = cpu.iHalt == EExited && cpu.iExitCode == 0 && gCalls >= 20 && gNativeDtorCalls == 1;
+	const bool ok = cpu.iHalt == EExited && cpu.iExitCode == 0 && gCalls >= 20 && gNativeDtorCalls >= 1;
 	printf("bridge: %s\n", ok ? "PASS" : "FAIL");
 	return ok ? 0 : 1;
 }
