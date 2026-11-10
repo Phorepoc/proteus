@@ -1,0 +1,1 @@
+Runs ARM Symbian apps on the PC edition: the ARM handler with a JIT, installed once for every ARM app

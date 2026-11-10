@@ -1,0 +1,16 @@
+Proteus -- licences and source
+
+This package contains the Proteus ARM handler (cpuhandler_arm.exe) and image broker (proteusimg.exe), our own code under
+Apache-2.0. Linked into the handler: dynarmic (0BSD) and its externals fmt, mcl, Zydis/Zycore, xbyak and robin-map (their
+licence texts are installed with this package in \resource\proteus\), Boost headers (BSL-1.0) and the GCC runtime
+libraries libstdc++ and libgcc (GPL-3.0-or-later WITH GCC-exception-3.1).
+
+Source, for the release you installed this package from:
+
+  1. Our code and the scripts that build and package it: https://github.com/Phorepoc/proteus (the release tag)
+  2. dynarmic: https://github.com/lioncash/dynarmic at the commit pinned in dynarmic.lock, with patches/dynarmic/ applied
+  3. The toolchain images, the GCC runtime build and the build tools: https://github.com/Phorepoc/toolchain,
+     https://github.com/Phorepoc/cxxrt and https://github.com/Phorepoc/pdk
+
+If the links above are no longer available, send a request to the address given on the Phorepoc organisation page
+https://github.com/Phorepoc and we will send you the source.

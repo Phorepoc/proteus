@@ -24,3 +24,16 @@ has only the generic foreign-CPU hook and never names Proteus.
 
 Build it like any other layer, with `/w/proteus` in `PHOREPOC_ADAPTATIONS`. The handler is an x32 component; the test
 programs are ARM (`ROM_ARCH=arm phe component build -arch arm <name>`).
+
+## Installing it on a PC image
+
+A PC image built without this layer gets Proteus from the Catalogue, or from `proteus.sis` of a
+[release](https://github.com/Phorepoc/proteus/releases), through the normal installer. The package holds the handler
+`\sys\bin\cpuhandler_arm.exe` (with the dynarmic JIT; core's loader finds it on any drive), the image broker
+`\sys\bin\proteusimg.exe` and the licence texts in `\resource\proteus\`. The handler declares `All -TCB` and the broker
+`AllFiles ProtServ`: Phorepoc has no app signing, and the install server's developer mode (`PhorepocDevMode` in core's
+`swipolicy.ini`) grants a package the capabilities it declares, so the unsigned package installs as it is. No ARM system
+DLLs ship in it: see `docs/compat.md` "Installing Proteus" for what an app still needs.
+
+The release Action (`.github/workflows/release.yml`) builds the SIS with the pdk's `package.yml` (`package.conf`,
+`recipes/prebuild.sh` for cxxrt + dynarmic, `recipes/sis.sh`) and attaches it to a release.

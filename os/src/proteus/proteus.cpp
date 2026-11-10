@@ -24,7 +24,6 @@
 
 static void SigTrace(const char* aWhat, TUint aStatus, TInt aValue);
 
-_LIT(KArmDirZ, "z:\\sys\\bin\\arm\\");
 static void ResetDestroy(TAny* aArray);
 _LIT(KDefaultExe, "z:\\sys\\bin\\arm\\proteushello.exe");
 // the guest region: reserved address space, committed as the guest uses it (modules as they load, the main stack, chunk pages as the guest
@@ -94,21 +93,22 @@ static const uint8_t* FindDll(const char* aName, uint32_t& aLen, char& aDrive, v
 	TFindCtx& c = *(TFindCtx*)aCtx;
 	TBuf<64> name;
 	name.Copy(TPtrC8((const TUint8*)aName));
-	// the per-arch directories first; then \sys\bin\ of every drive in the loader's order (Y: .. A:, Z:), where a SIS installs an app's ARM
-	// DLLs next to the native ones: only a file whose E32Image header names an ARM CPU (offset 122) is taken there
+	// the EXE's per-arch directory first, then the per-arch directory \sys\bin\arm\ of every drive in the loader's order (Y: .. A:, Z:;
+	// a ROM built with this layer has it on Z:, a PC image with Proteus installed from its SIS has an ARM closure staged on C:), then
+	// \sys\bin\ of every drive, where a SIS installs an app's ARM DLLs next to the native ones: only a file whose E32Image header
+	// names an ARM CPU (offset 122) is taken there
 	TFileName path;
-	for (TInt i = 0; i < 2 + 26; ++i)
+	for (TInt i = 0; i < 1 + 26 + 26; ++i)
 		{
 		if (i == 0) path = c.iDir;
-		else if (i == 1) path = KArmDirZ;
 		else
 			{
-			const TInt d = i - 2 < 25 ? EDriveY - (i - 2) : EDriveZ;
+			const TInt k = (i - 1) % 26;
 			TChar ch;
-			if (RFs::DriveToChar(d, ch) != KErrNone) continue;
+			if (RFs::DriveToChar(k < 25 ? EDriveY - k : EDriveZ, ch) != KErrNone) continue;
 			path.SetLength(0);
 			path.Append(ch);
-			path.Append(_L(":\\sys\\bin\\"));
+			path.Append(i <= 26 ? _L(":\\sys\\bin\\arm\\") : _L(":\\sys\\bin\\"));
 			}
 		path.Append(name);
 		RFile f;
@@ -119,7 +119,7 @@ static const uint8_t* FindDll(const char* aName, uint32_t& aLen, char& aDrive, v
 		TPtr8 bp(b ? b->Des() : TPtr8(NULL, 0));
 		const TInt r = b ? f.Read(0, bp) : KErrNoMemory;
 		f.Close();
-		if (r == KErrNone && i >= 2 && (bp.Length() < 124 || (bp[122] | (bp[123] << 8)) < 0x2000 || (bp[122] | (bp[123] << 8)) > 0x2002))
+		if (r == KErrNone && i > 26 && (bp.Length() < 124 || (bp[122] | (bp[123] << 8)) < 0x2000 || (bp[122] | (bp[123] << 8)) > 0x2002))
 			{
 			delete b;					// a native DLL of that name
 			continue;
@@ -1662,7 +1662,17 @@ static TInt MainL()
 	CleanupClosePushL(fs);
 	TEntry euserEntry;
 	// installed = the entry is there; a handler holding only the program's capabilities may not look into \sys\ (denied = there)
-	const TInt euserState = fs.Entry(_L("z:\\sys\\bin\\arm\\euser.dll"), euserEntry);
+	// on any drive: Z: in a ROM built with this layer, C: on a PC image with Proteus installed from its SIS (a staged ARM closure)
+	TInt euserState = KErrNotFound;
+	for (TInt k = 0; k < 26 && euserState != KErrNone && euserState != KErrPermissionDenied; ++k)
+		{
+		TChar ch;
+		if (RFs::DriveToChar(k == 0 ? EDriveZ : EDriveY - (k - 1), ch) != KErrNone) continue;
+		TBuf<32> eu;
+		eu.Append(ch);
+		eu.Append(_L(":\\sys\\bin\\arm\\euser.dll"));
+		euserState = fs.Entry(eu, euserEntry);
+		}
 	const TBool realEuser = forceReal || (!forceHle && arg.Length() && (euserState == KErrNone || euserState == KErrPermissionDenied));
 	RDebug::Printf("PH: proteus euser: %s", realEuser ? "real ARM" : "HLE");
 	RFile f;

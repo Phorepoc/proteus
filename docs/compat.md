@@ -17,6 +17,22 @@ and a window group of its own in the native WSERV. The ARM system DLLs an app im
 | Calculator `calcsoft.exe` from the real reference-device firmware, set up as the ROM app it is: the EXE in `c:\sys\bin\`, its registration `c:\private\10003a3f\import\apps\CalcSoft_reg.rsc` and `c:\resource\apps\Calcsoft.r01/.mif/.mbm` (from the other device's dump; the reference device's own `.rsc` set is not in the repo) | plain Avkon, Thumb, real reference-OS binary | **P3 PASS, UI shown and working** (`img/compat-calculator-pcvm.png`; `7 * 6 =` tapped through the VM mouse integration gives 42, `img/compat-calculator-pcvm-42.png`): window group `10005902 Calculator`, still running | (1) `avkon[100056c6].dll` ordinal 4611 (the reference OS's `CAknTasHook::AddTimestampL`): implemented in core 840e0ca; the ARM avkon.dll with it was staged. (2) the `-25` (same root cause as Let's Golf 2) | (1) core 840e0ca. (2) `EExecProcessGetDataParameter` returns the length |
 | PyS60 script shell 2.0 (`PythonScriptShell`) | plain Avkon + Python 2.5 | **P3 PASS on the x32 PC VM** (window group `20022eec PythonScriptShell`, the skinned Python screen with the interpreter banner, `img/compat-pys60-pcvm.png`) | Not a Proteus bug: the ARM build directory used for the closure was stale. (1) its `iaupdateapi.dll` (9272 B, Oct 23) was the 2010 IAD **stub**: `CIAUpdate::NewL` leaves KErrNotSupported (the handled -5), PyS60's IAD helper then waits in a scheduler wait nothing ends (`proteus wait 1`, no window group); core's registry builds the real client (17308 B) since dd4aa30. (2) with the real client the next stop was `drtrvct2_2 ordinal 28 not emulated`: `Python25.dll` (RVCT-built) imports the RVCT runtime, core ships `drtrvct2_2` but the stale build lacked it (the closure printed it as unresolved). Fix: build `iaupdateapi iaupdatetools drtrvct2_2` for ARM, re-stage; `proteus_closure.py --strict` now fails on unresolved DLLs | the closure for a SIS app must include the DLLs the SIS installs, not just the EXE (with only the EXE: `iaupdateapi ordinal 21 not emulated`); rebuild the ARM components from current core before staging |
 
+## Installing Proteus (2026-11-10)
+
+Proteus ships as `proteus.sis` (release Action, `package.conf`): `cpuhandler_arm.exe` with the dynarmic JIT (`PH: proteus cpu: jit`;
+`c:\proteus\interp.txt` still selects the interpreter), `proteusimg.exe` and the licence texts. It installs on a PC image built
+without this layer; the capabilities (`All -TCB`, `AllFiles ProtServ`) are granted by the install server's developer mode
+(`PhorepocDevMode`, core `config/swi/swipolicy.ini`), the platform's no-signing design, not by a change to SWI.
+
+The package carries **no ARM system DLLs**. The direction is that ARM apps run against the native x32 system libraries (app
+code translated, system DLL calls bridged to native: research approach (b)); the ARM-library route of this page was the
+feasibility stage. Until that bridge lands, an app run still needs its ARM closure staged in `c:\sys\bin\arm\`
+(`tools/proteus_stage.sh`), including `euser.dll`/`efsrv.dll`/`hal.dll`, which a ROM with this layer has on Z:. SWI could not
+install them there anyway: it refuses any subdirectory of `\sys\bin\` (`SecurityCheckUtil::CheckProtectedDirectoriesL`,
+also in developer mode). The handler now looks for `\sys\bin\arm\` on every drive (Z:, then Y: .. A:), not only Z:.
+
+Not yet verified: the CI build of the package and an install of `proteus.sis` on a PC image without the layer.
+
 ## The SIS flow (2026-11-04)
 
 The P3 flow installs `c:\sis\*.sis` with the real installer; nothing else is staged for an app run except the ARM SYSTEM closure in
