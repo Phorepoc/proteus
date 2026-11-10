@@ -1,0 +1,23 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
+// proteus.mmp -- OURS (Proteus P0): proteus.exe = user-side ARM loader + interpreter (see proteus.cpp). x32 Phorepoc EXE; SSM_TEST=proteus runs it at boot.
+// proteus_interp.mmp -- the interpreter-only proteus.exe (no dynarmic): the board test of the native bridge builds this one (core: components "proteus").
+TARGETTYPE		exe
+UID				0x1000007a 0xE70157F1
+EPOCSTACKSIZE	0x10000
+CAPABILITY		All -TCB
+VENDORID		0
+// the handler heap: the guest's image files while they load, dynarmic's translation state, the bridge (Sparkle at its first
+// frame: 46 MB). Guest memory is the guest region and Mesa has a chunk heap of its own, so this is a reservation sized to that use;
+// euser reserves twice the maximum for the heap chunk, and the GL GPU channel needs a 256 MB pool in the same address space
+EPOCHEAPSIZE	0x10000 0x8000000
+
+OS_LAYER_SYSTEMINCLUDE_SYMBIAN
+OS_LAYER_LIBC_SYSTEMINCLUDE
+MW_LAYER_SYSTEMINCLUDE_SYMBIAN
+USERINCLUDE		.
+SOURCEPATH		.
+SOURCE			proteus.cpp armcpu.cpp thumb.cpp proteusrt.cpp e32decomp.cpp proteusexec.cpp proteusgl.cpp bridge.cpp armjitnone.cpp
+// P1: the translator (armjit.cpp, in the dynarmic archives of the registry entry)
+// (no PROTEUS_JIT: the interpreter build)
+LIBRARY			euser.lib efsrv.lib libc.lib libm.lib libpthread.lib ws32.lib apparc.lib mmfcontrollerframework.lib
