@@ -1094,7 +1094,9 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 	if (gTrace)
 	{
 		char line[200];
-		snprintf(line, sizeof(line), "[proteus] bridge %s (%x,%x,%x,%x)", e.iName, aCpu.R[0], aCpu.R[1], aCpu.R[2], aCpu.R[3]);
+		const uint32_t sp = aCpu.R[13];
+		snprintf(line, sizeof(line), "[proteus] bridge %s (%x,%x,%x,%x; %x,%x)", e.iName, aCpu.R[0], aCpu.R[1], aCpu.R[2], aCpu.R[3],
+			aCpu.Valid(sp, 8) ? aCpu.Read32(sp) : 0, aCpu.Valid(sp, 8) ? aCpu.Read32(sp + 4) : 0);
 		Say(aHle, "%s", line);
 	}
 	PatchArgVtables(aCpu, *d, row);
@@ -1112,6 +1114,12 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 	}
 	else
 		e.iCall(aCpu, d->iFn[row]);
+	if (gTrace)
+	{
+		char line[120];
+		snprintf(line, sizeof(line), "[proteus] bridge = %x (heap %x)", aCpu.R[0], aCpu.iGuestAlloc);
+		Say(aHle, "%s", line);
+	}
 	aCpu.R[14] = lr;
 	aCpu.SetReturn();
 	return true;
