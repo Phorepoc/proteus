@@ -198,6 +198,9 @@ static TInt Self()
 	TBuf<64> cl;
 	User::CommandLine(cl);
 	CHECK(92, cl.Compare(_L("-xy")) == 0);
+	TBuf<3> cl3;			// sized by CommandLineLength: the native line with the path must not land in it (KERN-EXEC 35)
+	User::CommandLine(cl3);
+	CHECK(95, cl3.Compare(_L("-xy")) == 0);
 	// the other self-queries (tools/bridge/overrides/euser.py SELF): the EXE's export data is the program's (none: not a STDEXE), the
 	// identity the loader gave the process is the program's
 	CHECK(93, RProcess().ExeExportData() == NULL);

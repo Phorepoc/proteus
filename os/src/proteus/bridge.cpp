@@ -1198,24 +1198,47 @@ void BrOvr_CommandLineLength(CArmCpu& aCpu, uintptr_t aFn)		// TInt User::Comman
 
 void BrOvr_CommandLine(CArmCpu& aCpu, uintptr_t aFn)		// void User::CommandLine(TDes16&): the native line, the program path removed
 {
+	// the kernel writes the WHOLE native line (path in front) and panics KERN-EXEC 35 (EKUDesSetLengthOverflow) when the caller sized its
+	// descriptor by our CommandLineLength (the line without the path): read it into a TBuf16 of the native length below the guest's sp
+	// (or from the guest allocator when long), then copy the rest of the line into the caller's descriptor
 	const uint32_t des = aCpu.R[0];
 	typedef void (*F)(uint32_t);
-	((F)aFn)(des);
+	typedef uint32_t (*FL)();
 	const uint32_t p = ExePrefix();
-	if (!p || !des) return;
-	const uint32_t w0 = aCpu.Read32(des), type = w0 >> 28, len = w0 & 0x0FFFFFFF;
-	const uint32_t buf = type == 2 ? aCpu.Read32(des + 8) : type == 3 ? des + 8 : 0;		// a TPtr / TBuf (TDes16 only)
-	if (!buf || len + 1 < p) return;
-	for (uint32_t i = 0; i + 1 < p; ++i)		// only when the line really starts with the path
+	uintptr_t lenFn = p && gCurHle->iIpc && gCurHle->iIpc->iNativeExport ? gCurHle->iIpc->iNativeExport(gCurHle->iIpc->iCtx, "euser.dll", 622) : 0;
+	if (lenFn && gResolve) lenFn = gResolve((uint32_t)lenFn);		// (the host test hands out indices)
+	if (!p || !des || !lenFn)		// (622 = User::CommandLineLength)
 	{
-		uint32_t c = aCpu.Read16(buf + 2 * i), e = (uint8_t)gCurHle->iExePath[i];
-		if (c >= 'A' && c <= 'Z') c += 32;
-		if (e >= 'A' && e <= 'Z') e += 32;
-		if (c != e) return;
+		((F)aFn)(des);
+		return;
 	}
-	const uint32_t rest = len >= p ? len - p : 0;
-	for (uint32_t i = 0; i < rest; ++i) aCpu.Write16(buf + 2 * i, (uint16_t)aCpu.Read16(buf + 2 * (p + i)));
-	aCpu.Write32(des, (w0 & 0xF0000000u) | rest);
+	const uint32_t n = ((FL)lenFn)(), bytes = (8 + 2 * n + 7) & ~7u;
+	uint32_t tmp = (aCpu.R[13] - 128 - bytes) & ~7u;		// below the frame a guest call would start at (sp - 64)
+	if (bytes > 4096 || !aCpu.Valid(tmp, bytes)) tmp = gThr.iAlloc ? gThr.iAlloc(bytes) : 0;		// (a long line: guest heap, not freed)
+	if (!tmp) return;
+	aCpu.Write32(tmp, 3u << 28); aCpu.Write32(tmp + 4, n);		// an empty TBuf16<n>
+	((F)aFn)(tmp);
+	const uint32_t len = aCpu.Read32(tmp) & 0x0FFFFFFF;
+	uint32_t skip = 0;
+	if (len + 1 >= p)		// only when the line really starts with the path
+	{
+		skip = len >= p ? p : len;
+		for (uint32_t i = 0; i + 1 < p; ++i)
+		{
+			uint32_t c = aCpu.Read16(tmp + 8 + 2 * i), e = (uint8_t)gCurHle->iExePath[i];
+			if (c >= 'A' && c <= 'Z') c += 32;
+			if (e >= 'A' && e <= 'Z') e += 32;
+			if (c != e) { skip = 0; break; }
+		}
+	}
+	const uint32_t w0 = aCpu.Read32(des), type = w0 >> 28;
+	const uint32_t max = type == 1 || type == 0 ? 0 : aCpu.Read32(des + 4);		// TDes16: iMaxLength
+	const uint32_t buf = type == 2 ? aCpu.Read32(des + 8) : type == 3 ? des + 8 : type == 4 ? aCpu.Read32(des + 8) + 4 : 0;	// TPtr / TBuf / RBuf(HBufC)
+	const uint32_t rest = len - skip, m = rest < max ? rest : max;		// (the native call would have panicked on overflow; truncate instead)
+	if (!buf) return;
+	for (uint32_t i = 0; i < m; ++i) aCpu.Write16(buf + 2 * i, (uint16_t)aCpu.Read16(tmp + 8 + 2 * (skip + i)));
+	aCpu.Write32(des, (w0 & 0xF0000000u) | m);
+	if (type == 4) aCpu.Write32(aCpu.Read32(des + 8), m);		// an RBuf over an HBufC: the cell's length too
 }
 
 void BrOvr_ExeExportData(CArmCpu& aCpu, uintptr_t)		// TAny* RProcess::ExeExportData(): the EXE's named-symbol export data, ordinal 0

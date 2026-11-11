@@ -237,7 +237,7 @@ static const char KFakeCmd[] = "C:\\sys\\bin\\proteusbridge.exe -xy";
 static U Fk_CommandLineLength() { return (U)strlen(KFakeCmd); }
 static U Fk_ExeExportData() { return 0x5E1Fu; }		// the handler's export data: the bridge must not pass it on
 static U Fk_SecureId(U) { return 0xE70157F3u; }		// the loader's role: the process has the program's SecureId (sf_lepoc ForeignCpuRedirect)
-static U Fk_CommandLine(U d) { const U n = (U)strlen(KFakeCmd); for (U i = 0; i < n; ++i) gCpu->Write16(Ptr16(d) + 2 * i, (uint16_t)KFakeCmd[i]); SetLen(d, n); return 0; }
+static U Fk_CommandLine(U d) { const U n = (U)strlen(KFakeCmd); if (n > Max(d)) { fprintf(stderr, "fake CommandLine: KERN-EXEC 35 (line %u > max %u)\n", n, Max(d)); exit(35); } for (U i = 0; i < n; ++i) gCpu->Write16(Ptr16(d) + 2 * i, (uint16_t)KFakeCmd[i]); SetLen(d, n); return 0; }
 
 struct TFake { const char* iName; void* iFn; };
 static const TFake KFakes[] = {
