@@ -429,18 +429,21 @@ static bool IsLeaveRow(const char* n);
 static bool IsLibraryRow(const char* n);
 static bool IsLibraryHandleRow(const char* n);
 // a row that cannot reach the heap: no TGuestHeap switch around it (two Exec::HeapSwitch kernel calls per bridged call, round 19). By name:
-// string/memory/character functions and descriptor methods (no allocation), libc's character stdio (Open C's stdio buffers come from its
-// own heap, not the thread's allocator); anything named for allocation, creation or leaving is left out
+// string/memory/character functions and descriptor methods (no allocation); anything named for allocation, creation or leaving is left out
 static bool NoHeapRow(int aDll, const char* n)
 {
 	static const char* const KNever[] = { "Alloc", "New", "Heap", "Free", "Create", "Leave", "dup", "Expand", "ReAlloc", "Format", "Load" };
 	for (const char* k : KNever) if (strstr(n, k)) return false;
 	if (aDll >= 2)
-	{
-		static const char* const KPre[] = { "str", "mem", "wcs", "wmem", "is", "to", "getc", "fgetc", "ungetc", "putc", "fputc", "feof", "ferror",
-			"fileno", "clearerr", "abs", "labs", "atoi", "atol", "pthread_mutex_lock", "pthread_mutex_unlock", "pthread_mutex_trylock",
-			"pthread_self", "pthread_getspecific", "pthread_equal", "__errno" };
-		for (const char* k : KPre) if (!strncmp(n, k, strlen(k))) return true;
+	{	// exact names only: Open C's malloc IS User::Alloc (ualloc.cpp), the thread's allocator -- anything that may allocate (stdio's buffer
+		// at a FILE's first getc/putc, a lazily made mutex or thread record) needs the switch (round 20; the backend's own data is on its
+		// iPrivateHeap)
+		static const char* const KPure[] = { "strlen", "strnlen", "strcmp", "strncmp", "strcasecmp", "strncasecmp", "strcpy", "strncpy", "strcat",
+			"strncat", "strchr", "strrchr", "strstr", "strspn", "strcspn", "strpbrk", "memcpy", "memmove", "memset", "memcmp", "memchr", "wcslen",
+			"wcscmp", "wcsncmp", "wcscpy", "wcsncpy", "wcschr", "wmemcpy", "wmemmove", "wmemset", "wmemcmp", "wmemchr", "isalpha", "isdigit",
+			"isalnum", "isspace", "isupper", "islower", "isxdigit", "ispunct", "isprint", "iscntrl", "isgraph", "tolower", "toupper", "abs",
+			"labs", "feof", "ferror", "fileno", "clearerr" };
+		for (const char* k : KPure) if (!strcmp(n, k)) return true;
 		return false;
 	}
 	static const char* const KEuser[] = { "_ZN3Mem", "_ZNK7TDesC8", "_ZNK7TDesC16", "_ZN6TDes8", "_ZN7TDes16", "_ZNK6TDes8", "_ZNK7TDes16",
