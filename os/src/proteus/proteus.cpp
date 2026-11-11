@@ -1852,6 +1852,13 @@ static TInt MainL()
 		exePath.Append(TParsePtrC(path).NameAndExt());
 		}
 	hle.iExePath = (const char*)exePath.PtrZ();
+	// the process is the program's: name it after the program's EXE, as the kernel names a native process (it was named after the handler).
+	// Every name query then answers for the program natively -- RProcess::Name/FullName, RThread::FullName ("<process>::<thread>"), and
+	// what OTHER processes see (task lists, TFindProcess, apparc). SecureId/VendorId/capabilities are the program's already (the loader)
+	{
+		const TInt rn = User::RenameProcess(TParsePtrC(path).Name());
+		RDebug::Printf("PH: proteus process name -> %S (%d)", TLog8(RProcess().Name()).P(), rn);
+	}
 	hle.iFind = FindDll;
 	hle.iFindCtx = &fc;
 	hle.iThreadId = (TUint32)RThread().Id();
