@@ -395,7 +395,7 @@ struct TBridgeDll
 	uint32_t* iProfCount;		// bridge.cfg `profile`: calls and TSC cycles per row
 	uint64_t* iProfCycles;
 };
-enum { KRowLeave = 1, KRowLib = 2, KRowLibHandle = 4, KRowHandleCheck = 8, KRowSwitch = 16, KRowRAlloc = 32, KRowNoHeap = 64 };
+enum { KRowLeave = 1, KRowLib = 2, KRowLibHandle = 4, KRowHandleCheck = 8, KRowSwitch = 16, KRowRAlloc = 32, KRowNoHeap = 64, KRowThread = 128 };
 // imports that are not bridged even for a native DLL: the guest EXE's start-up and exit belong to Proteus, not to the native process
 const char* const KKeepHle[] = { "_ZN4User11InitProcessEv", "_ZN7UserSvr9DllSetTlsEiiPv", "_ZN4User4ExitEi", "_ZN6RDebug6PrintfEPKcz" };
 // euser and efsrv first (code below indexes them as 0 and 1); Open C's libc and libpthread since round 16 (no ARM C library beside a native one)
@@ -465,7 +465,9 @@ static uint8_t RowKind(int aDll, const char* n)
 		if (strstr(n, "11RHandleBase") || strstr(n, "8RLibrary")) k |= KRowHandleCheck;
 		if (!strcmp(n, "_ZN4User15SwitchAllocatorEP10RAllocator") || !strcmp(n, "_ZN4User10SwitchHeapEP10RAllocator")) k |= KRowSwitch;
 		if (!strncmp(n, "_ZN10RAllocator", 15)) k |= KRowRAlloc;
+		if (!strncmp(n, "_ZN7RThread6Create", 18)) k |= KRowThread;
 	}
+	if (aDll == 3 && !strcmp(n, "pthread_create")) k |= KRowThread;
 	if (!(k & KRowSwitch) && NoHeapRow(aDll, n)) k |= KRowNoHeap;
 	return k;
 }
@@ -1297,6 +1299,21 @@ bool BridgeTrapSlot(CArmCpu& aCpu, THle& aHle, uint32_t aSlotValue)
 	return BridgeTrap(aCpu, aHle, gDll[dll].iName, aSlotValue & 0xFFFF);
 }
 
+// a guest TDesC16's (a8: TDesC8's) text (type in the top 4 bits of the first word: 0 TBufC, 1 TPtrC, 2 TPtr, 3 TBuf, 4 TBufCPtr), -1 if unreadable
+static int GuestDes16(CArmCpu& aCpu, uint32_t aDes, uint16_t* aOut, int aMax, bool a8)
+{
+	if (!aCpu.Valid(aDes, 8)) return -1;
+	const uint32_t w = aCpu.Read32(aDes), type = w >> 28; int len = (int)(w & 0x0FFFFFFF);
+	uint32_t p = type == 0 ? aDes + 4 : type == 1 ? aCpu.Read32(aDes + 4) : type == 2 ? aCpu.Read32(aDes + 8) : type == 3 ? aDes + 8
+		: type == 4 ? aCpu.Read32(aDes + 8) + 4 : 0;
+	if (!p) return -1;
+	if (len > aMax) len = aMax;
+	if (a8) { if (!aCpu.Valid(p, len)) return -1; for (int i = 0; i < len; ++i) aOut[i] = aCpu.Read8(p + i); return len; }
+	if (!aCpu.Valid(p, 2 * len)) return -1;
+	for (int i = 0; i < len; ++i) { const uint32_t x = aCpu.Read32((p + 2 * i) & ~3u); aOut[i] = (uint16_t)(((p + 2 * i) & 2) ? x >> 16 : x); }
+	return len;
+}
+
 bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 {
 	gCurHle = &aHle;
@@ -1332,6 +1349,45 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 			snprintf(line, sizeof(line), "[proteus] bridge: guest library handle %x passed to native %s (lr %x)", aCpu.Read32(aCpu.R[0]), e.iName, aCpu.R[14]);
 			Say(aHle, "%s", line);
 		}
+	}
+	const bool print16 = !strcmp(e.iName, "_ZN6RDebug5PrintE11TRefByValueIK7TDesC16Ez"), print8 = !strcmp(e.iName, "_ZN6RDebug6PrintfEPKcz");
+	if (print16 || print8)
+	{	// RDebug::Print / Printf: varargs (no generated call; the HLE logged the bare format) -- format here: %S (a descriptor: 16-bit for
+		// Print, 8-bit for Printf), %s (Printf: a C string), %d %i %u %x %c %%. Qt's qWarning/qDebug end here ("[Qt Message] %S")
+		uint32_t arg[16]; int na = 0;
+		for (int i = 1; i < 4; ++i) arg[na++] = aCpu.R[i];
+		for (int i = 0; i < 12 && aCpu.Valid(aCpu.R[13] + 4 * i, 4); ++i) arg[na++] = aCpu.Read32(aCpu.R[13] + 4 * i);
+		uint16_t fmt[256]; int fl = 0;
+		if (print16) fl = GuestDes16(aCpu, aCpu.R[0], fmt, 256, false);
+		else for (; fl < 255 && aCpu.Valid(aCpu.R[0] + fl, 1); ++fl) { const uint8_t ch = aCpu.Read8(aCpu.R[0] + fl); if (!ch) break; fmt[fl] = ch; }
+		char out[400]; int o = 0, ai = 0;
+		for (int i = 0; i < fl && o < (int)sizeof(out) - 64; ++i)
+		{
+			const uint16_t c = fmt[i];
+			if (c != '%' || i + 1 >= fl) { out[o++] = c < 128 ? (char)c : '?'; continue; }
+			uint16_t f = fmt[++i];
+			while ((f >= '0' && f <= '9') || f == '-' || f == 'l') { if (i + 1 >= fl) break; f = fmt[++i]; }
+			const uint32_t v = ai < na ? arg[ai] : 0;
+			if (f == '%') { out[o++] = '%'; continue; }
+			++ai;
+			if (f == 'S' || (f == 's' && print16))
+			{
+				uint16_t t[160]; const int tl = GuestDes16(aCpu, v, t, 160, print8);
+				for (int k = 0; k < tl && o < (int)sizeof(out) - 2; ++k) out[o++] = t[k] < 128 ? (char)t[k] : '?';
+			}
+			else if (f == 's')
+				for (int k = 0; k < 160 && o < (int)sizeof(out) - 2 && aCpu.Valid(v + k, 1); ++k) { const uint8_t ch = aCpu.Read8(v + k); if (!ch) break; out[o++] = ch < 128 ? (char)ch : '?'; }
+			else if (f == 'd' || f == 'i') o += snprintf(out + o, sizeof(out) - o, "%d", (int)v);
+			else if (f == 'u') o += snprintf(out + o, sizeof(out) - o, "%u", (unsigned)v);
+			else if (f == 'x' || f == 'X' || f == 'p') o += snprintf(out + o, sizeof(out) - o, "%x", (unsigned)v);
+			else if (f == 'c') out[o++] = v < 128 ? (char)v : '?';
+			else { out[o++] = '%'; out[o++] = f < 128 ? (char)f : '?'; }
+		}
+		out[o] = 0;
+		Say(aHle, "%s", out);
+		aCpu.R[0] = 0;
+		aCpu.SetReturn();
+		return true;
 	}
 	if (d->iKeepHle[row] && (&aCpu == gPrimary || !strcmp(e.iName, "_ZN6RDebug6PrintfEPKcz")))
 		return false;		// (a native guest thread's User::Exit etc. go to the native euser: they end that native thread)
@@ -1371,6 +1427,33 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 		Say(aHle, "%s", line);
 	}
 	PatchArgVtables(aCpu, *d, row);
+	// a guest thread is a native thread, and its HOST stack also runs the translator (dynarmic's dispatcher + the bridge frames): the
+	// stack the guest asks for (Open C's pthread default is 8 KB, an ARM program's RThread::Create a few KB) overflowed it (Sparkle on the
+	// native set: KERN-EXEC 3 in a Qt `Local-` thread, round 21). The guest's own stack is separate (KGuestStack), so only the native
+	// thread's size is raised: a copy of the attr / create info, the guest's object stays as it was.
+	uint32_t attr[16];
+	if (kind & KRowThread)
+	{
+		enum { KHostThreadStack = 256 * 1024 };
+		if (d - gDll == 3)
+		{	// pthread_create(thread, attr, fn, arg): _pthread_attr { policy, stackSize, detachState, scope, sched_param, priority, r1, r2 }
+			if (aCpu.R[1] && aCpu.Valid(aCpu.R[1], 32)) for (int i = 0; i < 8; ++i) attr[i] = aCpu.Read32(aCpu.R[1] + 4 * i);
+			else { attr[0] = 3 /* SCHED_RR */; attr[2] = 0 /* JOINABLE */; attr[3] = 1 /* SCOPE_SYSTEM */; attr[4] = 100; attr[5] = 0 /* EPriorityNormal */; attr[6] = attr[7] = 0; attr[1] = 0; }
+			if (attr[1] < KHostThreadStack) attr[1] = KHostThreadStack;
+			aCpu.R[1] = (uint32_t)(uintptr_t)attr;
+		}
+		else if (strstr(e.iName, "TThreadCreateInfo"))
+		{	// RThread::Create(const TThreadCreateInfo&): iStackSize at +12, 64 bytes in all
+			if (aCpu.Valid(aCpu.R[1], 64))
+			{
+				for (int i = 0; i < 16; ++i) attr[i] = aCpu.Read32(aCpu.R[1] + 4 * i);
+				if ((int32_t)attr[3] < KHostThreadStack) attr[3] = KHostThreadStack;
+				aCpu.R[1] = (uint32_t)(uintptr_t)attr;
+			}
+		}
+		else if ((int32_t)aCpu.R[3] < KHostThreadStack)
+			aCpu.R[3] = KHostThreadStack;		// RThread::Create(name, fn, stack, ...)
+	}
 	const uint32_t lr = aCpu.R[14];
 	const uint32_t argSize = (kind & KRowRAlloc) ? aCpu.R[1] : aCpu.R[0];	// (the watch: RAllocator::AllocZ(this, size) / User::Alloc(size))
 	const uint64_t t0 = d->iProfCount ? Tsc() : 0;
