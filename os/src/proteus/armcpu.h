@@ -98,6 +98,7 @@ public:
 	uint32_t iFaultAddr;
 	uint32_t iLastPc;			// the instruction being executed (a Thumb branch halts with pc = the target; this is the branch)
 	char iNote[96];
+	uint32_t iJmpPc = 0;		// (R1, native libc) a guest longjmp: the bridged call returns there instead of to its lr
 	uint32_t iGuestAlloc = 0;	// (R1, native euser) the allocator the guest switched this thread to; 0 = the handler's own (bridge.cpp TGuestHeap)
 
 	// guest memory access (false/0 + fault on a bad address)

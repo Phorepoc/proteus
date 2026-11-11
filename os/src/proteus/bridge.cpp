@@ -136,7 +136,8 @@ uint32_t BridgeCallGuest(CArmCpu& aCpu, uint32_t aFn, uint32_t a0, uint32_t a1, 
 namespace
 {
 bool gTrace;
-uint32_t gWatch, gWatchVal; bool gWatchOn;	// (armed when an allocation returns the cell right after the word)	// bridge.cfg `watch <hex addr>`: log every change of that word, seen at a bridged call (before = guest code wrote it)
+uint32_t gWatch, gWatchVal, gWatchPrev, gWatchSize; bool gWatchOn;	// `watchsize <hex>`: (re)arm on every allocation of that size
+	// (armed when an allocation returns the cell right after the word)	// bridge.cfg `watch <hex addr>`: log every change of that word, seen at a bridged call (before = guest code wrote it)
 bool gTraceHeap;		// bridge.cfg `traceheap`: only the allocator rows and native virtual calls (a full trace fills the log in ~4 min)
 volatile int gLockWord;
 struct TLock
@@ -368,6 +369,8 @@ static void BrCbField(CArmCpu& aCpu, uint8_t* aField)
 #include "gen/bridge_shapes.inc"
 #include "gen/bridge_euser.inc"
 #include "gen/bridge_efsrv.inc"
+#include "gen/bridge_libc.inc"
+#include "gen/bridge_libpthread.inc"
 
 namespace
 {
@@ -386,7 +389,12 @@ struct TBridgeDll
 };
 // imports that are not bridged even for a native DLL: the guest EXE's start-up and exit belong to Proteus, not to the native process
 const char* const KKeepHle[] = { "_ZN4User11InitProcessEv", "_ZN7UserSvr9DllSetTlsEiiPv", "_ZN4User4ExitEi", "_ZN6RDebug6PrintfEPKcz" };
-TBridgeDll gDll[2] = { { "euser.dll", KBridge_euser, 0, false, 0, 0, KBridgeVt_euser, KBridgeTi_euser, 0, 0 }, { "efsrv.dll", KBridge_efsrv, 0, false, 0, 0, KBridgeVt_efsrv, KBridgeTi_efsrv, 0, 0 } };
+// euser and efsrv first (code below indexes them as 0 and 1); Open C's libc and libpthread since round 16 (no ARM C library beside a native one)
+const int KBridgeDlls = 4;
+TBridgeDll gDll[KBridgeDlls] = { { "euser.dll", KBridge_euser, 0, false, 0, 0, KBridgeVt_euser, KBridgeTi_euser, 0, 0 },
+	{ "efsrv.dll", KBridge_efsrv, 0, false, 0, 0, KBridgeVt_efsrv, KBridgeTi_efsrv, 0, 0 },
+	{ "libc.dll", KBridge_libc, 0, false, 0, 0, KBridgeVt_libc, KBridgeTi_libc, 0, 0 },
+	{ "libpthread.dll", KBridge_libpthread, 0, false, 0, 0, KBridgeVt_libpthread, KBridgeTi_libpthread, 0, 0 } };
 uint32_t gLo = 0x00010000, gHi = 0xC0000000;
 bool gMap;
 uintptr_t (*gResolve)(uint32_t);	// host tests: the "native address" the embedder returns is a 32-bit token, the function pointer is 64-bit
@@ -432,7 +440,9 @@ void BridgeConfigure(const char* aText)
 {
 	gDll[0].iCount = KBridge_euser_Count;
 	gDll[1].iCount = KBridge_efsrv_Count;
-	for (int i = 0; i < 2; ++i)
+	gDll[2].iCount = KBridge_libc_Count;
+	gDll[3].iCount = KBridge_libpthread_Count;
+	for (int i = 0; i < KBridgeDlls; ++i)
 		gDll[i].iNativeOn = false;
 	gTrace = false;
 	gTraceHeap = false;
@@ -452,13 +462,15 @@ void BridgeConfigure(const char* aText)
 		a[0] = 0;
 		if (sscanf(line, "%31s %63s", w, a) < 1) continue;
 		if (!strcmp(w, "native"))
-			for (int i = 0; i < 2; ++i) { if (SameDll(a, gDll[i].iName)) gDll[i].iNativeOn = true; }
+			for (int i = 0; i < KBridgeDlls; ++i) { if (SameDll(a, gDll[i].iName)) gDll[i].iNativeOn = true; }
 		else if (!strcmp(w, "trace"))
 			gTrace = true;
 		else if (!strcmp(w, "traceheap"))
 			gTraceHeap = true;
 		else if (!strcmp(w, "watch"))
 			gWatch = (uint32_t)strtoul(a, 0, 16);
+		else if (!strcmp(w, "watchsize"))
+			gWatchSize = (uint32_t)strtoul(a, 0, 16);
 		else if (!strcmp(w, "map") && sscanf(line, "%*s %lx %lx", &x, &y) == 2)
 			{ gLo = (uint32_t)x; gHi = (uint32_t)y; gMap = true; }
 		else if (!strcmp(w, "map"))
@@ -466,9 +478,9 @@ void BridgeConfigure(const char* aText)
 	}
 	// a native DLL implies the map: its objects (the synthesized type_infos, CBase objects, heap cells) live at native addresses the guest
 	// must reach (without it PyS60's estor.dll entry faulted 'write8' on a type_info in the native heap)
-	if (gDll[0].iNativeOn || gDll[1].iNativeOn)
+	if (gDll[0].iNativeOn || gDll[1].iNativeOn || gDll[2].iNativeOn || gDll[3].iNativeOn)
 		gMap = true;
-	for (int i = 0; i < 2; ++i)
+	for (int i = 0; i < KBridgeDlls; ++i)
 	{
 		TBridgeDll& d = gDll[i];
 		free(d.iFn); free(d.iKeepHle);
@@ -506,7 +518,7 @@ void BridgeSetLookup(uint32_t (*aFn)(void*, const char*, int), void* aCtx) { gLo
 // must be the native address itself, not a trap. Returns false = not data, or not native: the import stays a trap slot.
 bool BridgeDataImport(const char* aDll, uint32_t aOrd, uint32_t& aAddr)
 {
-	for (int i = 0; i < 2; ++i)
+	for (int i = 0; i < KBridgeDlls; ++i)
 	{
 		if (!gDll[i].iNativeOn || !SameDll(aDll, gDll[i].iName) || aOrd < 1 || aOrd > gDll[i].iCount) continue;
 		const TBridgeExport& e = gDll[i].iRows[aOrd - 1];
@@ -519,7 +531,7 @@ bool BridgeDataImport(const char* aDll, uint32_t aOrd, uint32_t& aAddr)
 
 bool BridgeNative(const char* aImport)
 {
-	for (int i = 0; i < 2; ++i)
+	for (int i = 0; i < KBridgeDlls; ++i)
 		if (gDll[i].iNativeOn && SameDll(aImport, gDll[i].iName)) return true;
 	return false;
 }
@@ -594,25 +606,54 @@ static void PatchArgVtables(CArmCpu& aCpu, const TBridgeDll& aDll, uint32_t aRow
 	}
 }
 
+// the watch (bridge.cfg `watch`) also covers the word before it (the previous chunk's footer / prev_size) and is checked around every
+// native-call too: a change seen at one names the code that ran since the last check
+static uint32_t BridgeNativeCallBody(CArmCpu& aCpu, uint32_t aPc);
+static bool NearImage(uint32_t aVt, uint32_t aPc) { return aVt && !(aVt & 3) && (aVt > aPc ? aVt - aPc : aPc - aVt) < 0x1000000u; }
+static void WatchCheck(CArmCpu& aCpu, const char* aWhen, uint32_t aPc)
+{
+	if (!gWatchOn || !gCurHle) return;
+	const uint32_t v = aCpu.Read32(gWatch), p = aCpu.Read32(gWatch - 4);
+	if (v == gWatchVal && p == gWatchPrev) return;
+	char line[160];
+	snprintf(line, sizeof(line), "[proteus] watch %x: [%x %x] -> [%x %x] %s native-call %x (lr %x)", gWatch, gWatchPrev, gWatchVal, p, v, aWhen, aPc,
+	         aCpu.R[14]);
+	Say(*gCurHle, "%s", line);
+	gWatchVal = v; gWatchPrev = p;
+}
+
 uint32_t BridgeNativeCall(CArmCpu& aCpu, uint32_t aPc)
+{
+	const uint32_t r = BridgeNativeCallBody(aCpu, aPc);
+	WatchCheck(aCpu, "after", aPc);
+	return r;
+}
+
+static uint32_t BridgeNativeCallBody(CArmCpu& aCpu, uint32_t aPc)
 {
 	if (!gDll[0].iNativeOn) return 0;
 	const uintptr_t fn = gResolve ? gResolve(aPc) : (uintptr_t)aPc;
 	if (!fn) return 0;
+	WatchCheck(aCpu, "before", aPc);
 	TGuestHeap heap(aCpu, false);
 	if ((gTrace || gTraceHeap) && gCurHle)
 	{
 		char line[120];
-		snprintf(line, sizeof(line), "[proteus] bridge native-call %x (%x,%x,%x,%x)", aPc, aCpu.R[0], aCpu.R[1], aCpu.R[2], aCpu.R[3]);
+		snprintf(line, sizeof(line), "[proteus] bridge native-call %x (%x,%x,%x,%x) lr %x", aPc, aCpu.R[0], aCpu.R[1], aCpu.R[2], aCpu.R[3], aCpu.R[14]);
 		Say(*gCurHle, "%s", line);
 	}
 	{	// a native virtual returning a struct through the AAPCS hidden pointer: r0 = the result buffer, r1 = `this`. Found by the slot of r1's vtable
 		// that holds aPc (KBridgeVret_<dll>, from the class records); the slot's generated shape makes the x32 call (rax:rdx or its own hidden
 		// pointer). r0 must not be an object whose vtable holds aPc at that slot too (then r0 is `this` and r1 an argument of the same class)
 		const uint32_t self = aCpu.R[1], res = aCpu.R[0];
-		const uint32_t vt = self && aCpu.Valid(self, 4) ? aCpu.Read32(self) : 0;
-		const uint32_t vt0 = res && aCpu.Valid(res, 4) ? aCpu.Read32(res) : 0;
-		const TBridgeVret* const tabs[] = { KBridgeVret_euser, KBridgeVret_efsrv };
+		// a candidate vtable is read only when it lies in the image of aPc (a native virtual's vtable is in the DLL that holds the function):
+		// Valid() is true for any address of the native window, committed or not, and r1 is often no object at all -- Free(heap, cell) passed
+		// a freed stdio buffer whose first word (file text) was probed as a vtable and faulted on an uncommitted page (round 16)
+		uint32_t vt = self && aCpu.Valid(self, 4) ? aCpu.Read32(self) : 0;
+		uint32_t vt0 = res && aCpu.Valid(res, 4) ? aCpu.Read32(res) : 0;
+		if (!NearImage(vt, aPc)) vt = 0;
+		if (!NearImage(vt0, aPc)) vt0 = 0;
+		const TBridgeVret* const tabs[] = { KBridgeVret_euser, KBridgeVret_efsrv, KBridgeVret_libc, KBridgeVret_libpthread };
 		for (const TBridgeVret* t : tabs)
 			for (; vt && t->iCall; ++t)
 				if (aCpu.Valid(vt + 4 * t->iSlot, 4) && aCpu.Read32(vt + 4 * t->iSlot) == aPc &&
@@ -809,6 +850,30 @@ static bool IsLibraryRow(const char* n)
 }
 // the rows that only look at the handle (any guest thread may close or duplicate a library handle; Load/Lookup need the primary's process)
 static bool IsLibraryHandleRow(const char* n) { return !strncmp(n, "_ZN11RHandleBase", 16) || !strcmp(n, "_ZN8RLibrary5CloseEv"); }
+// a guest RLibrary of a DLL that runs natively (round 16: dlopen("libc.dll") with no ARM libc left): the handle names the bridge table
+// (KHandleLib0 + KNativeLib + its index) and Lookup(ord) hands out an import slot of module KBridgeModule, trapped like a linked import
+static const uint32_t KNativeLib = 0x8000, KBridgeModule = 0x3FE;
+static uint32_t* gLookupSlot[KBridgeDlls];		// per DLL and ordinal: the slot address handed out (0 = none yet)
+static uint32_t NativeLookupSlot(TProcess& aProc, int aDll, uint32_t aOrd)
+{
+	TBridgeDll& d = gDll[aDll];
+	if (aOrd < 1 || aOrd > d.iCount) return 0;
+	if (!gLookupSlot[aDll]) gLookupSlot[aDll] = (uint32_t*)calloc(d.iCount, sizeof(uint32_t));
+	if (!gLookupSlot[aDll]) return 0;
+	if (gLookupSlot[aDll][aOrd - 1]) return gLookupSlot[aDll][aOrd - 1];
+	if (aProc.iSlotCount == aProc.iSlotMax)
+	{
+		const uint32_t nmax = aProc.iSlotMax ? aProc.iSlotMax * 2 : 1024;
+		uint32_t* ns = (uint32_t*)realloc(aProc.iSlots, nmax * sizeof(uint32_t));
+		if (!ns) return 0;
+		aProc.iSlots = ns;
+		aProc.iSlotMax = nmax;
+	}
+	const uint32_t slot = aProc.iSlotCount++;
+	aProc.iSlots[slot] = (KBridgeModule << 22) | ((uint32_t)aDll << 16) | aOrd;
+	return gLookupSlot[aDll][aOrd - 1] = KTrapBase | (slot << 2);
+}
+
 static bool LibraryOverride(CArmCpu& aCpu, const char* aName)
 {
 	TProcess* p = gCurHle ? gCurHle->iProcess : 0;
@@ -833,6 +898,12 @@ static bool LibraryOverride(CArmCpu& aCpu, const char* aName)
 		if (!lib) return false;
 		const int mod = (int)(aCpu.Read32(aCpu.R[0]) & 0xFFFF);
 		const uint32_t ord = aCpu.R[1];
+		if (mod >= (int)KNativeLib)
+		{
+			aCpu.R[0] = mod - (int)KNativeLib < KBridgeDlls ? NativeLookupSlot(*p, mod - (int)KNativeLib, ord) : 0;
+			aCpu.SetReturn();
+			return true;
+		}
 		const TLoaded* m = mod < p->iCount ? &p->iMod[mod] : 0;
 		aCpu.R[0] = m && ord >= 1 && ord <= m->iExportCount ? aCpu.Read32(m->iExportDir + 4 * (ord - 1)) : 0;
 		aCpu.SetReturn();
@@ -849,6 +920,14 @@ static bool LibraryOverride(CArmCpu& aCpu, const char* aName)
 	const char* base = bs ? bs + 1 : strchr(file, ':') ? strchr(file, ':') + 1 : file;
 	char name[160];
 	snprintf(name, sizeof(name), "%s%s", base, strchr(base, '.') ? "" : ".dll");
+	for (int i = 0; i < KBridgeDlls; ++i)
+		if (gDll[i].iNativeOn && SameDll(name, gDll[i].iName))
+		{
+			aCpu.Write32(aCpu.R[0], KHandleLib0 + KNativeLib + (uint32_t)i);
+			aCpu.R[0] = 0;
+			aCpu.SetReturn();
+			return true;
+		}
 	int firstNew = 0;
 	const int mod = LoadLibraryModule(aCpu, *p, name, gCurHle->iFind, gCurHle->iFindCtx, firstNew);
 	int32_t res = mod >= 0 ? 0 : mod;
@@ -1045,7 +1124,7 @@ uint32_t BridgeTypeInfo(CArmCpu& aCpu, const TProcess& aProc, uint32_t aKey)
 {
 	if (gTiProc != &aProc) { memset(gTiAddr, 0, sizeof(gTiAddr)); gTiProc = &aProc; }
 	const int dll = (int)(aKey >> 16), idx = (int)(aKey & 0xFFFF);
-	return dll < 2 && gDll[dll].iTi ? MakeTi(aCpu, aProc, dll, idx) : 0;
+	return dll < KBridgeDlls && gDll[dll].iTi ? MakeTi(aCpu, aProc, dll, idx) : 0;
 }
 
 static bool TypeInfoAlias(int aDll, const char* aName, const char*& aArmDll, uint32_t& aArmOrd)
@@ -1056,11 +1135,18 @@ static bool TypeInfoAlias(int aDll, const char* aName, const char*& aArmDll, uin
 	return false;
 }
 
+bool BridgeTrapSlot(CArmCpu& aCpu, THle& aHle, uint32_t aSlotValue)
+{
+	const uint32_t dll = (aSlotValue >> 16) & 0x3F;
+	if ((aSlotValue >> 22) != KBridgeModule || dll >= (uint32_t)KBridgeDlls) return false;
+	return BridgeTrap(aCpu, aHle, gDll[dll].iName, aSlotValue & 0xFFFF);
+}
+
 bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 {
 	gCurHle = &aHle;
 	TBridgeDll* d = 0;
-	for (int i = 0; i < 2 && !d; ++i)
+	for (int i = 0; i < KBridgeDlls && !d; ++i)
 		if (gDll[i].iNativeOn && SameDll(aDll, gDll[i].iName)) d = &gDll[i];
 	if (d == &gDll[0] && aOrd > d->iCount)
 	{
@@ -1116,6 +1202,7 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 	}
 	PatchArgVtables(aCpu, *d, row);
 	const uint32_t lr = aCpu.R[14];
+	const uint32_t argSize = !strncmp(e.iName, "_ZN10RAllocator", 15) ? aCpu.R[1] : aCpu.R[0];	// (the watch: RAllocator::AllocZ(this, size) / User::Alloc(size))
 	TGuestHeap heap(aCpu, !strcmp(e.iName, "_ZN4User15SwitchAllocatorEP10RAllocator") || !strcmp(e.iName, "_ZN4User10SwitchHeapEP10RAllocator"));
 	if (d->iLeaves && d->iLeaves[row] && gThr.iTrapped)
 	{	// a native ...L export: a native leave inside it must not longjmp over this frame -- run it under a native TRAP, raise the leave in the guest
@@ -1136,14 +1223,22 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 		gWatchVal = aCpu.Read32(gWatch);
 		Say(aHle, "%s", line);
 	}
-	if (gWatch && !gWatchOn && aCpu.R[0] == gWatch + 4 && strstr(e.iName, "Alloc")) { gWatchOn = true; gWatchVal = aCpu.Read32(gWatch); }
+	if (gWatchSize && strstr(e.iName, "Alloc") && (argSize == gWatchSize) && aCpu.R[0])
+	{
+		gWatch = aCpu.R[0] - 4; gWatchOn = true; gWatchVal = aCpu.Read32(gWatch); gWatchPrev = aCpu.Read32(gWatch - 4);
+		char line[160];
+		snprintf(line, sizeof(line), "[proteus] watch armed %x (%s %x) [%x %x]", gWatch, e.iName, argSize, gWatchPrev, gWatchVal);
+		Say(aHle, "%s", line);
+	}
+	else if (gWatch && !gWatchOn && aCpu.R[0] == gWatch + 4 && strstr(e.iName, "Alloc")) { gWatchOn = true; gWatchVal = aCpu.Read32(gWatch); gWatchPrev = aCpu.Read32(gWatch - 4); }
 	if (traceRow)
 	{
 		char line[120];
 		snprintf(line, sizeof(line), "[proteus] bridge = %x (heap %x)", aCpu.R[0], aCpu.iGuestAlloc);
 		Say(aHle, "%s", line);
 	}
-	aCpu.R[14] = lr;
+	aCpu.R[14] = aCpu.iJmpPc ? aCpu.iJmpPc : lr;
+	aCpu.iJmpPc = 0;
 	aCpu.SetReturn();
 	return true;
 }
@@ -1154,9 +1249,10 @@ namespace proteus
 // the name a native ordinal of aDll is bound under (the host tests' fake native tables key on names)
 const char* BridgeNativeName(const char* aDll, uint32_t aNativeOrdinal)
 {
-	for (int i = 0; i < 2; ++i)
+	const uint32_t KCounts[KBridgeDlls] = { KBridge_euser_Count, KBridge_efsrv_Count, KBridge_libc_Count, KBridge_libpthread_Count };
+	for (int i = 0; i < KBridgeDlls; ++i)
 		if (SameDll(aDll, gDll[i].iName))
-			for (uint32_t r = 0; r < (i ? KBridge_efsrv_Count : KBridge_euser_Count); ++r)
+			for (uint32_t r = 0; r < KCounts[i]; ++r)
 				if (gDll[i].iRows[r].iNative == aNativeOrdinal) return gDll[i].iRows[r].iName;
 	return "";
 }
@@ -1278,6 +1374,202 @@ void BrOvr_AppendFormat8(CArmCpu& c, uintptr_t) { FormatCall(c, false, 1); }
 void BrOvr_AppendFormatOvf8(CArmCpu& c, uintptr_t) { FormatCall(c, false, 2); }
 void BrOvr_FormatList8(CArmCpu& c, uintptr_t) { FormatCall(c, false, 3); }
 void BrOvr_AppendFormatList8(CArmCpu& c, uintptr_t) { FormatCall(c, false, 4); }
+
+// ---- Open C's libc natively (rung R1 round 16): its varargs and the calls that must stay in the guest. The printf / scanf families read the ARM
+// `...` (or an ARM va_list = a pointer into the guest stack) conversion by conversion into 8-byte slots and call the native v-function with a
+// SysV va_list over them (as FormatCall above). setjmp / longjmp save and restore the GUEST's registers (a native setjmp would save the
+// handler's); exit flushes the native stdio and ends the guest the way User::Exit does.
+namespace proteus
+{
+namespace
+{
+uintptr_t NativeLibc(const char* aName)
+{
+	TBridgeDll* d = &gDll[2];
+	for (uint32_t r = 0; r < d->iCount; ++r)
+		if (!strcmp(d->iRows[r].iName, aName)) return gCurHle ? NativeOf(d, r, *gCurHle) : 0;
+	return 0;
+}
+
+int GuestFmt(CArmCpu& aCpu, uint32_t aFmt, bool aWide, char* aOut, int aMax)
+{
+	int n = 0;
+	for (; n < aMax - 1; ++n)
+	{
+		const uint32_t c = aWide ? aCpu.Read16(aFmt + 2 * n) : aCpu.Read8(aFmt + n);
+		if (!c) break;
+		aOut[n] = c < 0x80 ? (char)c : '?';	// the walker only needs the ASCII conversion letters
+	}
+	aOut[n] = 0;
+	return n;
+}
+
+// C conversions -> slots. printf: hh h l z t j = a word on ARM (long and size_t are 32 bits), ll q = 64 bits, a e f g (L too: long double
+// = double on ARM) = a double, c s p n C S = a word. scanf: every conversion that is not %* or %% is one pointer.
+int BuildSlotsC(const char* aFmt, TArmVa& aVa, uint64_t* aSlots, bool aScan)
+{
+	int n = 0;
+	for (const char* s = aFmt; *s && n < KMaxVaSlots - 4; ++s)
+	{
+		if (*s != '%') continue;
+		++s;
+		if (*s == '%') continue;
+		if (aScan)
+		{
+			const bool skip = *s == '*';
+			while (*s && !strchr("diouxXaAeEfFgGcsSCpn[", *s)) ++s;
+			if (*s == '[') { ++s; if (*s == '^') ++s; if (*s == ']') ++s; while (*s && *s != ']') ++s; }
+			if (!*s) break;
+			if (!skip) aSlots[n++] = aVa.W();
+			continue;
+		}
+		while (*s && strchr("-+ 0#'", *s)) ++s;
+		if (*s == '*') { aSlots[n++] = aVa.W(); ++s; } else while (*s >= '0' && *s <= '9') ++s;
+		if (*s == '.')
+		{
+			++s;
+			if (*s == '*') { aSlots[n++] = aVa.W(); ++s; } else while (*s >= '0' && *s <= '9') ++s;
+		}
+		int longs = 0;
+		while (*s && strchr("hlLqjzt", *s)) { if (*s == 'l') ++longs; if (*s == 'q' || *s == 'j') longs = 2; ++s; }
+		if (!*s) break;
+		switch (*s)
+		{
+		case 'd': case 'i': case 'o': case 'u': case 'x': case 'X':
+			if (longs >= 2) aSlots[n++] = aVa.L(); else aSlots[n++] = aVa.W();
+			break;
+		case 'a': case 'A': case 'e': case 'E': case 'f': case 'F': case 'g': case 'G':
+			aSlots[n++] = aVa.L();
+			break;
+		default:
+			aSlots[n++] = aVa.W();
+			break;
+		}
+	}
+	return n;
+}
+
+// aFixed words before the format, then the format; aList = an ARM va_list follows it (the v-functions), else `...`
+void LibcFormatCall(CArmCpu& aCpu, const char* aNativeV, int aFixed, bool aWide, bool aScan, bool aList)
+{
+	BrArgs a(aCpu);
+	uint32_t w[3] = { 0, 0, 0 };
+	for (int i = 0; i < aFixed; ++i) w[i] = a.W();
+	const uint32_t fmt = a.W();
+	const uint32_t ap = aList ? a.W() : 0;
+	char f[KMaxFmt];
+	GuestFmt(aCpu, fmt, aWide, f, sizeof(f));
+	TArmVa va = { &a, aCpu, ap, aList };
+	uint64_t slots[KMaxVaSlots];
+	BuildSlotsC(f, va, slots, aScan);
+	TVaTag tag = { 48, 176, slots, 0 };
+	const uintptr_t fn = NativeLibc(aNativeV);
+	if (!fn)
+	{
+		snprintf(aCpu.iNote, sizeof(aCpu.iNote), "bridge: native libc does not export %s", aNativeV);
+		aCpu.Halt(EHleStop);
+		return;
+	}
+	typedef int (*F0)(uint32_t, void*);
+	typedef int (*F1)(uint32_t, uint32_t, void*);
+	typedef int (*F2)(uint32_t, uint32_t, uint32_t, void*);
+	int r;
+	if (aFixed == 0) r = ((F0)fn)(fmt, &tag);
+	else if (aFixed == 1) r = ((F1)fn)(w[0], fmt, &tag);
+	else r = ((F2)fn)(w[0], w[1], fmt, &tag);
+	aCpu.R[0] = (uint32_t)r;
+}
+}
+
+#define BR_LIBC_FMT(name, v, fixed, wide, scan, list) void BrOvr_libc_##name(CArmCpu& c, uintptr_t) { LibcFormatCall(c, #v, fixed, wide, scan, list); }
+BR_LIBC_FMT(printf, vprintf, 0, false, false, false)
+BR_LIBC_FMT(fprintf, vfprintf, 1, false, false, false)
+BR_LIBC_FMT(sprintf, vsprintf, 1, false, false, false)
+BR_LIBC_FMT(snprintf, vsnprintf, 2, false, false, false)
+BR_LIBC_FMT(asprintf, vasprintf, 1, false, false, false)
+BR_LIBC_FMT(scanf, vscanf, 0, false, true, false)
+BR_LIBC_FMT(fscanf, vfscanf, 1, false, true, false)
+BR_LIBC_FMT(sscanf, vsscanf, 1, false, true, false)
+BR_LIBC_FMT(wprintf, vwprintf, 0, true, false, false)
+BR_LIBC_FMT(fwprintf, vfwprintf, 1, true, false, false)
+BR_LIBC_FMT(swprintf, vswprintf, 2, true, false, false)
+BR_LIBC_FMT(wscanf, vwscanf, 0, true, true, false)
+BR_LIBC_FMT(fwscanf, vfwscanf, 1, true, true, false)
+BR_LIBC_FMT(swscanf, vswscanf, 1, true, true, false)
+BR_LIBC_FMT(vprintf, vprintf, 0, false, false, true)
+BR_LIBC_FMT(vfprintf, vfprintf, 1, false, false, true)
+BR_LIBC_FMT(vsprintf, vsprintf, 1, false, false, true)
+BR_LIBC_FMT(vsnprintf, vsnprintf, 2, false, false, true)
+BR_LIBC_FMT(vasprintf, vasprintf, 1, false, false, true)
+BR_LIBC_FMT(vscanf, vscanf, 0, false, true, true)
+BR_LIBC_FMT(vfscanf, vfscanf, 1, false, true, true)
+BR_LIBC_FMT(__vfscanf, __vfscanf, 1, false, true, true)
+BR_LIBC_FMT(vsscanf, vsscanf, 1, false, true, true)
+BR_LIBC_FMT(vwprintf, vwprintf, 0, true, false, true)
+BR_LIBC_FMT(vfwprintf, vfwprintf, 1, true, false, true)
+BR_LIBC_FMT(vswprintf, vswprintf, 2, true, false, true)
+BR_LIBC_FMT(vwscanf, vwscanf, 0, true, true, true)
+BR_LIBC_FMT(vfwscanf, vfwscanf, 1, true, true, true)
+BR_LIBC_FMT(vswscanf, vswscanf, 1, true, true, true)
+#undef BR_LIBC_FMT
+
+// open(path, flags, ...) / fcntl(fd, cmd, ...) / ioctl(fd, req, ...) / semctl(id, num, cmd, ...): the optional argument is one word (a mode,
+// an int, a pointer, union semun); the native function is called with it always
+void BrOvr_libc_Words3(CArmCpu& c, uintptr_t aFn)
+{
+	typedef int (*F)(uint32_t, uint32_t, uint32_t);
+	c.R[0] = (uint32_t)((F)aFn)(c.R[0], c.R[1], c.R[2]);
+}
+void BrOvr_libc_Words4(CArmCpu& c, uintptr_t aFn)
+{
+	typedef int (*F)(uint32_t, uint32_t, uint32_t, uint32_t);
+	c.R[0] = (uint32_t)((F)aFn)(c.R[0], c.R[1], c.R[2], c.R[3]);
+}
+
+// the guest's process ends (as User::Exit, KKeepHle): exit flushes the native stdio first; a native guest thread ends natively
+void BrOvr_libc_exit(CArmCpu& c, uintptr_t aFn)
+{
+	if (!BridgeIsGuestThread(c))
+	{
+		typedef int (*Fl)(uint32_t);
+		const uintptr_t fl = NativeLibc("fflush");
+		if (fl) ((Fl)fl)(0);
+		c.Halt(EExited, (int32_t)c.R[0]);
+		return;
+	}
+	typedef void (*F)(uint32_t);
+	((F)aFn)(c.R[0]);
+}
+void BrOvr_libc__exit(CArmCpu& c, uintptr_t aFn)
+{
+	if (!BridgeIsGuestThread(c)) { c.Halt(EExited, (int32_t)c.R[0]); return; }
+	typedef void (*F)(uint32_t);
+	((F)aFn)(c.R[0]);
+}
+void BrOvr_libc_abort(CArmCpu& c, uintptr_t aFn)
+{
+	typedef void (*F)();
+	((F)aFn)();
+}
+
+// setjmp(buf): r4-r11, sp, lr of the guest (10 of the ARM jmp_buf's 16 words); longjmp(buf, v): back to that lr with v (0 -> 1)
+void BrOvr_libc_setjmp(CArmCpu& c, uintptr_t)
+{
+	const uint32_t b = c.R[0];
+	for (int i = 0; i < 8; ++i) c.Write32(b + 4 * i, c.R[4 + i]);
+	c.Write32(b + 32, c.R[13]);
+	c.Write32(b + 36, c.R[14]);
+	c.R[0] = 0;
+}
+void BrOvr_libc_longjmp(CArmCpu& c, uintptr_t)
+{
+	const uint32_t b = c.R[0], v = c.R[1];
+	for (int i = 0; i < 8; ++i) c.R[4 + i] = c.Read32(b + 4 * i);
+	c.R[13] = c.Read32(b + 32);
+	c.iJmpPc = c.Read32(b + 36);
+	c.R[0] = v ? v : 1;
+}
+}
 
 // ---- the process asking about itself (mixed mode). The native kernel's answers are the HANDLER's: RProcess::FileName is
 // z:\sys\bin\cpuhandler_arm.exe, Type its UIDs, User::CommandLine starts with the ARM program's path (the loader puts it in front).

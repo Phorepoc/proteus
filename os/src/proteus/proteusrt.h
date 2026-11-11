@@ -230,6 +230,7 @@ uint32_t GuestBytes(CArmCpu& aCpu, TExecState& aExec, const void* aSrc, uint32_t
 bool IsGlDll(const char* aImport);
 bool GlTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd);
 bool GlTrapSlot(CArmCpu& aCpu, THle& aHle, uint32_t aSlotValue);
+bool BridgeTrapSlot(CArmCpu& aCpu, THle& aHle, uint32_t aSlotValue);	// bridge.cpp: an RLibrary::Lookup slot of a native DLL
 // bridge.cpp (rung R1): the imports of the DLLs bridge.cfg lists as native run on the native x32 export of the same name.
 // BridgeConfigure = (re)read the cfg text; BridgeNative = an import of such a DLL; BridgeTrap = call it (false = not bridged: the HLE runs);
 // BridgeMapWanted = the host range to make guest memory as it is (the "map" line; false = off)
