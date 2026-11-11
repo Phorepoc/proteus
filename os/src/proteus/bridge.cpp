@@ -467,6 +467,20 @@ uint32_t BridgeNativeCall(CArmCpu& aCpu, uint32_t aPc)
 		snprintf(line, sizeof(line), "[proteus] bridge native-call %x (%x,%x,%x,%x)", aPc, aCpu.R[0], aCpu.R[1], aCpu.R[2], aCpu.R[3]);
 		Say(*gCurHle, "%s", line);
 	}
+	{	// a native virtual returning a TPtr8/TPtrC8 (12 bytes): ARM passes the result's address in r0 and `this` in r1, x32 SysV returns the
+		// object in rax:rdx with `this` first. Recognised by the slot of `this`'s vtable that holds aPc (abi/euser.json class slots):
+		// CBufBase::Ptr(int) = 5, CBufBase::BackPtr(int) = 6 (PyS60: CBufFlat::Ptr, then EikSrv-client 4 on the garbage descriptor)
+		const uint32_t self = aCpu.R[1];
+		const uint32_t vt = self && aCpu.Valid(self, 4) ? aCpu.Read32(self) : 0;
+		if (vt && aCpu.Valid(vt + 20, 8) && (aCpu.Read32(vt + 20) == aPc || aCpu.Read32(vt + 24) == aPc) && aCpu.Valid(aCpu.R[0], 12))
+		{
+			struct TRet12 { uint32_t iW[3]; };
+			typedef TRet12 (*FP)(uint32_t, uint32_t);
+			const TRet12 t = ((FP)fn)(self, aCpu.R[2]);
+			for (int i = 0; i < 3; ++i) aCpu.Write32(aCpu.R[0] + 4 * i, t.iW[i]);
+			return aCpu.R[14] ? aCpu.R[14] : 0;
+		}
+	}
 	const uint32_t sp = aCpu.R[13];
 	const uint32_t s0 = aCpu.Valid(sp, 4) ? aCpu.Read32(sp) : 0, s1 = aCpu.Valid(sp + 4, 4) ? aCpu.Read32(sp + 4) : 0;
 	typedef uint64_t (*F)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
