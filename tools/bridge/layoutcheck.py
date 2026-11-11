@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -52,6 +53,37 @@ def diff(arm: dict, x32: dict, vt_arm: dict, vt_x32: dict, classes: list[str]) -
     return out
 
 
+# the C libraries (Open C, round 16) have no classes: what an ARM caller and the native callee must agree on are the types their
+# exports name (through pointers): every record and typedef spelled in a parameter or result, function-pointer types aside
+C_DLLS = ("libc", "libpthread")
+_SCALAR = re.compile(r"^(unsigned |signed )?(int|char|short|long|long long|void|double|float|long double|bool|_Bool|__e32_va_list)$")
+
+
+def c_types(abi: dict) -> list[str]:
+    out = set()
+    for e in abi["exports"]:
+        for p in (e.get("params") or []) + [e.get("ret") or {}]:
+            t = re.sub(r"\b(const|volatile|restrict|__restrict)\b", "", p.get("t", ""))
+            t = t.replace("*", "").replace("&", "").strip()
+            t = re.sub(r"\s+", " ", t)
+            if not t or "(" in t or "__attribute__" in t or _SCALAR.match(t):
+                continue
+            out.add(t)
+    return sorted(out)
+
+
+def complete_types(repo: str, dll: str, types: list[str]) -> list[str]:
+    """drop the opaque ones (DIR, WDIR, iconv_t's target ...): the guest only passes their pointers around"""
+    with tempfile.TemporaryDirectory() as tmp:
+        for _ in range(4):
+            err = L.clang(repo, "arm", dll, ["-ferror-limit=0"], src=L.force_tu(types, dll, tmp), allow_fail=True)
+            bad = {int(i) for i in re.findall(r"forced_(\d+) = sizeof", err)}
+            if not bad:
+                break
+            types = [t for i, t in enumerate(types) if i not in bad]
+    return types
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
@@ -59,18 +91,24 @@ def main():
     ap.add_argument("--json")
     a = ap.parse_args()
     total, diffs, res = 0, [], {}
-    for dll in a.dll or ["euser", "efsrv"]:
+    for dll in a.dll or ["euser", "efsrv", "libc", "libpthread"]:
         abi = json.load(open(os.path.join(HERE, "abi", dll + ".json")))
         classes = [c for c, r in abi["classes"].items() if "<" not in c and r.get("declared", True)]
+        sizes = []
+        if dll in C_DLLS:
+            classes = complete_types(a.repo, dll, c_types(abi))
         with tempfile.TemporaryDirectory() as tmp:
             arm = L.layouts(a.repo, "arm", dll, classes, tmp)
             x32 = L.layouts(a.repo, "x32", dll, classes, tmp)
             va, vx = vtables(a.repo, "arm", dll, tmp, classes), vtables(a.repo, "x32", dll, tmp, classes)
+            if dll in C_DLLS:	# sizeof/alignof of every named type (a typedef of a scalar too: off_t, fpos_t, pthread_t ...)
+                pa, px = L.probe_sizes(a.repo, "arm", dll, classes, tmp), L.probe_sizes(a.repo, "x32", dll, classes, tmp)
+                sizes = [f"{t}: sizeof/alignof arm={pa.get(t)} x32={px.get(t)}" for t in classes if pa.get(t) != px.get(t)]
         every = sorted(set(arm) | set(x32))
-        d = diff(arm, x32, va, vx, every)
+        d = sizes + diff(arm, x32, va, vx, every)
         # each class with exported members, laid out on both targets
         have = [c for c in classes if c in arm and c in x32]
-        print(f"{dll}: {len(classes)} classes with exported members ({len(have)} laid out on both), "
+        print(f"{dll}: {len(classes)} {'named types' if dll in C_DLLS else 'classes with exported members'} ({len(have)} laid out on both), "
               f"{len(every)} records compared incl. bases and members, {len(d)} differences")
         for ln in d:
             print("  DIFF", ln)
