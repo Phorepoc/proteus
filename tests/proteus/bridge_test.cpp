@@ -103,6 +103,7 @@ struct TItem { U fn, ptr; };
 static U Fk_PushL_item(TItem i) { gClean.push_back({ i.fn, i.ptr, false }); return 0; }
 static void DestroyTop() { TClean c = gClean.back(); gClean.pop_back(); typedef U (*F)(U, U, U, U); ((F)BridgeStubFn(c.iFn))(c.iPtr, 0, 0, 0); }
 static U Fk_PopAndDestroyN(U n) { while (n--) DestroyTop(); return 0; }
+static U Fk_PopAndDestroy1() { DestroyTop(); return 0; }
 static U Fk_Mark() { gClean.push_back({ 0, 0, true }); return 1; }
 static U Fk_UnMark(U) { if (!gClean.empty() && gClean.back().iMark) gClean.pop_back(); return 0; }
 static void TrapLeave(uint32_t, int32_t) { while (!gClean.empty() && !gClean.back().iMark) DestroyTop(); if (!gClean.empty()) gClean.pop_back(); }
@@ -241,7 +242,7 @@ static const TFake KFakes[] = {
 	{ "_ZN4User15RequestCompleteERP14TRequestStatusi", (void*)Fk_RequestComplete }, { "_ZN4User6AllocZEi", (void*)Fk_User_AllocZ },
 	{ "memset", (void*)Fk_memset }, { "memcpy", (void*)Fk_memcpy }, { "memmove", (void*)Fk_memmove }, { "memcmp", (void*)Fk_memcmp }, { "strlen", (void*)Fk_strlen }, { "strcmp", (void*)Fk_strcmp }, { "_ZN7UserSvr16RomHeaderAddressEv", (void*)Fk_RomHeader },
 	{ "_ZN4User16MarkCleanupStackEv", (void*)Fk_Mark }, { "_ZN4User18UnMarkCleanupStackEP12TTrapHandler", (void*)Fk_UnMark },
-	{ "_ZN12CleanupStack5PushLE12TCleanupItem", (void*)Fk_PushL_item }, { "_ZN12CleanupStack13PopAndDestroyEi", (void*)Fk_PopAndDestroyN }, { "_ZNK15XLeaveException9GetReasonEv", (void*)Fk_nop }, { "_ZN4User5LeaveEi", (void*)Fk_Leave }, { "_ZN12CTrapCleanup3NewEv", (void*)Fk_TrapCleanupNew }, { "_ZN4User6AllocLEi", (void*)Fk_User_AllocL },
+	{ "_ZN12CleanupStack5PushLE12TCleanupItem", (void*)Fk_PushL_item }, { "_ZN12CleanupStack13PopAndDestroyEi", (void*)Fk_PopAndDestroyN }, { "_ZN12CleanupStack13PopAndDestroyEv", (void*)Fk_PopAndDestroy1 }, { "_ZNK15XLeaveException9GetReasonEv", (void*)Fk_nop }, { "_ZN4User5LeaveEi", (void*)Fk_Leave }, { "_ZN12CTrapCleanup3NewEv", (void*)Fk_TrapCleanupNew }, { "_ZN4User6AllocLEi", (void*)Fk_User_AllocL },
 	{ "_ZN4User12LeaveIfErrorEi", (void*)Fk_nop }, { "_ZN7UserSvr6DllTlsEii", (void*)Fk_nop }, { "_ZN7UserSvr9DllSetTlsEiiPv", (void*)Fk_nop },
 	{ "_ZN7UserSvr19ExceptionDescriptorEm", (void*)Fk_nop }, { "_ZN7UserSvr6DllTlsEi", (void*)Fk_nop }, { "_ZN7UserSvr9DllSetTlsEiPv", (void*)Fk_nop }, { "_ZN4User15HandleExceptionEPv", (void*)Fk_nop }, { "_ZN4User9InvariantEv", (void*)Fk_nop },
 };

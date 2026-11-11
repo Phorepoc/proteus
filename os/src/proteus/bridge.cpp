@@ -492,7 +492,7 @@ uint32_t BridgeOnForeignPc(CArmCpu& aCpu, uint32_t aPc, void*)
 namespace
 {
 enum { KMaxMarks = 64, KMaxLeaveCpus = 128 };
-struct TMark { uint32_t iCtx[10]; uint32_t iHandler; int iDepth; };
+struct TMark { uint32_t iCtx[10]; uint32_t iHandler; int iDepth; uint32_t iResult; };	// iResult: a TTrap::Trap marker (the TInt& to set), 0 = Mark
 struct TLeaveState { CArmCpu* iCpu; int iDepth; int iMarks; TMark iMark[KMaxMarks]; bool iPending; int32_t iReason; };
 TLeaveState gLeave[KMaxLeaveCpus];
 TLeaveState* LeaveState(CArmCpu& aCpu)
@@ -559,6 +559,16 @@ static void GuestLeave(CArmCpu& aCpu, int32_t aReason)
 			const uint32_t vt = *(const uint32_t*)(uintptr_t)m.iHandler;
 			typedef void (*TLeaveFn)(uint32_t, int32_t);
 			((TLeaveFn)(uintptr_t)((const uint32_t*)(uintptr_t)vt)[2])(m.iHandler, aReason);
+		}
+		if (m.iResult)
+		{	// a TTrap::Trap marker (the setjmp model of OUR ARM euser, its ordinals 2548/2549): Trap returns again, 1, with the reason set
+			aCpu.Write32(m.iResult, (uint32_t)aReason);
+			for (int i = 0; i < 8; ++i) aCpu.R[4 + i] = m.iCtx[i];
+			aCpu.R[13] = m.iCtx[8];
+			aCpu.R[14] = m.iCtx[9];
+			aCpu.R[0] = 1;
+			aCpu.SetReturn();
+			return;
 		}
 		const uint32_t alloc = DrtExport(KOrdAllocEx), thr = DrtExport(KOrdThrow), ti = DrtExport(KOrdTypeInfo), vt = DrtExport(KOrdVtable);
 		if (!alloc || !thr || !ti || !vt)
@@ -668,7 +678,7 @@ static bool LeaveOverride(CArmCpu& aCpu, const char* aName, uintptr_t aNative)
 			TMark& m = s->iMark[s->iMarks++];
 			for (int i = 0; i < 8; ++i) m.iCtx[i] = aCpu.R[4 + i];
 			m.iCtx[8] = aCpu.R[13]; m.iCtx[9] = aCpu.R[14];
-			m.iHandler = h; m.iDepth = s->iDepth;
+			m.iHandler = h; m.iDepth = s->iDepth; m.iResult = 0;
 		}
 		aCpu.R[0] = h;
 	}
@@ -691,6 +701,40 @@ static bool LeaveOverride(CArmCpu& aCpu, const char* aName, uintptr_t aNative)
 	else if (!strcmp(aName, "_ZN4User11LeaveIfNullEPv")) { if (!r0) { GuestLeave(aCpu, -4); return true; } }
 	else
 		return false;
+	aCpu.SetReturn();
+	return true;
+}
+
+// OUR ARM device euser (protgl-arm, dev_user_execs.cpp) also exports the setjmp TRAP: TTrap::Trap @ 2548, TTrap::UnTrap @ 2549, past the
+// frozen 2010 table; ARM DLLs built against it (our ARM builds of the system DLLs) call them. They run on the guest side: Trap marks the
+// native cleanup level (the thread's trap handler, slot 0) and keeps the ARM context; a leave restores it (GuestLeave) and Trap returns 1.
+enum { KOrdTTrapTrap = 2548, KOrdTTrapUnTrap = 2549 };
+static bool TTrapOverride(CArmCpu& aCpu, uint32_t aOrd)
+{
+	if (aOrd != KOrdTTrapTrap && aOrd != KOrdTTrapUnTrap) return false;
+	typedef uint32_t (*F)();
+	const uintptr_t th = NativeByName("_ZN4User11TrapHandlerEv");
+	TLeaveState* s = LeaveState(aCpu);
+	if (aOrd == KOrdTTrapTrap)
+	{
+		const uint32_t h = th ? ((F)th)() : 0;
+		if (h && sizeof(void*) == 4) ((void (*)(uint32_t))(uintptr_t)((const uint32_t*)(uintptr_t)*(const uint32_t*)(uintptr_t)h)[0])(h);
+		aCpu.Write32(aCpu.R[1], 0);					// aResult = KErrNone
+		if (s && s->iMarks < KMaxMarks)
+		{
+			TMark& m = s->iMark[s->iMarks++];
+			for (int i = 0; i < 8; ++i) m.iCtx[i] = aCpu.R[4 + i];
+			m.iCtx[8] = aCpu.R[13]; m.iCtx[9] = aCpu.R[14];
+			m.iHandler = h; m.iDepth = s->iDepth; m.iResult = aCpu.R[1];
+		}
+		aCpu.R[0] = 0;
+	}
+	else
+	{
+		uint32_t h = 0;
+		if (s && s->iMarks) h = s->iMark[--s->iMarks].iHandler;
+		if (h && sizeof(void*) == 4) ((void (*)(uint32_t))(uintptr_t)((const uint32_t*)(uintptr_t)*(const uint32_t*)(uintptr_t)h)[1])(h);
+	}
 	aCpu.SetReturn();
 	return true;
 }
@@ -775,6 +819,12 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 	TBridgeDll* d = 0;
 	for (int i = 0; i < 2 && !d; ++i)
 		if (gDll[i].iNativeOn && SameDll(aDll, gDll[i].iName)) d = &gDll[i];
+	if (d == &gDll[0] && aOrd > d->iCount)
+	{
+		RegisterPrimary(aCpu);
+		gCurHle = &aHle;
+		return TTrapOverride(aCpu, aOrd);
+	}
 	if (!d || aOrd < 1 || aOrd > d->iCount)
 		return false;
 	const uint32_t row = aOrd - 1;
