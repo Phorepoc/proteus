@@ -866,7 +866,8 @@ static bool IsLeaveRow(const char* n)
 static bool IsLibraryRow(const char* n)
 {
 	return !strncmp(n, "_ZN8RLibrary4LoadE", 18) || !strcmp(n, "_ZNK8RLibrary6LookupEi") || !strcmp(n, "_ZN8RLibrary5CloseEv")
-		|| !strcmp(n, "_ZN11RHandleBase5CloseEv") || !strcmp(n, "_ZN11RHandleBase9DuplicateERK7RThread10TOwnerType");
+		|| !strcmp(n, "_ZN11RHandleBase5CloseEv") || !strcmp(n, "_ZN11RHandleBase9DuplicateERK7RThread10TOwnerType")
+		|| !strcmp(n, "_ZNK8RLibrary8FileNameEv") || !strcmp(n, "_ZNK8RLibrary4TypeEv");
 }
 // the rows that only look at the handle (any guest thread may close or duplicate a library handle; Load/Lookup need the primary's process)
 static bool IsLibraryHandleRow(const char* n) { return !strncmp(n, "_ZN11RHandleBase", 16) || !strcmp(n, "_ZN8RLibrary5CloseEv"); }
@@ -913,6 +914,35 @@ static bool LibraryOverride(CArmCpu& aCpu, const char* aName)
 		return true;
 	}
 	if (!p) return false;
+	// FileName() / Type() return by value: r0 = the result, r1 = this (round 17: PyS60's kf__e32.pyd asks its own FileName; a guest
+	// handle reaching the native row panicked KERN-EXEC 0)
+	if (!strcmp(aName, "_ZNK8RLibrary8FileNameEv") || !strcmp(aName, "_ZNK8RLibrary4TypeEv"))
+	{	// (r1 is read only here: on Lookup it is the ordinal, and a faulting Read32 halts the guest)
+		if (!aCpu.R[1] || (aCpu.Read32(aCpu.R[1]) & 0xFFFF0000u) != KHandleLib0) return false;
+		const int mod = (int)(aCpu.Read32(aCpu.R[1]) & 0xFFFF);
+		const bool native = mod >= (int)KNativeLib && mod - (int)KNativeLib < KBridgeDlls;
+		const TLoaded* m = !native && mod > 0 && mod < p->iCount ? &p->iMod[mod] : 0;
+		const uint32_t out = aCpu.R[0];
+		if (aName[12] == 'F')
+		{	// a TFileName (TBuf<256>: length|EBuf, max length, the text): "<drive>:\\sys\\bin\\<name>", empty for a bad handle
+			char f[64] = "";
+			if (native) snprintf(f, sizeof(f), "Z:\\sys\\bin\\%s", gDll[mod - KNativeLib].iName);
+			else if (m) snprintf(f, sizeof(f), "%c:\\sys\\bin\\%s", m->iDrive ? m->iDrive : 'Z', m->iName);
+			const uint32_t n = (uint32_t)strlen(f);
+			aCpu.Write32(out, (3u << 28) | n);
+			aCpu.Write32(out + 4, 256);
+			for (uint32_t i = 0; i < n; ++i) aCpu.Write16(out + 8 + 2 * i, (uint16_t)(uint8_t)f[i]);
+		}
+		else
+		{	// a TUidType: KDynamicLibraryUid, 0, the DLL's UID3
+			aCpu.Write32(out, 0x10000079);
+			aCpu.Write32(out + 4, 0);
+			aCpu.Write32(out + 8, m ? m->iUid3 : 0);
+		}
+		aCpu.R[0] = out;
+		aCpu.SetReturn();
+		return true;
+	}
 	if (!strcmp(aName, "_ZNK8RLibrary6LookupEi"))
 	{
 		if (!lib) return false;
