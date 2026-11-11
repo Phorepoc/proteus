@@ -87,12 +87,20 @@ static TInt OpenImage(RFs& aFs, const TDesC& aPath, RFile& aFile)
 	}
 
 // P2: the ARM DLLs a guest imports come from the per-arch directory on the EXE's drive, then Z: (buffers live until the process ends)
-struct TFindCtx { RFs* iFs; TFileName iDir; RPointerArray<HBufC8>* iBufs; };
+// iMiss: the names no ARM file was found for. A native DLL (euser/efsrv with bridge.cfg "native") is asked for once per importing module;
+// each search opened and READ every native DLL of that name in \sys\bin\ (through the broker) to look at its CPU: 77 misses for efsrv.dll
+// cost ~100 s of PyS60's mixed start (round 13)
+enum { KMaxMiss = 32 };
+struct TFindCtx { RFs* iFs; TFileName iDir; RPointerArray<HBufC8>* iBufs; TBuf8<48> iMiss[KMaxMiss]; TInt iMissCount; };
 static const uint8_t* FindDll(const char* aName, uint32_t& aLen, char& aDrive, void* aCtx)
 	{
 	TFindCtx& c = *(TFindCtx*)aCtx;
+	const TPtrC8 name8((const TUint8*)aName);
+	for (TInt m = 0; m < c.iMissCount; ++m)
+		if (c.iMiss[m].CompareF(name8) == 0)
+			return NULL;
 	TBuf<64> name;
-	name.Copy(TPtrC8((const TUint8*)aName));
+	name.Copy(name8);
 	// the EXE's per-arch directory first, then the per-arch directory \sys\bin\arm\ of every drive in the loader's order (Y: .. A:, Z:;
 	// a ROM built with this layer has it on Z:, a PC image with Proteus installed from its SIS has an ARM closure staged on C:), then
 	// \sys\bin\ of every drive, where a SIS installs an app's ARM DLLs next to the native ones: only a file whose E32Image header
@@ -115,6 +123,15 @@ static const uint8_t* FindDll(const char* aName, uint32_t& aLen, char& aDrive, v
 		if (OpenImage(*c.iFs, path, f) != KErrNone)
 			continue;
 		TInt size = 0;
+		if (i > 26)		// \sys\bin\: the CPU in the header first (offset 122), no full read of a native DLL
+			{
+			TBuf8<124> h;
+			if (f.Read(0, h) != KErrNone || h.Length() < 124 || (h[122] | (h[123] << 8)) < 0x2000 || (h[122] | (h[123] << 8)) > 0x2002)
+				{
+				f.Close();
+				continue;
+				}
+			}
 		HBufC8* b = f.Size(size) == KErrNone ? HBufC8::New(size) : NULL;
 		TPtr8 bp(b ? b->Des() : TPtr8(NULL, 0));
 		const TInt r = b ? f.Read(0, bp) : KErrNoMemory;
@@ -137,6 +154,8 @@ static const uint8_t* FindDll(const char* aName, uint32_t& aLen, char& aDrive, v
 		return b->Ptr();
 		}
 	RDebug::Printf("PH: proteus DLL %s: no ARM file (stays HLE)", aName);
+	if (c.iMissCount < KMaxMiss && name8.Length() <= c.iMiss[0].MaxLength())
+		c.iMiss[c.iMissCount++] = name8;
 	return NULL;
 	}
 
@@ -1800,6 +1819,7 @@ static TInt MainL()
 	RPointerArray<HBufC8> dllBufs;
 	CleanupStack::PushL(TCleanupItem((TCleanupOperation)&ResetDestroy, &dllBufs));
 	TFindCtx fc;
+	fc.iMissCount = 0;
 	fc.iFs = &fs;
 	fc.iBufs = &dllBufs;
 	TParsePtrC pp(path);
