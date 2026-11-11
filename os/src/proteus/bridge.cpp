@@ -136,6 +136,7 @@ uint32_t BridgeCallGuest(CArmCpu& aCpu, uint32_t aFn, uint32_t a0, uint32_t a1, 
 namespace
 {
 bool gTrace;
+uint32_t gWatch, gWatchVal; bool gWatchOn;	// (armed when an allocation returns the cell right after the word)	// bridge.cfg `watch <hex addr>`: log every change of that word, seen at a bridged call (before = guest code wrote it)
 bool gTraceHeap;		// bridge.cfg `traceheap`: only the allocator rows and native virtual calls (a full trace fills the log in ~4 min)
 volatile int gLockWord;
 struct TLock
@@ -456,6 +457,8 @@ void BridgeConfigure(const char* aText)
 			gTrace = true;
 		else if (!strcmp(w, "traceheap"))
 			gTraceHeap = true;
+		else if (!strcmp(w, "watch"))
+			gWatch = (uint32_t)strtoul(a, 0, 16);
 		else if (!strcmp(w, "map") && sscanf(line, "%*s %lx %lx", &x, &y) == 2)
 			{ gLo = (uint32_t)x; gHi = (uint32_t)y; gMap = true; }
 		else if (!strcmp(w, "map"))
@@ -1095,6 +1098,13 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 		aCpu.Halt(EHleStop);
 		return true;
 	}
+	if (gWatchOn && aCpu.Read32(gWatch) != gWatchVal)
+	{
+		char line[200];
+		snprintf(line, sizeof(line), "[proteus] watch %x: %x -> %x before %s (lr %x)", gWatch, gWatchVal, aCpu.Read32(gWatch), e.iName, aCpu.R[14]);
+		gWatchVal = aCpu.Read32(gWatch);
+		Say(aHle, "%s", line);
+	}
 	const bool traceRow = gTrace || (gTraceHeap && (strstr(e.iName, "Alloc") || strstr(e.iName, "Free") || strstr(e.iName, "Heap")));
 	if (traceRow)
 	{
@@ -1119,6 +1129,14 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 	}
 	else
 		e.iCall(aCpu, d->iFn[row]);
+	if (gWatchOn && aCpu.Read32(gWatch) != gWatchVal)
+	{
+		char line[200];
+		snprintf(line, sizeof(line), "[proteus] watch %x: %x -> %x in %s (%x,%x,%x)", gWatch, gWatchVal, aCpu.Read32(gWatch), e.iName, aCpu.R[0], aCpu.R[1], aCpu.R[2]);
+		gWatchVal = aCpu.Read32(gWatch);
+		Say(aHle, "%s", line);
+	}
+	if (gWatch && !gWatchOn && aCpu.R[0] == gWatch + 4 && strstr(e.iName, "Alloc")) { gWatchOn = true; gWatchVal = aCpu.Read32(gWatch); }
 	if (traceRow)
 	{
 		char line[120];
