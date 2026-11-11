@@ -147,6 +147,24 @@ static TInt ActiveObjects()
 	return 0;
 	}
 
+// a run-time load is an ARM module of this process (the guest loader), not the native DLL of that name: proteusdll.dll, its static
+// constructor run on attach, its exports by ordinal (1 = Add, 3 = State)
+typedef TInt (*TAddFn)(TInt, TInt);
+typedef TInt (*TStateFn)();
+static TInt Library()
+	{
+	RLibrary lib;
+	CHECK(70, lib.Load(_L("proteusdll.dll")) == KErrNone);
+	TAddFn add = (TAddFn)lib.Lookup(1);
+	TStateFn state = (TStateFn)lib.Lookup(3);
+	CHECK(71, add != NULL && state != NULL);
+	CHECK(72, add(4, 2) == 42);
+	CHECK(73, state() == 0x600D * 1000 + 102);
+	CHECK(74, lib.Lookup(99) == NULL);
+	lib.Close();
+	return 0;
+	}
+
 GLDEF_C TInt E32Main()
 	{
 	TInt r = Descriptors();
@@ -155,5 +173,6 @@ GLDEF_C TInt E32Main()
 	if (!r) r = Formats();
 	if (!r) r = Threads();
 	if (!r) r = ActiveObjects();
+	if (!r) r = Library();
 	return r;
 	}

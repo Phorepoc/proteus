@@ -636,6 +636,71 @@ static bool IsLeaveRow(const char* n)
 	for (const char* k : K) if (!strcmp(n, k)) return true;
 	return false;
 }
+
+// ---- RLibrary in the guest: the guest's run-time loads (the CDL engine's plug-ins, PyS60's .pyd, ECOM) are ARM modules of THIS process,
+// not native DLLs. Bridged to the native euser, RLibrary::Load loaded the native x32 DLL of the same name and Lookup handed the guest a
+// native function, which then ran outside the guest (PyS60 on the CI image: `native call 82d0d440 -> no ARM twin`, then CdlEng 0).
+// Load = the guest loader (LoadLibraryModule) plus the new modules' entry points in import order; the handle is KHandleLib0 + module.
+static bool IsLibraryRow(const char* n)
+{
+	return !strncmp(n, "_ZN8RLibrary4LoadE", 18) || !strcmp(n, "_ZNK8RLibrary6LookupEi") || !strcmp(n, "_ZN8RLibrary5CloseEv")
+		|| !strcmp(n, "_ZN11RHandleBase5CloseEv");
+}
+static bool LibraryOverride(CArmCpu& aCpu, const char* aName)
+{
+	TProcess* p = gCurHle ? gCurHle->iProcess : 0;
+	const bool lib = (aCpu.R[0] && (aCpu.Read32(aCpu.R[0]) & 0xFFFF0000u) == KHandleLib0);
+	if (!strcmp(aName, "_ZN11RHandleBase5CloseEv") || !strcmp(aName, "_ZN8RLibrary5CloseEv"))
+	{
+		if (!lib) return false;					// any other handle: the native Close
+		aCpu.Write32(aCpu.R[0], 0);
+		aCpu.SetReturn();
+		return true;
+	}
+	if (!p) return false;
+	if (!strcmp(aName, "_ZNK8RLibrary6LookupEi"))
+	{
+		if (!lib) return false;
+		const int mod = (int)(aCpu.Read32(aCpu.R[0]) & 0xFFFF);
+		const uint32_t ord = aCpu.R[1];
+		const TLoaded* m = mod < p->iCount ? &p->iMod[mod] : 0;
+		aCpu.R[0] = m && ord >= 1 && ord <= m->iExportCount ? aCpu.Read32(m->iExportDir + 4 * (ord - 1)) : 0;
+		aCpu.SetReturn();
+		return true;
+	}
+	// Load(const TDesC16& aFileName, ...): the file's base name (a path or drive in front is the guest's search hint; our loader searches)
+	char file[160];
+	const uint32_t fd = aCpu.R[1], w = aCpu.Read32(fd), type = w >> 28, len = w & 0x0FFFFFFF;
+	const uint32_t ptr = type == 0 ? fd + 4 : type == 1 ? aCpu.Read32(fd + 4) : type == 2 ? aCpu.Read32(fd + 8) : type == 3 ? fd + 8 : aCpu.Read32(fd + 8) + 4;
+	uint32_t k = 0;
+	for (; k < len && k < sizeof(file) - 5; ++k) file[k] = (char)aCpu.Read16(ptr + 2 * k);
+	file[k] = 0;
+	const char* bs = strrchr(file, 0x5C);
+	const char* base = bs ? bs + 1 : strchr(file, ':') ? strchr(file, ':') + 1 : file;
+	char name[160];
+	snprintf(name, sizeof(name), "%s%s", base, strchr(base, '.') ? "" : ".dll");
+	int firstNew = 0;
+	const int mod = LoadLibraryModule(aCpu, *p, name, gCurHle->iFind, gCurHle->iFindCtx, firstNew);
+	int32_t res = mod >= 0 ? 0 : mod;
+	if (mod >= 0 && firstNew < p->iCount)
+	{	// the new modules' entry points (KModuleEntryReasonProcessAttach), each after the DLLs it imports
+		int order[KMaxModules];
+		const int n = InitOrder(*p, mod, firstNew, order);
+		for (int i = 0; i < n && !res; ++i)
+			if (CallsEntry(aCpu, p->iMod[order[i]]))
+				res = (int32_t)BridgeCallGuest(aCpu, p->iMod[order[i]].iEntry, 2, 0, 0, 0);
+	}
+	if (gTrace || mod < 0)
+	{
+		char line[220];
+		snprintf(line, sizeof(line), "[proteus] bridge RLibrary::Load %s -> %d (%d)", name, mod, (int)res);
+		Say(*gCurHle, "%s", line);
+	}
+	if (!res) aCpu.Write32(aCpu.R[0], KHandleLib0 + (uint32_t)mod);
+	aCpu.R[0] = (uint32_t)res;
+	aCpu.SetReturn();
+	return true;
+}
 // the hand-written euser rows of the leave model; true = handled (the guest continues at lr, or was redirected)
 static bool LeaveOverride(CArmCpu& aCpu, const char* aName, uintptr_t aNative)
 {
@@ -839,6 +904,8 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 	const TBridgeExport& e = d->iRows[row];
 	RegisterPrimary(aCpu);
 	if (d == &gDll[0] && IsLeaveRow(e.iName) && LeaveOverride(aCpu, e.iName, NativeOf(d, row, aHle)))
+		return true;
+	if (d == &gDll[0] && &aCpu == gPrimary && IsLibraryRow(e.iName) && LibraryOverride(aCpu, e.iName))
 		return true;
 	if (d->iKeepHle[row] && (&aCpu == gPrimary || !strcmp(e.iName, "_ZN6RDebug6PrintfEPKcz")))
 		return false;		// (a native guest thread's User::Exit etc. go to the native euser: they end that native thread)

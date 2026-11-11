@@ -312,6 +312,7 @@ int main(int argc, char** argv)
 	TIpcBridge ipc; memset(&ipc, 0, sizeof ipc); ipc.iNativeExport = NativeExport;
 	THle hle = { &proc.iMod[0], &proc, Log, 0, 0 };
 	hle.iIpc = &ipc;
+	hle.iFind = FindDll;			// the guest's RLibrary::Load (bridge LibraryOverride) finds ARM DLLs as LoadProcess does
 	{	// R1 threads: host thread ids, guest stacks from the fake heap, the interpreter on every CPU
 		TBridgeThreads thr; memset(&thr, 0, sizeof thr);
 		thr.iThreadId = []() -> uint32_t { return (uint32_t)syscall(SYS_gettid); };
