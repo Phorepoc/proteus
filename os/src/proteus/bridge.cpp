@@ -136,6 +136,7 @@ uint32_t BridgeCallGuest(CArmCpu& aCpu, uint32_t aFn, uint32_t a0, uint32_t a1, 
 namespace
 {
 bool gTrace;
+bool gTraceHeap;		// bridge.cfg `traceheap`: only the allocator rows and native virtual calls (a full trace fills the log in ~4 min)
 volatile int gLockWord;
 struct TLock
 {
@@ -433,6 +434,7 @@ void BridgeConfigure(const char* aText)
 	for (int i = 0; i < 2; ++i)
 		gDll[i].iNativeOn = false;
 	gTrace = false;
+	gTraceHeap = false;
 	gMap = false;
 	char line[160];
 	while (aText && *aText)
@@ -452,6 +454,8 @@ void BridgeConfigure(const char* aText)
 			for (int i = 0; i < 2; ++i) { if (SameDll(a, gDll[i].iName)) gDll[i].iNativeOn = true; }
 		else if (!strcmp(w, "trace"))
 			gTrace = true;
+		else if (!strcmp(w, "traceheap"))
+			gTraceHeap = true;
 		else if (!strcmp(w, "map") && sscanf(line, "%*s %lx %lx", &x, &y) == 2)
 			{ gLo = (uint32_t)x; gHi = (uint32_t)y; gMap = true; }
 		else if (!strcmp(w, "map"))
@@ -593,7 +597,7 @@ uint32_t BridgeNativeCall(CArmCpu& aCpu, uint32_t aPc)
 	const uintptr_t fn = gResolve ? gResolve(aPc) : (uintptr_t)aPc;
 	if (!fn) return 0;
 	TGuestHeap heap(aCpu, false);
-	if (gTrace && gCurHle)
+	if ((gTrace || gTraceHeap) && gCurHle)
 	{
 		char line[120];
 		snprintf(line, sizeof(line), "[proteus] bridge native-call %x (%x,%x,%x,%x)", aPc, aCpu.R[0], aCpu.R[1], aCpu.R[2], aCpu.R[3]);
@@ -1091,7 +1095,8 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 		aCpu.Halt(EHleStop);
 		return true;
 	}
-	if (gTrace)
+	const bool traceRow = gTrace || (gTraceHeap && (strstr(e.iName, "Alloc") || strstr(e.iName, "Free") || strstr(e.iName, "Heap")));
+	if (traceRow)
 	{
 		char line[200];
 		const uint32_t sp = aCpu.R[13];
@@ -1114,7 +1119,7 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 	}
 	else
 		e.iCall(aCpu, d->iFn[row]);
-	if (gTrace)
+	if (traceRow)
 	{
 		char line[120];
 		snprintf(line, sizeof(line), "[proteus] bridge = %x (heap %x)", aCpu.R[0], aCpu.iGuestAlloc);
