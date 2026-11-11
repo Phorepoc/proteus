@@ -617,7 +617,6 @@
 }
 ],
 "name":"TEntryArray",
-"ntcall":true,
 "size":1044,
 "slots":[],
 "vptr":false
@@ -654,7 +653,6 @@
 }
 ],
 "name":"TFileText",
-"ntcall":true,
 "size":284,
 "slots":[],
 "vptr":false

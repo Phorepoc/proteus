@@ -2272,7 +2272,6 @@
 }
 ],
 "name":"RNotifier",
-"ntcall":true,
 "size":20,
 "slots":[],
 "vptr":false
@@ -2601,7 +2600,6 @@
 }
 ],
 "name":"RTest",
-"ntcall":true,
 "size":1692,
 "slots":[],
 "vptr":false
@@ -2666,7 +2664,6 @@
 "declared":true,
 "fields":[],
 "name":"TAmPmName",
-"ntcall":true,
 "size":16,
 "slots":[],
 "vptr":false
@@ -2772,7 +2769,6 @@
 "declared":true,
 "fields":[],
 "name":"TBufBase16",
-"ntcall":true,
 "size":8,
 "slots":[],
 "vptr":false
@@ -2789,7 +2785,6 @@
 "declared":true,
 "fields":[],
 "name":"TBufBase8",
-"ntcall":true,
 "size":8,
 "slots":[],
 "vptr":false
@@ -3292,7 +3287,6 @@
 }
 ],
 "name":"TCodeSegCreateInfo",
-"ntcall":true,
 "size":472,
 "slots":[],
 "vptr":false
@@ -3340,7 +3334,6 @@
 "declared":true,
 "fields":[],
 "name":"TCurrencySymbol",
-"ntcall":true,
 "size":24,
 "slots":[],
 "vptr":false
@@ -3357,7 +3350,6 @@
 "declared":true,
 "fields":[],
 "name":"TDateSuffix",
-"ntcall":true,
 "size":16,
 "slots":[],
 "vptr":false
@@ -3420,7 +3412,6 @@
 "declared":true,
 "fields":[],
 "name":"TDayName",
-"ntcall":true,
 "size":72,
 "slots":[],
 "vptr":false
@@ -3437,7 +3428,6 @@
 "declared":true,
 "fields":[],
 "name":"TDayNameAbb",
-"ntcall":true,
 "size":24,
 "slots":[],
 "vptr":false
@@ -3717,7 +3707,6 @@
 "declared":true,
 "fields":[],
 "name":"TFindChunk",
-"ntcall":true,
 "size":536,
 "slots":[],
 "vptr":false
@@ -3740,7 +3729,6 @@
 }
 ],
 "name":"TFindHandleBase",
-"ntcall":true,
 "size":536,
 "slots":[],
 "vptr":false
@@ -3757,7 +3745,6 @@
 "declared":true,
 "fields":[],
 "name":"TFindLibrary",
-"ntcall":true,
 "size":536,
 "slots":[],
 "vptr":false
@@ -3774,7 +3761,6 @@
 "declared":true,
 "fields":[],
 "name":"TFindLogicalDevice",
-"ntcall":true,
 "size":536,
 "slots":[],
 "vptr":false
@@ -3791,7 +3777,6 @@
 "declared":true,
 "fields":[],
 "name":"TFindMutex",
-"ntcall":true,
 "size":536,
 "slots":[],
 "vptr":false
@@ -3808,7 +3793,6 @@
 "declared":true,
 "fields":[],
 "name":"TFindPhysicalDevice",
-"ntcall":true,
 "size":536,
 "slots":[],
 "vptr":false
@@ -3825,7 +3809,6 @@
 "declared":true,
 "fields":[],
 "name":"TFindProcess",
-"ntcall":true,
 "size":536,
 "slots":[],
 "vptr":false
@@ -3842,7 +3825,6 @@
 "declared":true,
 "fields":[],
 "name":"TFindSemaphore",
-"ntcall":true,
 "size":536,
 "slots":[],
 "vptr":false
@@ -3859,7 +3841,6 @@
 "declared":true,
 "fields":[],
 "name":"TFindServer",
-"ntcall":true,
 "size":536,
 "slots":[],
 "vptr":false
@@ -3876,7 +3857,6 @@
 "declared":true,
 "fields":[],
 "name":"TFindThread",
-"ntcall":true,
 "size":536,
 "slots":[],
 "vptr":false
@@ -4418,7 +4398,6 @@
 "declared":true,
 "fields":[],
 "name":"TLocaleMessageText",
-"ntcall":true,
 "size":264,
 "slots":[],
 "vptr":false
@@ -4435,7 +4414,6 @@
 "declared":true,
 "fields":[],
 "name":"TLongDateFormatSpec",
-"ntcall":true,
 "size":168,
 "slots":[],
 "vptr":false
@@ -4452,7 +4430,6 @@
 "declared":true,
 "fields":[],
 "name":"TMonthName",
-"ntcall":true,
 "size":72,
 "slots":[],
 "vptr":false
@@ -4469,7 +4446,6 @@
 "declared":true,
 "fields":[],
 "name":"TMonthNameAbb",
-"ntcall":true,
 "size":24,
 "slots":[],
 "vptr":false
@@ -5021,7 +4997,6 @@
 "declared":true,
 "fields":[],
 "name":"TShortDateFormatSpec",
-"ntcall":true,
 "size":88,
 "slots":[],
 "vptr":false
@@ -5170,7 +5145,6 @@
 "declared":true,
 "fields":[],
 "name":"TTimeFormatSpec",
-"ntcall":true,
 "size":128,
 "slots":[],
 "vptr":false

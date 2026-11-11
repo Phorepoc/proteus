@@ -129,9 +129,14 @@ class Model:
         dd = c.get("definitionData", {})
         poly = bool(dd.get("isPolymorphic"))
         # non-trivial for the purposes of calls (Itanium C++ ABI 3.1.1.1): a non-trivial copy or move constructor or destructor. Such a class
-        # is returned (and passed) through a hidden pointer on both sides, AAPCS and SysV, whatever its size
+        # is returned (and passed) through a hidden pointer on both sides, AAPCS and SysV, whatever its size. clang's own decision is
+        # `canPassInRegisters`; the per-member `nonTrivial` flags are not it: an implicit move constructor not yet declared reads `nonTrivial`
+        # (TBufBase16/8, TParse, TEntry ...), yet the x32 GCC euser/efsrv return TBuf<2> (TDriveUnit::Name) in rax:rdx
         cc, mc, dt = dd.get("copyCtor", {}), dd.get("moveCtor", {}), dd.get("dtor", {})
-        ntcall = bool(cc.get("nonTrivial") or (mc.get("exists") and mc.get("nonTrivial")) or dt.get("nonTrivial"))
+        if dd:		# (the JSON lists only the true flags: no key = false)
+            ntcall = not dd.get("canPassInRegisters", False)
+        else:
+            ntcall = bool(cc.get("nonTrivial") or (mc.get("exists") and mc.get("nonTrivial")) or dt.get("nonTrivial"))
         r = self.records.setdefault(q, {"qual": q, "kind": c.get("tagUsed"), "bases": bases, "polymorphic": poly,
                                         "methods": [], "fields": []})
         r["bases"], r["polymorphic"], r["ntcall"] = bases, poly, ntcall

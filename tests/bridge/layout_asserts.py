@@ -36,4 +36,18 @@ for dll in ("euser", "efsrv"):
         except SystemExit as e:
             print(f"{dll}: FAIL {e}")
             bad = 1
+# "non-trivial for calls" (abi/<dll>.json `ntcall`, the hidden-pointer return) must be the x32 compiler's decision too: clang's
+# canPassInRegisters on the x32 target for every class the dump has. Pinned: the TBuf<N> bases are trivial (the x32 GCC euser/efsrv
+# return TBuf<2> = TDriveUnit::Name in rax:rdx), the polymorphic CBase is not
+import json  # noqa: E402
+with tempfile.TemporaryDirectory() as tmp:
+    for dll in ("euser", "efsrv"):
+        x32 = L.Model().build(L.load_ast(a.repo, "x32", dll, tmp)).records
+        cls = json.load(open(os.path.join(HERE, "..", "..", "tools", "bridge", "abi", dll + ".json")))["classes"]
+        diff = [c for c, r in cls.items() if c in x32 and bool(r.get("ntcall")) != bool(x32[c].get("ntcall"))]
+        pins = {"euser": {"TBufBase16": False, "TBufBase8": False, "TDes16": False, "TPtr8": False, "CBase": True},
+                "efsrv": {"TDriveUnit": False}}[dll]
+        wrong = [c for c, v in pins.items() if bool(cls.get(c, x32.get(c, {})).get("ntcall")) != v]
+        print(f"{dll}: ntcall ARM dump vs x32: {len(diff)} differences {diff[:8]}, pins {'PASS' if not wrong else 'FAIL ' + str(wrong)}")
+        bad |= bool(diff or wrong)
 sys.exit(bad)
