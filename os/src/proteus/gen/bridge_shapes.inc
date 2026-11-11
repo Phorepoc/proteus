@@ -31,7 +31,7 @@ struct TBridgeExport
 	uint16_t iNative;		// the ordinal of the same NAME in the native x32 DLL (tools/bridge/native/<dll>.json), 0 = none
 };
 
-struct TBridgeVtArg { const char* iName; int iWord; int iSlots; };	// an argument of a polymorphic class type (bridge.cpp PatchVtable)
+struct TBridgeVtArg { const char* iName; int iWord; int iSlots; const char* iKinds; };	// an argument of a polymorphic class type (bridge.cpp PatchVtable)
 struct TBridgeTi { const char* iName; const char* iMangled; int iBase; };	// an ARM type_info the bridge synthesizes (bridge.cpp BridgeTypeInfo)
 
 struct BrS12A4 { uint8_t b[12] __attribute__((aligned(4))); };	// a 12-byte struct, alignment 4
@@ -853,9 +853,8 @@ static void BrShape_78(CArmCpu& aCpu, uintptr_t aFn)
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
 	const uint32_t a0 = a.W();
-	typedef BrS40A4 (*F)(uint32_t);
-	const BrS40A4 r = ((F)(uintptr_t)aFn)(a0);
-	memcpy(aCpu.HostPtr(ret), &r, sizeof(r));
+	typedef void (*F)(void*, uint32_t);
+	((F)(uintptr_t)aFn)(aCpu.HostPtr(ret), a0);
 	aCpu.R[0] = ret;
 }
 // p:S4x4_w_w_w_w_w_w
@@ -1058,9 +1057,8 @@ static void BrShape_95(CArmCpu& aCpu, uintptr_t aFn)
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
 	const uint32_t a0 = a.W();
-	typedef BrS264A4 (*F)(uint32_t);
-	const BrS264A4 r = ((F)(uintptr_t)aFn)(a0);
-	memcpy(aCpu.HostPtr(ret), &r, sizeof(r));
+	typedef void (*F)(void*, uint32_t);
+	((F)(uintptr_t)aFn)(aCpu.HostPtr(ret), a0);
 	aCpu.R[0] = ret;
 }
 // S520x4:w
@@ -1069,9 +1067,8 @@ static void BrShape_96(CArmCpu& aCpu, uintptr_t aFn)
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
 	const uint32_t a0 = a.W();
-	typedef BrS520A4 (*F)(uint32_t);
-	const BrS520A4 r = ((F)(uintptr_t)aFn)(a0);
-	memcpy(aCpu.HostPtr(ret), &r, sizeof(r));
+	typedef void (*F)(void*, uint32_t);
+	((F)(uintptr_t)aFn)(aCpu.HostPtr(ret), a0);
 	aCpu.R[0] = ret;
 }
 // S28x4:w
@@ -1080,9 +1077,8 @@ static void BrShape_97(CArmCpu& aCpu, uintptr_t aFn)
 	BrArgs a(aCpu);
 	const uint32_t ret = a.W();
 	const uint32_t a0 = a.W();
-	typedef BrS28A4 (*F)(uint32_t);
-	const BrS28A4 r = ((F)(uintptr_t)aFn)(a0);
-	memcpy(aCpu.HostPtr(ret), &r, sizeof(r));
+	typedef void (*F)(void*, uint32_t);
+	((F)(uintptr_t)aFn)(aCpu.HostPtr(ret), a0);
 	aCpu.R[0] = ret;
 }
 // S12x4:w_w_w

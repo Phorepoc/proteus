@@ -184,23 +184,57 @@ static uint32_t RunOnNewCpu(uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2,
 namespace
 {
 enum { KMaxStubs = 512 };
-struct TRevStub { uint32_t iFn; };
+// the kinds of reverse stub, by how the function returns (gen_bridge.py slot_kinds): plain (a word, a 64-bit value or a struct of up to 4
+// bytes: the same registers on both sides); `r` a struct of 5-16 bytes the native caller expects in rax:rdx while the ARM function writes it
+// through a hidden pointer in r0 ahead of `this`; `m` a struct both sides return through a hidden pointer first (passed on and returned)
+enum TStubKind { EStubPlain, EStubRegs, EStubMem, EStubKinds };
+struct TRevStub { uint32_t iFn; int iKind; };
 TRevStub gStub[KMaxStubs];
 int gStubCount;
+struct TRet16 { uint32_t iW[4]; };		// an INTEGER-class 16-byte aggregate: rax:rdx (a 8- or 12-byte caller reads the leading words)
 template <int K> uint32_t RevStub(uint32_t a, uint32_t b, uint32_t c, uint32_t d)
 {
 	CArmCpu* cpu = CpuOfThisThread();
 	return cpu ? BridgeCallGuest(*cpu, gStub[K].iFn, a, b, c, d) : RunOnNewCpu(gStub[K].iFn, a, b, c, d);
 }
-typedef uint32_t (*TStubFn)(uint32_t, uint32_t, uint32_t, uint32_t);
-template <int K> struct TStubTable { static void Fill(TStubFn* t) { t[K] = &RevStub<K>; TStubTable<K - 1>::Fill(t); } };
-template <> struct TStubTable<-1> { static void Fill(TStubFn*) {} };
-TStubFn gStubFn[KMaxStubs];
+template <int K> TRet16 RevStubR(uint32_t aThis, uint32_t b, uint32_t c, uint32_t)
+{
+	TRet16 r;
+	memset(&r, 0, sizeof(r));
+	CArmCpu* cpu = CpuOfThisThread();
+	if (cpu)
+	{	// the result buffer below the guest's sp, above the frame BridgeCallGuest starts at (sp - 64)
+		const uint32_t buf = (cpu->R[13] - 32) & ~7u;
+		if (cpu->Valid(buf, 16))
+		{
+			BridgeCallGuest(*cpu, gStub[K].iFn, buf, aThis, b, c);
+			for (int i = 0; i < 4; ++i) r.iW[i] = cpu->Read32(buf + 4 * i);
+		}
+	}
+	else if (sizeof(void*) == 4)		// a new CPU maps native memory: the native local is the buffer
+		RunOnNewCpu(gStub[K].iFn, (uint32_t)(uintptr_t)&r, aThis, b, c);
+	return r;
+}
+template <int K> uint32_t RevStubM(uint32_t aRet, uint32_t aThis, uint32_t b, uint32_t c)
+{
+	RevStub<K>(aRet, aThis, b, c);
+	return aRet;					// (SysV: rax = the hidden result pointer; the AAPCS does not promise r0)
+}
+template <int K> struct TStubTable
+{
+	static void Fill(uintptr_t (*t)[KMaxStubs])
+	{
+		t[EStubPlain][K] = (uintptr_t)&RevStub<K>; t[EStubRegs][K] = (uintptr_t)&RevStubR<K>; t[EStubMem][K] = (uintptr_t)&RevStubM<K>;
+		TStubTable<K - 1>::Fill(t);
+	}
+};
+template <> struct TStubTable<-1> { static void Fill(uintptr_t (*)[KMaxStubs]) {} };
+uintptr_t gStubFn[EStubKinds][KMaxStubs];
 }
 
 // the native address of stub k: on x32 the function itself; on an LP64 host test a token BridgeStubFn turns back into the function
-static uint32_t StubAddress(int k) { return sizeof(void*) == 4 ? (uint32_t)(uintptr_t)gStubFn[k] : 0xE0000000u | (uint32_t)k; }
-uintptr_t BridgeStubFn(uint32_t aAddr) { return (aAddr & 0xFF000000u) == 0xE0000000u ? (uintptr_t)gStubFn[aAddr & 0xFFFFFF] : (uintptr_t)aAddr; }
+static uint32_t StubAddress(int k) { return sizeof(void*) == 4 ? (uint32_t)gStubFn[gStub[k].iKind][k] : 0xE0000000u | (uint32_t)k; }
+uintptr_t BridgeStubFn(uint32_t aAddr) { return (aAddr & 0xFF000000u) == 0xE0000000u ? gStubFn[gStub[aAddr & 0xFFFFFF].iKind][aAddr & 0xFFFFFF] : (uintptr_t)aAddr; }
 
 // the guest function behind a reverse stub address (0 = not a stub): guest code reached a stub through a patched vtable slot (see PatchVtable)
 uint32_t BridgeStubTarget(uint32_t aPc)
@@ -211,16 +245,17 @@ uint32_t BridgeStubTarget(uint32_t aPc)
 	return 0;
 }
 
-static uint32_t BrCb(CArmCpu& aCpu, uint32_t aGuestFn)
+static uint32_t BrCb(CArmCpu& aCpu, uint32_t aGuestFn, int aKind = EStubPlain)
 {
 	if (!aGuestFn || !aCpu.InRegion(aGuestFn & ~1u, 2))
 		return aGuestFn;
-	if (!gStubFn[0]) TStubTable<KMaxStubs - 1>::Fill(gStubFn);
+	if (!gStubFn[0][0]) TStubTable<KMaxStubs - 1>::Fill(gStubFn);
 	TLock lock;
 	for (int k = 0; k < gStubCount; ++k)
-		if (gStub[k].iFn == aGuestFn) return StubAddress(k);
+		if (gStub[k].iFn == aGuestFn && gStub[k].iKind == aKind) return StubAddress(k);
 	if (gStubCount == KMaxStubs) { aCpu.Halt(EHleStop); strncpy(aCpu.iNote, "bridge: out of callback stubs", sizeof(aCpu.iNote) - 1); return 0; }
 	gStub[gStubCount].iFn = aGuestFn;
+	gStub[gStubCount].iKind = aKind;
 	__atomic_store_n(&gStubCount, gStubCount + 1, __ATOMIC_RELEASE);
 	return StubAddress(gStubCount - 1);
 }
@@ -425,7 +460,7 @@ static uintptr_t NativeByName(const char* aName)
 // fetch outside the guest region maps a stub back to its ARM function (BridgeStubTarget). Slots the derived class adds stay ARM (only ARM calls
 // them); a slot that already holds a native address (an inherited native implementation) stays as it is. Slot counts from the class records
 // (tools/bridge/abi/<dll>.json): gen_bridge.py lists every pointer/reference argument of a class with a vtable (KBridgeVt_<dll>).
-static void PatchVtable(CArmCpu& aCpu, uint32_t aObj, int aSlots)
+static void PatchVtable(CArmCpu& aCpu, uint32_t aObj, int aSlots, const char* aKinds)
 {
 	if (!aObj || !aCpu.Valid(aObj, 4)) return;			// (the object may be on the native heap: a window, not the region)
 	const uint32_t vt = aCpu.Read32(aObj);
@@ -434,7 +469,7 @@ static void PatchVtable(CArmCpu& aCpu, uint32_t aObj, int aSlots)
 	{
 		const uint32_t f = aCpu.Read32(vt + 4 * k);
 		if (f && aCpu.InRegion(f & ~1u, 2))
-			aCpu.Write32(vt + 4 * k, BrCb(aCpu, f));
+			aCpu.Write32(vt + 4 * k, BrCb(aCpu, f, !aKinds || !aKinds[k] || aKinds[k] == '.' ? EStubPlain : aKinds[k] == 'r' ? EStubRegs : EStubMem));
 	}
 }
 
@@ -447,7 +482,7 @@ static void PatchArgVtables(CArmCpu& aCpu, const TBridgeDll& aDll, uint32_t aRow
 	{
 		const uint32_t obj = a.Raw(aDll.iVt[k].iWord);
 		if (aDll.iVt[k].iSlots >= 0)
-			PatchVtable(aCpu, obj, aDll.iVt[k].iSlots);
+			PatchVtable(aCpu, obj, aDll.iVt[k].iSlots, aDll.iVt[k].iKinds);
 		else if (obj && aCpu.Valid(obj - 1 - aDll.iVt[k].iSlots, 4))		// a TCallBack / TCleanupItem by reference: its function becomes a stub in place
 		{
 			const uint32_t at = obj - 1 - aDll.iVt[k].iSlots;
@@ -467,19 +502,27 @@ uint32_t BridgeNativeCall(CArmCpu& aCpu, uint32_t aPc)
 		snprintf(line, sizeof(line), "[proteus] bridge native-call %x (%x,%x,%x,%x)", aPc, aCpu.R[0], aCpu.R[1], aCpu.R[2], aCpu.R[3]);
 		Say(*gCurHle, "%s", line);
 	}
-	{	// a native virtual returning a TPtr8/TPtrC8 (12 bytes): ARM passes the result's address in r0 and `this` in r1, x32 SysV returns the
-		// object in rax:rdx with `this` first. Recognised by the slot of `this`'s vtable that holds aPc (abi/euser.json class slots):
-		// CBufBase::Ptr(int) = 5, CBufBase::BackPtr(int) = 6 (PyS60: CBufFlat::Ptr, then EikSrv-client 4 on the garbage descriptor)
-		const uint32_t self = aCpu.R[1];
+	{	// a native virtual returning a struct through the AAPCS hidden pointer: r0 = the result buffer, r1 = `this`. Found by the slot of r1's vtable
+		// that holds aPc (KBridgeVret_<dll>, from the class records); the slot's generated shape makes the x32 call (rax:rdx or its own hidden
+		// pointer). r0 must not be an object whose vtable holds aPc at that slot too (then r0 is `this` and r1 an argument of the same class)
+		const uint32_t self = aCpu.R[1], res = aCpu.R[0];
 		const uint32_t vt = self && aCpu.Valid(self, 4) ? aCpu.Read32(self) : 0;
-		if (vt && aCpu.Valid(vt + 20, 8) && (aCpu.Read32(vt + 20) == aPc || aCpu.Read32(vt + 24) == aPc) && aCpu.Valid(aCpu.R[0], 12))
-		{
-			struct TRet12 { uint32_t iW[3]; };
-			typedef TRet12 (*FP)(uint32_t, uint32_t);
-			const TRet12 t = ((FP)fn)(self, aCpu.R[2]);
-			for (int i = 0; i < 3; ++i) aCpu.Write32(aCpu.R[0] + 4 * i, t.iW[i]);
-			return aCpu.R[14] ? aCpu.R[14] : 0;
-		}
+		const uint32_t vt0 = res && aCpu.Valid(res, 4) ? aCpu.Read32(res) : 0;
+		const TBridgeVret* const tabs[] = { KBridgeVret_euser, KBridgeVret_efsrv };
+		for (const TBridgeVret* t : tabs)
+			for (; vt && t->iCall; ++t)
+				if (aCpu.Valid(vt + 4 * t->iSlot, 4) && aCpu.Read32(vt + 4 * t->iSlot) == aPc &&
+				    !(vt0 && aCpu.Valid(vt0 + 4 * t->iSlot, 4) && aCpu.Read32(vt0 + 4 * t->iSlot) == aPc))
+				{
+					if (gTrace && gCurHle)
+					{
+						char line[160];
+						snprintf(line, sizeof(line), "[proteus] bridge native-call %x: slot %d returns a struct (%s)", aPc, t->iSlot, t->iDecl);
+						Say(*gCurHle, "%s", line);
+					}
+					t->iCall(aCpu, fn);
+					return aCpu.R[14] ? aCpu.R[14] : 0;
+				}
 	}
 	const uint32_t sp = aCpu.R[13];
 	const uint32_t s0 = aCpu.Valid(sp, 4) ? aCpu.Read32(sp) : 0, s1 = aCpu.Valid(sp + 4, 4) ? aCpu.Read32(sp + 4) : 0;

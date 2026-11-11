@@ -87,7 +87,10 @@ class Classifier:
         rec = L.resolve_record(self.m, r, ctx or "")
         if rec:
             self.structs.add(rec)
-            return {"c": "S", "t": raw, "rec": rec}
+            d = {"c": "S", "t": raw, "rec": rec}
+            if self.m.records[rec].get("ntcall"):
+                d["nt"] = True		# non-trivial for calls: a hidden pointer on both sides
+            return d
         return {"c": "S?", "t": raw, "probe": strip_cv(raw)}
 
     def _scoped(self, r, ctx, universe):
@@ -190,6 +193,38 @@ def describe(e: dict, f: dict, cl: Classifier, slots: dict):
     e["ret"], e["params"], e["variadic"] = ret, params, bool(f["variadic"])
 
 
+def slot_returns(model: L.Model, slots: dict, cl: Classifier) -> dict:
+    """per polymorphic class: the vtable slots whose function returns a record by value -> {slot: {"ret", "params"}} (with `this` first).
+    The function of a slot is the class's own declaration with that key, else the nearest primary base's (the slot order is inherited)."""
+    def find(q, key, depth=0):
+        r = model.records.get(q)
+        if not r or depth > 16:
+            return None
+        for mg in r["methods"]:
+            f = model.funcs[mg]
+            if f["kind"] == "CXXMethodDecl" and not f["static"] and L.key_of(f) == key:
+                return f
+        for b in r["bases"]:
+            bn = L.resolve_record(model, b["name"], q)
+            if bn and not b["virtual"]:
+                return find(bn, key, depth + 1)
+        return None
+    out = {}
+    for q, sl in slots.items():
+        for k, key in enumerate(sl):
+            if key.startswith("~"):
+                continue
+            f = find(q, key)
+            if not f:
+                continue
+            ret = cl.classify(f["ret"], None, f["cls"], is_ret=True)
+            if ret["c"] != "S":
+                continue
+            params = [{"c": "p", "t": "this"}] + [cl.classify(p["t"], p["d"], f["cls"]) for p in f["params"]]
+            out.setdefault(q, {})[str(k)] = {"ret": ret, "params": params, "decl": f["cls"] + "::" + (f["name"] or "")}
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
@@ -221,6 +256,7 @@ def main():
                 keep = {k: e[k] for k in ("alias_of", "source") if k in e}
                 describe(e, e["_f"], cl, slots)
                 e.update(keep)
+        sret = slot_returns(model, slots, cl)
         unres = sorted({p["probe"] for e in ex for p in [e.get("ret") or {}] + (e.get("params") or []) if p.get("c") == "S?"})
         probes = L.probe_sizes(a.repo, "arm", a.dll, unres, tmp) if unres else {}
         for e in ex:
@@ -238,13 +274,18 @@ def main():
         r = lay.get(c) or lay.get("class " + c)
         key = c
         rec = {"name": c, "slots": slots.get(c, []), "declared": c in model.records}
+        if c in sret:
+            rec["sret"] = sret[c]		# {slot: {ret, params}}: the virtuals returning a class by value (bridge.cpp: foreign-pc calls, reverse stubs)
+        if model.records.get(c, {}).get("ntcall"):
+            rec["ntcall"] = True
         if c in lay:
             rec.update({k: lay[c][k] for k in ("size", "align", "vptr", "bases", "fields") if k in lay[c]})
         elif r:
             rec.update(r)
         recs[key] = rec
     # struct-by-value float content
-    for e in ex:
+    sigs = [sg for r in recs.values() for sg in r.get("sret", {}).values()]
+    for e in ex + sigs:
         for p in [e.get("ret") or {}] + (e.get("params") or []):
             if p.get("c") == "S" and "size" not in p:
                 r = recs.get(p["rec"], {})

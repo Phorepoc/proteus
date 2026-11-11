@@ -429,11 +429,16 @@ static const TBridgeExport KBridge_efsrv[] =
 static const uint32_t KBridge_efsrv_Count = sizeof(KBridge_efsrv) / sizeof(KBridge_efsrv[0]);
 static const TBridgeVtArg KBridgeVt_efsrv[] =
 {
-	{ "_ZN8CFileMan4NewLER3RFsP16MFileManObserver", 1, 3 },
-	{ "_ZN9CFileBase11SetObserverEP16MFileManObserver", 1, 3 },
-	{ "_ZNK3RFs5ParseERK7TDesC16R6TParse", 2, 2 },
-	{ "_ZNK3RFs5ParseERK7TDesC16S2_R6TParse", 3, 2 },
-	{ 0, 0, 0 }
+	{ "_ZN8CFileMan4NewLER3RFsP16MFileManObserver", 1, 3, "..." },
+	{ "_ZN9CFileBase11SetObserverEP16MFileManObserver", 1, 3, "..." },
+	{ "_ZNK3RFs5ParseERK7TDesC16R6TParse", 2, 2, ".." },
+	{ "_ZNK3RFs5ParseERK7TDesC16S2_R6TParse", 3, 2, ".." },
+	{ 0, 0, 0, 0 }
+};
+
+static const TBridgeVret KBridgeVret_efsrv[] =
+{
+	{ -1, 0, 0 }
 };
 static const TBridgeTi KBridgeTi_efsrv[] =
 {
@@ -480,7 +485,10 @@ typedef char BrLayout_TParse[(sizeof(TParse) == 544 && __alignof__(TParse) == 4)
 typedef char BrLayout_TParseBase[(sizeof(TParseBase) == 24 && __alignof__(TParseBase) == 4) ? 1 : -1];
 typedef char BrLayout_TParsePtr[(sizeof(TParsePtr) == 36 && __alignof__(TParsePtr) == 4) ? 1 : -1];
 typedef char BrLayout_TParsePtrC[(sizeof(TParsePtrC) == 32 && __alignof__(TParsePtrC) == 4) ? 1 : -1];
+typedef char BrLayout_TPoint[(sizeof(TPoint) == 8 && __alignof__(TPoint) == 4) ? 1 : -1];
+typedef char BrLayout_TPtr8[(sizeof(TPtr8) == 12 && __alignof__(TPtr8) == 4) ? 1 : -1];
 typedef char BrLayout_TPtrC16[(sizeof(TPtrC16) == 8 && __alignof__(TPtrC16) == 4) ? 1 : -1];
+typedef char BrLayout_TSize[(sizeof(TSize) == 8 && __alignof__(TSize) == 4) ? 1 : -1];
 typedef char BrLayout_TThreadId[(sizeof(TThreadId) == 8 && __alignof__(TThreadId) == 8) ? 1 : -1];
 typedef char BrLayout_TVersion[(sizeof(TVersion) == 4 && __alignof__(TVersion) == 2) ? 1 : -1];
 typedef char BrLayout_TVolumeInfo[(sizeof(TVolumeInfo) == 576 && __alignof__(TVolumeInfo) == 8) ? 1 : -1];

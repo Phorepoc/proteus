@@ -57,6 +57,8 @@ static U Fk_TDesC16_Locate(U self, TChar c) { for (U i = 0; i < Len(self); ++i) 
 static U Fk_TDesC16_LocateReverse(U self, TChar c) { for (U i = Len(self); i-- > 0;) if (R16(Ptr16(self) + 2 * i) == c.c) return i; return (U)-1; }
 static TPtrC16V Fk_TDesC16_Left(U self, U n) { TPtrC16V v; v.len = (1u << 28) | (n < Len(self) ? n : Len(self)); v.ptr = Ptr16(self); return v; }
 static U Fk_TDesC8_AtC(U self, U i) { return self + 8 + i; }
+static U Fk_TDesC16_AtC(U self, U i) { return Ptr16(self) + 2 * i; }
+static U Fk_TDesC8_Ptr(U self) { return Ptr16(self); }	// (the same header layout for 8-bit descriptors)
 // RPointerArrayBase: iCount, iEntries, iAllocated, iGranularity (e32cmn.h)
 static U Fk_RPAB_C2(U self) { W32(self, 0); W32(self + 4, 0); W32(self + 8, 0); W32(self + 12, 8); return 0; }
 static std::mutex gHeapLock;
@@ -213,6 +215,23 @@ static void Fk_AppendFormatList16(U self, U f, void* va, U) { FormatInto(self, f
 static void Fk_FormatList8(U self, U f, void* va, U) { FormatInto(self, f, va, false, false); }
 static void Fk_AppendFormatList8(U self, U f, void* va, U) { FormatInto(self, f, va, true, false); }
 
+// ---- struct returns (proteusbridge Returns): the fakes return by value as the x32 DLL does (rax:rdx up to 16 bytes, else a hidden pointer)
+struct TRectV { U ax, ay, bx, by; };
+struct TPtr8V { U len, max, ptr; };
+static TPtrC16V Fk_TDesC16_Mid2(U self, U pos, U n) { TPtrC16V v; v.len = (1u << 28) | n; v.ptr = Ptr16(self) + 2 * pos; return v; }
+static U Fk_TRegion_C2(U self, U n) { W32(self, 0); W32(self + 4, n); return self; }
+static TRectV Fk_BoundingRect(U) { TRectV r = { 1, 2, 30, 40 }; return r; }
+static uint64_t Fk_AtomicAdd64(U a, uint64_t v) { const uint64_t o = R32(a) | (uint64_t)R32(a + 4) << 32, n = o + v; W32(a, (U)n); W32(a + 4, (U)(n >> 32)); return o; }
+static void Fk_HandleName(void* ret, U)		// the hidden result pointer: the guest's TName itself (TBuf<256>: iLength, iMaxLength, the text)
+{
+	const char* t = "fake-thread"; uint8_t* d = (uint8_t*)ret; const U n = (U)strlen(t), hdr[2] = { (3u << 28) | n, 256 };
+	memcpy(d, hdr, 8);
+	for (U i = 0; i < n; ++i) { uint16_t c = (uint16_t)t[i]; memcpy(d + 8 + 2 * i, &c, 2); }
+}
+static TPtr8V Fk_BufFlat_Ptr(U self, U pos) { TPtr8V v = { (2u << 28) | (8 - pos), 8 - pos, self + 64 + pos }; return v; }
+static U gBufVt;
+static U Fk_BufFlat_NewL(U) { U o = Alloc(128); W32(o, gBufVt + 8); W32(o + 4, 8); return o; }
+
 struct TFake { const char* iName; void* iFn; };
 static const TFake KFakes[] = {
 	{ "_ZN10TBufBase16C2Ei", (void*)Fk_TBufBase16_C2 }, { "_ZN9TBufBase8C2Ei", (void*)Fk_TBufBase8_C2 },
@@ -247,6 +266,8 @@ static const TFake KFakes[] = {
 	{ "memset", (void*)Fk_memset }, { "memcpy", (void*)Fk_memcpy }, { "memmove", (void*)Fk_memmove }, { "memcmp", (void*)Fk_memcmp }, { "strlen", (void*)Fk_strlen }, { "strcmp", (void*)Fk_strcmp }, { "_ZN7UserSvr16RomHeaderAddressEv", (void*)Fk_RomHeader },
 	{ "_ZN4User16MarkCleanupStackEv", (void*)Fk_Mark }, { "_ZN4User18UnMarkCleanupStackEP12TTrapHandler", (void*)Fk_UnMark },
 	{ "_ZN12CleanupStack5PushLE12TCleanupItem", (void*)Fk_PushL_item }, { "_ZN12CleanupStack13PopAndDestroyEi", (void*)Fk_PopAndDestroyN }, { "_ZN12CleanupStack13PopAndDestroyEv", (void*)Fk_PopAndDestroy1 }, { "_ZN12CleanupStack13PopAndDestroyEPv", (void*)Fk_PopAndDestroyPtr }, { "_ZN6HBufC85NewLCEi", (void*)Fk_HBufC8_NewLC }, { "_ZNK15XLeaveException9GetReasonEv", (void*)Fk_nop }, { "_ZN4User5LeaveEi", (void*)Fk_Leave }, { "_ZN12CTrapCleanup3NewEv", (void*)Fk_TrapCleanupNew }, { "_ZN4User6AllocLEi", (void*)Fk_User_AllocL },
+	{ "_ZNK7TDesC163MidEii", (void*)Fk_TDesC16_Mid2 }, { "_ZNK7TDesC163AtCEi", (void*)Fk_TDesC16_AtC }, { "_ZNK6TDesC83PtrEv", (void*)Fk_TDesC8_Ptr }, { "_ZN7TRegionC2Ei", (void*)Fk_TRegion_C2 }, { "_ZNK7TRegion12BoundingRectEv", (void*)Fk_BoundingRect },
+	{ "__e32_atomic_add_ord64", (void*)Fk_AtomicAdd64 }, { "_ZNK11RHandleBase4NameEv", (void*)Fk_HandleName }, { "_ZN8CBufFlat4NewLEi", (void*)Fk_BufFlat_NewL },
 	{ "_ZN4User12LeaveIfErrorEi", (void*)Fk_nop }, { "_ZN7UserSvr6DllTlsEii", (void*)Fk_nop }, { "_ZN7UserSvr9DllSetTlsEiiPv", (void*)Fk_nop },
 	{ "_ZN7UserSvr19ExceptionDescriptorEm", (void*)Fk_nop }, { "_ZN7UserSvr6DllTlsEi", (void*)Fk_nop }, { "_ZN7UserSvr9DllSetTlsEiPv", (void*)Fk_nop }, { "_ZN4User15HandleExceptionEPv", (void*)Fk_nop }, { "_ZN4User9InvariantEv", (void*)Fk_nop },
 };
@@ -327,7 +348,12 @@ int main(int argc, char** argv)
 		gFnTable.push_back((void*)Fk_Sched_D0);
 		gSchedVt = Alloc(64);
 		for (U k = 0; k < 16; ++k) W32(gSchedVt + 4 * k, 0);
-		W32(gSchedVt + 8 + 4, 0x200000u + 2 * (U)gFnTable.size());	}
+		W32(gSchedVt + 8 + 4, 0x200000u + 2 * (U)gFnTable.size());
+		// the native CBufFlat's vtable: slot 5 = Ptr(int) (a native virtual returning a TPtr8)
+		gFnTable.push_back((void*)Fk_BufFlat_Ptr);
+		gBufVt = Alloc(64);
+		for (U k = 0; k < 16; ++k) W32(gBufVt + 4 * k, 0);
+		W32(gBufVt + 8 + 4 * 5, 0x200000u + 2 * (U)gFnTable.size());	}
 	cpu.iOnForeignPc = BridgeOnForeignPc;
 	RunExe(cpu, hle, 50000000);
 	printf("native destructor calls from ARM code: %u%c", gNativeDtorCalls, 10);

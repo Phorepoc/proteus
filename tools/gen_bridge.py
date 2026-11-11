@@ -77,7 +77,8 @@ def shape_of(e: dict) -> tuple[str | None, int]:
         return None, fl
     rc = r["c"]
     if rc == "S":
-        rcode = f"S{r['size']}x{r['align']}"		# (a returned struct is never rewritten: no function pointer comes back from native)
+        # (a returned struct is never rewritten: no function pointer comes back from native); `n` = non-trivial for calls (symabi `nt`)
+        rcode = f"S{r['size']}x{r['align']}" + ("n" if r.get("nt") else "")
     elif rc in RET_FROM_CLASS:
         rcode = RET_FROM_CLASS[rc]
     elif rc == "cb":
@@ -92,11 +93,22 @@ def struct_name(code: str) -> str:
     return f"BrS{m.group(1)}A{m.group(2)}"
 
 
+def ret_abi(rcode: str) -> tuple[bool, bool]:
+    """(ARM hidden result pointer, x32 hidden result pointer) of a return code. AAPCS: a composite of more than 4 bytes, or a class that is
+    non-trivial for calls, comes back through a pointer in r0 (ahead of `this`). x32 SysV: a trivially-copyable aggregate of up to 16 bytes
+    comes back in rax:rdx (the BrS types hold bytes: INTEGER class; a float struct is STRUCTFP and has no shape), a larger or non-trivial one
+    through a pointer in rdi (ahead of `this`)."""
+    if not rcode.startswith("S"):
+        return False, False
+    n, nt = int(re.match(r"S(\d+)", rcode).group(1)), rcode.endswith("n")
+    return n > 4 or nt, n > 16 or nt
+
+
 def emit_shape(idx: int, shape: str) -> list[str]:
     rcode, args = shape.split(":")
     atoks = [a for a in args.split("_") if a]
     L = [f"// {shape}", f"static void BrShape_{idx}(CArmCpu& aCpu, uintptr_t aFn)", "{"]
-    big_ret = rcode.startswith("S") and int(re.match(r"S(\d+)", rcode).group(1)) > 4
+    big_ret, x32_mem = ret_abi(rcode)
     L.append("\tBrArgs a(aCpu);")
     if big_ret:
         L.append("\tconst uint32_t ret = a.W();")
@@ -133,10 +145,14 @@ def emit_shape(idx: int, shape: str) -> list[str]:
         rt = struct_name(rcode)
     else:
         rt = RETCODE[rcode]
+    if x32_mem:		# the native hidden result pointer, spelled out: the guest's result buffer itself
+        rt, ctypes, names = "void", ["void*"] + ctypes, ["aCpu.HostPtr(ret)"] + names
     L.append(f"\ttypedef {rt} (*F)({', '.join(ctypes) or 'void'});")
     call = f"((F)(uintptr_t)aFn)({', '.join(names)})"
     if rcode == "v":
         L.append(f"\t{call};")
+    elif x32_mem:
+        L.append(f"\t{call};\n\taCpu.R[0] = ret;")
     elif rcode == "c":
         L.append(f"\t{call};")
         L.append("\taCpu.R[0] = a0;\t\t\t// ARM constructors and non-deleting destructors return `this`")
@@ -160,13 +176,42 @@ def emit_shape(idx: int, shape: str) -> list[str]:
     return L
 
 
+def slot_kinds(rec: dict) -> str:
+    """one character per vtable slot of a class record, the reverse stub a patched slot needs (bridge.cpp PatchVtable): `.` a plain one
+    (word, 64-bit or small-struct results come back the same way on both sides), `r` a struct the native caller expects in rax:rdx and the
+    ARM function writes through r0, `m` a struct both sides return through a hidden pointer (the stub passes it on and returns it)"""
+    k = ["."] * len(rec.get("slots", []))
+    for s, sg in rec.get("sret", {}).items():
+        r = sg["ret"]
+        if r.get("float") or int(s) >= len(k):
+            continue
+        arm, x32 = ret_abi(f"S{r['size']}x{r['align']}" + ("n" if r.get("nt") else ""))
+        k[int(s)] = "m" if x32 else ("r" if arm else ".")
+    return "".join(k)
+
+
+def vret_rows(abi, shapes):
+    """{slot, shape} for every virtual of the DLL's classes that returns a struct by value: an ARM call of such a NATIVE virtual arrives at a
+    foreign pc with the ARM result pointer in r0 and `this` in r1 (bridge.cpp BridgeNativeCall finds the slot through r1's vtable)"""
+    out, seen = [], set()
+    for c, r in sorted(abi["classes"].items()):
+        for s, sg in sorted(r.get("sret", {}).items(), key=lambda kv: int(kv[0])):
+            shape, _ = shape_of({"ret": sg["ret"], "params": sg["params"]})
+            if shape is None or not ret_abi(shape.split(":")[0])[0] or (int(s), shape) in seen:
+                continue
+            seen.add((int(s), shape))
+            shapes.setdefault(shape, len(shapes))
+            out.append((int(s), shape, sg["decl"]))
+    return out
+
+
 def vt_args(abi, abis):
     """(export name, AAPCS word index, slots) for every pointer/reference argument (not `this`) of a class with a vtable."""
     classes = {}
     for a in abis.values():
         for c, r in a["classes"].items():
             if r.get("slots"):
-                classes.setdefault(c, len(r["slots"]))
+                classes.setdefault(c, (len(r["slots"]), slot_kinds(r)))
     out = []
     for e in abi["exports"]:
         if e.get("status") == "absent" or "params" not in e or e.get("variadic"):
@@ -184,9 +229,9 @@ def vt_args(abi, abis):
                 if re.fullmatch(r"[A-Za-z_][\w:]* *[*&]", base):
                     cls = base.rstrip("*& ").strip()
                     if cls in classes:
-                        out.append((e["name"], word, classes[cls]))
+                        out.append((e["name"], word) + classes[cls])
                     elif cls in KNOWN_FP:		# a TCallBack / TCleanupItem by reference: slots = -1 - the field offset (bridge.cpp)
-                        out.append((e["name"], word, -1 - KNOWN_FP[cls][0]))
+                        out.append((e["name"], word, -1 - KNOWN_FP[cls][0], ""))
             word += 1
     return out
 
@@ -284,6 +329,7 @@ def main():
             st["override"] += needs and not handler
             st["handled"] = st.get("handled", 0) + (bool(handler) and needs)
             rows[d].append((e["ordinal"], e["name"], shape, fl, slot, handler))
+    vret = {d: vret_rows(abi, shapes) for d, abi in abis.items()}
     os.makedirs(GEN, exist_ok=True)
     # ---- shapes
     out = ["// Copyright The Phorepoc Authors", "// SPDX-License-Identifier: Apache-2.0",
@@ -296,7 +342,7 @@ def main():
     out += ["", "struct TBridgeExport", "{", "\tuint16_t iOrdinal;", "\tconst char* iName;",
             "\tvoid (*iCall)(CArmCpu& aCpu, uintptr_t aFn);\t// 0 = data, absent, or needs a handler (see iFlags)",
             "\tuint32_t iFlags;", "\tint16_t iVSlot;\t\t\t// the vtable slot of an exported virtual, else -1", "	uint16_t iNative;		// the ordinal of the same NAME in the native x32 DLL (tools/bridge/native/<dll>.json), 0 = none", "};", "",
-            "struct TBridgeVtArg { const char* iName; int iWord; int iSlots; };	// an argument of a polymorphic class type (bridge.cpp PatchVtable)",
+            "struct TBridgeVtArg { const char* iName; int iWord; int iSlots; const char* iKinds; };	// an argument of a polymorphic class type (bridge.cpp PatchVtable)",
             "struct TBridgeTi { const char* iName; const char* iMangled; int iBase; };	// an ARM type_info the bridge synthesizes (bridge.cpp BridgeTypeInfo)", ""]
     structs = sorted({t for s in shapes for t in re.findall(r"S\d+x\d+", s)})
     for t in structs:
@@ -325,11 +371,20 @@ def main():
         vt = vt_args(abis[d], abis)
         L.append(f"static const TBridgeVtArg KBridgeVt_{d}[] =")
         L.append("{")
-        for name, word, n in vt:
-            L.append(f'	{{ "{name}", {word}, {n} }},')
-        L.append('	{ 0, 0, 0 }')
+        for name, word, n, kinds in vt:
+            L.append(f'	{{ "{name}", {word}, {n}, "{kinds}" }},')
+        L.append('	{ 0, 0, 0, 0 }')
         L.append("};")
         stats[d]["vtargs"] = len(vt)
+        # the struct-returning virtuals, by slot: an ARM call of a native one (bridge.cpp BridgeNativeCall)
+        L.append("struct TBridgeVret { int iSlot; void (*iCall)(CArmCpu& aCpu, uintptr_t aFn); const char* iDecl; };" if d == dlls[0] else "")
+        L.append(f"static const TBridgeVret KBridgeVret_{d}[] =")
+        L.append("{")
+        for sl, shape, decl in vret[d]:
+            L.append(f'	{{ {sl}, BrShape_{shapes[shape]}, "{decl}" }},')
+        L.append('	{ -1, 0, 0 }')
+        L.append("};")
+        stats[d]["vret"] = len(vret[d])
         # ARM type_info objects for the `_ZTI*` imports (bridge.cpp BridgeTypeInfo): {export or "", mangled name, base index or -1}
         ti = ti_table(abis[d])
         L.append(f"static const TBridgeTi KBridgeTi_{d}[] =")

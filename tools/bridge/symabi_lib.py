@@ -126,10 +126,15 @@ class Model:
         for b in c.get("bases", []):
             t = b.get("type", {})
             bases.append({"name": t.get("qualType"), "virtual": bool(b.get("isVirtual"))})
-        poly = bool(c.get("definitionData", {}).get("isPolymorphic"))
+        dd = c.get("definitionData", {})
+        poly = bool(dd.get("isPolymorphic"))
+        # non-trivial for the purposes of calls (Itanium C++ ABI 3.1.1.1): a non-trivial copy or move constructor or destructor. Such a class
+        # is returned (and passed) through a hidden pointer on both sides, AAPCS and SysV, whatever its size
+        cc, mc, dt = dd.get("copyCtor", {}), dd.get("moveCtor", {}), dd.get("dtor", {})
+        ntcall = bool(cc.get("nonTrivial") or (mc.get("exists") and mc.get("nonTrivial")) or dt.get("nonTrivial"))
         r = self.records.setdefault(q, {"qual": q, "kind": c.get("tagUsed"), "bases": bases, "polymorphic": poly,
                                         "methods": [], "fields": []})
-        r["bases"], r["polymorphic"] = bases, poly
+        r["bases"], r["polymorphic"], r["ntcall"] = bases, poly, ntcall
 
     def _members(self, q, c):
         r = self.records[q]

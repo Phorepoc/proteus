@@ -5,6 +5,7 @@
 // Exit code = the number of the first failing check, 0 = all pass. Run: bash tests/proteus/run.sh --bridge (host, fake natives) or on the board.
 #include <e32std.h>
 #include <e32base.h>
+#include <e32atomics.h>
 
 #define CHECK(n, c) do { if (!(c)) return (n); } while (0)
 
@@ -165,6 +166,28 @@ static TInt Library()
 	return 0;
 	}
 
+// struct returns across the ABIs: ARM returns a composite of more than 4 bytes through a hidden pointer in r0 (ahead of `this`), x32 SysV a
+// trivially-copyable one of up to 16 bytes in rax:rdx and a larger one through its own hidden pointer (gen_bridge.py ret_abi)
+static TInt Returns()
+	{
+	TPtrC m = _L("abcdef").Mid(2, 3);				// a TPtrC16 (8 bytes): r0 pointer -> rax
+	CHECK(80, m.Length() == 3 && m[0] == 'c' && m[2] == 'e');
+	TRegionFix<1> reg;
+	const TRect r = reg.BoundingRect();				// a TRect (16 bytes): r0 pointer -> rax:rdx
+	CHECK(81, r.iTl.iX == 1 && r.iTl.iY == 2 && r.iBr.iX == 30 && r.iBr.iY == 40);
+	TInt64 x = MAKE_TINT64(3, 5);
+	const TInt64 old = (TInt64)__e32_atomic_add_ord64(&x, MAKE_TINT64(1, 2));	// a 64-bit result in r0:r1 <- rax, the addend in r2:r3
+	CHECK(82, old == MAKE_TINT64(3, 5) && x == MAKE_TINT64(4, 7));
+	RThread t;
+	const TName n = t.Name();					// a TName (264 bytes, a TBuf): a hidden pointer on both sides
+	CHECK(83, n.Compare(_L("fake-thread")) == 0);
+	CBufFlat* buf = CBufFlat::NewL(8);				// a NATIVE object: its Ptr is a native virtual the ARM code calls (a foreign pc)
+	CHECK(84, buf != NULL);
+	const TPtr8 p = buf->Ptr(2);					// a TPtr8 (12 bytes) from a native virtual: r0 = result, r1 = this
+	CHECK(85, p.Length() == 6 && p.MaxLength() == 6 && p.Ptr() == (const TUint8*)buf + 64 + 2);
+	return 0;
+	}
+
 GLDEF_C TInt E32Main()
 	{
 	TInt r = Descriptors();
@@ -174,5 +197,6 @@ GLDEF_C TInt E32Main()
 	if (!r) r = Threads();
 	if (!r) r = ActiveObjects();
 	if (!r) r = Library();
+	if (!r) r = Returns();
 	return r;
 	}
