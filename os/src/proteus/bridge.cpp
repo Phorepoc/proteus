@@ -326,6 +326,10 @@ void BridgeConfigure(const char* aText)
 		else if (!strcmp(w, "map"))
 			gMap = true;
 	}
+	// a native DLL implies the map: its objects (the synthesized type_infos, CBase objects, heap cells) live at native addresses the guest
+	// must reach (without it PyS60's estor.dll entry faulted 'write8' on a type_info in the native heap)
+	if (gDll[0].iNativeOn || gDll[1].iNativeOn)
+		gMap = true;
 	for (int i = 0; i < 2; ++i)
 	{
 		TBridgeDll& d = gDll[i];
