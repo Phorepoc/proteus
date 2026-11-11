@@ -1729,20 +1729,26 @@ static TInt MainL()
 	// replaces the ARM euser (and the HLE) altogether.
 	{
 	proteus::BridgeConfigure("");
-	TInt bsz = 0;
+	// then c:\proteus\bridge.local.cfg, appended: the installed bridge.cfg belongs to proteus.sis; local options (profile, trace ...) go there
+	TBuf8<4096> cfg;
 	RFile bf;
-	if (bf.Open(fs, _L("c:\\proteus\\bridge.cfg"), EFileRead) == KErrNone || bf.Open(fs, _L("z:\\proteus\\bridge.cfg"), EFileRead) == KErrNone)
+	for (TInt k = 0; k < 2; ++k)
 		{
-		if (bf.Size(bsz) == KErrNone && bsz > 0 && bsz < 4096)
+		TInt r = k == 0 ? bf.Open(fs, _L("c:\\proteus\\bridge.cfg"), EFileRead) : bf.Open(fs, _L("c:\\proteus\\bridge.local.cfg"), EFileRead);
+		if (k == 0 && r != KErrNone) r = bf.Open(fs, _L("z:\\proteus\\bridge.cfg"), EFileRead);
+		if (r != KErrNone) continue;
+		TInt bsz = 0;
+		if (bf.Size(bsz) == KErrNone && bsz > 0 && bsz < cfg.MaxLength() - cfg.Length() - 2)
 			{
-			TBuf8<4096> cfg;
-			if (bf.Read(cfg) == KErrNone)
-				{
-				cfg.Append(0);
-				proteus::BridgeConfigure((const char*)cfg.Ptr());
-				}
+			TPtr8 rest((TUint8*)cfg.Ptr() + cfg.Length(), 0, bsz);
+			if (bf.Read(rest) == KErrNone) { cfg.SetLength(cfg.Length() + rest.Length()); cfg.Append('\n'); }
 			}
 		bf.Close();
+		}
+	if (cfg.Length())
+		{
+		cfg.Append(0);
+		proteus::BridgeConfigure((const char*)cfg.Ptr());
 		}
 	}
 	proteus::BridgeSetLookup(BridgeNativeExportCtx, NULL);

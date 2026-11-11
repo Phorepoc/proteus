@@ -87,6 +87,9 @@ APP_EXTRAS = {
 # euser/efsrv/hal come with the ROM (proteus/arm: the device builds P2c/P2d run), never from the run disk
 ROM_ARM = {"euser.dll", "efsrv.dll", "hal.dll"}
 NATIVE_GL = {"libegl.dll", "libglesv2.dll", "libglesv1_cm.dll", "libgles_cm.dll"}
+# the system DLLs proteus.sis's bridge.cfg runs natively (round 19): not staged (an ARM copy is not used; backend.dll, which only libc and
+# libpthread import, drops out with them). --arm-system stages them anyway (a bridge.cfg without them: the pure-ARM set)
+NATIVE_BRIDGE = {"euser.dll", "efsrv.dll", "libc.dll", "libpthread.dll"}
 
 
 def main():
@@ -98,6 +101,7 @@ def main():
     ap.add_argument("--strict", action="store_true", help="exit 2 when a DLL stays unresolved (a stale or incomplete ARM build: the app then fails at run time, e.g. drtrvct2_2 ordinal 28 not emulated)")
     ap.add_argument("--extra", help="comma-separated DLLs the app loads at run time (RLibrary::Load: ECOM/CDL plug-ins), with their closure")
     ap.add_argument("--app", choices=sorted(APP_EXTRAS), help="add the app's known run-time loads (APP_EXTRAS) to --extra")
+    ap.add_argument("--arm-system", action="store_true", help="stage euser/efsrv/libc/libpthread too (the pure-ARM set; default: native, bridge.cfg)")
     ap.add_argument("--cdl", action="store_true", help="add every CDL layout instance (<8 hex digits>.dll) in --dirs, with its closure")
     a = ap.parse_args()
     dirs = a.dirs.split(",") if a.dirs else [os.path.dirname(os.path.abspath(a.exe)), os.path.join(REPO, "emitter")]
@@ -131,6 +135,9 @@ def main():
         for imp in import_names(load(path)):
             b = base(imp)
             if b in found or b in missing:
+                continue
+            if b in NATIVE_BRIDGE and not a.arm_system:
+                native.add(b)
                 continue
             if b in NATIVE_GL:		# the OpenGL ES / EGL DLLs run natively (proteusgl.cpp thunks their imports): an ARM copy would shadow them
                 native.add(b)
@@ -166,7 +173,7 @@ def main():
         print("STRICT: unresolved DLLs -- build them for ARM (a stale ARM build directory has the 2010 stubs / lacks newer components)", file=sys.stderr)
         rc = 2
     if native:
-        print(f"native (not staged, run on the native GL): {', '.join(sorted(native))}")
+        print(f"native (not staged: the native GL / bridge.cfg): {', '.join(sorted(native))}")
     print(f"thumb: {len(thumb_mods)} mostly-Thumb modules ({', '.join(thumb_mods) or '-'}); {tot_te} Thumb exports, {tot_pairs} Thumb BL pairs in all")
     if a.out:
         print(f"copied to {a.out}  (boot: DISKFILES={a.out}=proteus)")
