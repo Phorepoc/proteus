@@ -520,6 +520,11 @@ void BridgeConfigure(const char* aText)
 		if (sscanf(line, "%31s %63s", w, a) < 1) continue;
 		if (!strcmp(w, "native"))
 			for (int i = 0; i < KBridgeDlls; ++i) { if (SameDll(a, gDll[i].iName)) gDll[i].iNativeOn = true; }
+		else if (!strcmp(w, "arm"))		// `arm <dll>` / `arm all` (bridge.local.cfg): back to the ARM copy (staged with --arm-system); all = no map
+			{
+				for (int i = 0; i < KBridgeDlls; ++i) if (!strcmp(a, "all") || SameDll(a, gDll[i].iName)) gDll[i].iNativeOn = false;
+				if (!strcmp(a, "all")) gMap = false;
+			}
 		else if (!strcmp(w, "trace") && a[0])		// `trace <dll>`: only that DLL's rows (a full trace of libc's getc loop is too slow)
 			{ for (int i = 0; i < KBridgeDlls; ++i) if (SameDll(a, gDll[i].iName)) gTraceDll |= 1u << i; }
 		else if (!strcmp(w, "trace"))
