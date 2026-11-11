@@ -1627,8 +1627,13 @@ static uint32_t ForeignTwin(proteus::CArmCpu& aCpu, uint32_t aPc, void* aHleP)
 	}
 
 static uint32_t BridgeThreadId() { return (uint32_t)RThread().Id(); }
-static uint32_t BridgeGuestAlloc(uint32_t aSize) { return (uint32_t)User::Alloc((TInt)aSize); }
-static void BridgeGuestFree(uint32_t aAddr) { User::Free((TAny*)aAddr); }
+TAny* HostAlloc(TInt aSize);		// hostheap.cpp: the handler's own heap, not the allocator the guest switched to
+void HostFree(TAny* aPtr);
+void HostHeapInit();
+TUint32 HostAllocator();
+TUint32 HostSwitchAllocator(TUint32 aAlloc);
+static uint32_t BridgeGuestAlloc(uint32_t aSize) { return (uint32_t)HostAlloc((TInt)aSize); }
+static void BridgeGuestFree(uint32_t aAddr) { HostFree((TAny*)aAddr); }
 static void BridgeThreadLog(const char* aLine) { RDebug::Printf("PH: %s", aLine); }
 static int32_t BridgeTrapped(void (*aFn)(void*), void* aArg) { TInt r = KErrNone; TRAP(r, aFn(aArg)); return r; }
 
@@ -1753,6 +1758,8 @@ static TInt MainL()
 	thr.iLog = BridgeThreadLog;
 	thr.iTrapLeave = NULL;
 	thr.iTrapped = BridgeTrapped;
+	thr.iSwitchAlloc = HostSwitchAllocator;	// the guest's allocator switches stay off Proteus' own allocations (bridge.cpp TGuestHeap)
+	thr.iHostAlloc = HostAllocator();
 	proteus::BridgeSetThreads(thr);
 	}
 	const TBool nativeEuser = proteus::BridgeNative("euser.dll");
@@ -2101,6 +2108,7 @@ static TInt RunTimed(const TDesC& aName, const TDesC& aArgs, TInt aSeconds, TExi
 
 TInt E32Main()
 	{
+	HostHeapInit();
 	CTrapCleanup* cleanup = CTrapCleanup::New();
 	RDebug::Printf("PH: proteus start");
 	TRAPD(r, r = MainL());

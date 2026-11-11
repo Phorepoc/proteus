@@ -51,9 +51,46 @@ static void NativeLeave(int32_t aReason);
 static void ForgetLeaveState(CArmCpu& aCpu);
 static void ForgetGuestTls(CArmCpu& aCpu);
 
+// ---- allocators (R1). With a native euser the guest's User::SwitchAllocator/SwitchHeap would switch the NATIVE thread's allocator, and
+// everything Proteus and the translator allocate after it (operator new, User::Alloc: blocks, code-cache tables, CPUs) would land in the
+// guest's heap -- a block made before the switch then freed into the guest's heap corrupts its free list (PyS60: Python's 1 MB ChunkHeap,
+// round 14). So the thread runs on the handler's allocator while Proteus runs, and on the guest's one (CArmCpu::iGuestAlloc) only while
+// native code runs for the guest: a bridged export or native virtual (TGuestHeap), and native code a reverse call returns to.
+static TBridgeThreads gThr;		// the embedder's thread services (BridgeSetThreads)
+struct TGuestHeap
+{
+	CArmCpu& iCpu;
+	bool iOn;
+	TGuestHeap(CArmCpu& aCpu, bool aWatch) : iCpu(aCpu), iOn(false)
+	{
+		if (!gThr.iSwitchAlloc) return;
+		if (iCpu.iGuestAlloc) { gThr.iSwitchAlloc(iCpu.iGuestAlloc); iOn = true; }
+		else iOn = aWatch;		// a SwitchAllocator/SwitchHeap row: read back what the guest switched to
+	}
+	~TGuestHeap()
+	{
+		if (!iOn) return;
+		const uint32_t cur = gThr.iSwitchAlloc(gThr.iHostAlloc);
+		iCpu.iGuestAlloc = cur == gThr.iHostAlloc ? 0 : cur;
+	}
+};
+// native code -> guest code (a reverse call, a new guest thread): back on the handler's allocator; the guest's is the one native code ran on
+static uint32_t HostHeapEnter()
+{
+	if (!gThr.iSwitchAlloc) return 0;
+	const uint32_t cur = gThr.iSwitchAlloc(gThr.iHostAlloc);
+	return cur == gThr.iHostAlloc ? 0 : cur;
+}
+static void HostHeapLeave(CArmCpu& aCpu, bool aEntered)
+{	// on to the allocator the guest has now (it may have switched inside the call), for the native code the call returns to
+	if (gThr.iSwitchAlloc && (aEntered || aCpu.iGuestAlloc)) gThr.iSwitchAlloc(aCpu.iGuestAlloc ? aCpu.iGuestAlloc : gThr.iHostAlloc);
+}
+
 uint32_t BridgeCallGuest(CArmCpu& aCpu, uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3)
 {
 	CArmCpu& c = aCpu;
+	const uint32_t guestAlloc = HostHeapEnter();
+	if (guestAlloc) c.iGuestAlloc = guestAlloc;
 	uint32_t R[16], flags[6];
 	uint64_t D[32];
 	memcpy(R, c.R, sizeof(R)); memcpy(D, c.iD, sizeof(D));
@@ -81,6 +118,7 @@ uint32_t BridgeCallGuest(CArmCpu& aCpu, uint32_t aFn, uint32_t a0, uint32_t a1, 
 		c.iN = flags[0]; c.iZ = flags[1]; c.iC = flags[2]; c.iV = flags[3]; c.iT = flags[4]; c.iGE = flags[5];
 		c.iFpscr = fpscr; c.iHalt = halt; c.iExitCode = code;
 	}
+	HostHeapLeave(c, guestAlloc != 0);
 	if (left)
 		NativeLeave(leave);
 	return ok ? result : 0;						// (anything else: the guest stopped in the callback; the halt stays and ends the run)
@@ -105,7 +143,6 @@ enum { KMaxCpus = 128, KGuestStack = 64 * 1024 };
 struct TCpuOf { uint32_t iId; CArmCpu* iCpu; };
 TCpuOf gCpus[KMaxCpus];
 CArmCpu* gPrimary;
-TBridgeThreads gThr;
 uint32_t ThreadId() { return gThr.iThreadId ? gThr.iThreadId() : 0; }
 CArmCpu* CpuOfThisThread()
 {
@@ -139,10 +176,11 @@ static void RegisterPrimary(CArmCpu& aCpu)
 static uint32_t RunOnNewCpu(uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3)
 {
 	if (!gPrimary || !gThr.iAlloc) return 0;
+	const uint32_t guestAlloc = HostHeapEnter();		// the new thread's heap (the guest's): Proteus' CPU, stack and translator go elsewhere
 	if (gTrace && gThr.iLog) gThr.iLog("[proteus] newcpu enter");
 	const uint32_t stack = gThr.iAlloc(KGuestStack);
 	if (gTrace && gThr.iLog) gThr.iLog("[proteus] newcpu stack");
-	if (!stack) return 0;
+	if (!stack) { HostHeapLeave(*gPrimary, false); if (guestAlloc) gThr.iSwitchAlloc(guestAlloc); return 0; }
 	CArmCpu* c = new CArmCpu(*gPrimary);				// the memory view (region, page map, windows) and the hooks are shared
 	memset(c->R, 0, sizeof(c->R)); memset(c->iD, 0, sizeof(c->iD));
 	c->iN = c->iZ = c->iC = c->iV = c->iT = c->iGE = 0;
@@ -151,8 +189,9 @@ static uint32_t RunOnNewCpu(uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2,
 	c->iSliceSteps = 0; c->iNextSlice = 0;				// no guest scheduler: the kernel schedules the thread
 	c->iStatSlow = c->iStatSvc = c->iStatTrap = c->iStatMem = 0;
 	c->iNote[0] = 0;
+	c->iGuestAlloc = guestAlloc;
 	c->iJit = gThr.iJitNew ? gThr.iJitNew(*c) : 0;
-	if (!SetCpuOfThisThread(c, 0)) { if (c->iJit && gThr.iJitDelete) gThr.iJitDelete(c->iJit); delete c; if (gThr.iFree) gThr.iFree(stack); return 0; }
+	if (!SetCpuOfThisThread(c, 0)) { if (c->iJit && gThr.iJitDelete) gThr.iJitDelete(c->iJit); delete c; if (gThr.iFree) gThr.iFree(stack); if (guestAlloc) gThr.iSwitchAlloc(guestAlloc); return 0; }
 	c->R[0] = a0; c->R[1] = a1; c->R[2] = a2; c->R[3] = a3;
 	c->R[13] = (stack + KGuestStack) & ~7u;
 	c->R[14] = KReturnToHost;
@@ -174,8 +213,10 @@ static uint32_t RunOnNewCpu(uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2,
 	if (c->iJit && gThr.iJitDelete) gThr.iJitDelete(c->iJit);
 	ForgetLeaveState(*c);
 	ForgetGuestTls(*c);
+	const uint32_t endAlloc = c->iGuestAlloc;		// the thread ends on the allocator its guest code left it on
 	delete c;
 	if (gThr.iFree) gThr.iFree(stack);
+	if (endAlloc && gThr.iSwitchAlloc) gThr.iSwitchAlloc(endAlloc);
 	if (left)
 		NativeLeave(leave);					// a guest thread function that left with no TRAP: the native thread leaves (and panics, as natively)
 	return result;
@@ -502,6 +543,7 @@ uint32_t BridgeNativeCall(CArmCpu& aCpu, uint32_t aPc)
 	if (!gDll[0].iNativeOn) return 0;
 	const uintptr_t fn = gResolve ? gResolve(aPc) : (uintptr_t)aPc;
 	if (!fn) return 0;
+	TGuestHeap heap(aCpu, false);
 	if (gTrace && gCurHle)
 	{
 		char line[120];
@@ -999,6 +1041,7 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 	}
 	PatchArgVtables(aCpu, *d, row);
 	const uint32_t lr = aCpu.R[14];
+	TGuestHeap heap(aCpu, !strcmp(e.iName, "_ZN4User15SwitchAllocatorEP10RAllocator") || !strcmp(e.iName, "_ZN4User10SwitchHeapEP10RAllocator"));
 	if (d->iLeaves && d->iLeaves[row] && gThr.iTrapped)
 	{	// a native ...L export: a native leave inside it must not longjmp over this frame -- run it under a native TRAP, raise the leave in the guest
 		TTrappedCall t = { &aCpu, e.iCall, d->iFn[row] };

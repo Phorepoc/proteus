@@ -98,6 +98,7 @@ public:
 	uint32_t iFaultAddr;
 	uint32_t iLastPc;			// the instruction being executed (a Thumb branch halts with pc = the target; this is the branch)
 	char iNote[96];
+	uint32_t iGuestAlloc = 0;	// (R1, native euser) the allocator the guest switched this thread to; 0 = the handler's own (bridge.cpp TGuestHeap)
 
 	// guest memory access (false/0 + fault on a bad address)
 	bool InRegion(uint32_t aAddr, uint32_t aLen) const { return aAddr >= iBase && aLen <= iSize && aAddr - iBase <= iSize - aLen; }

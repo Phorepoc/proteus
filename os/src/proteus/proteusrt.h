@@ -254,6 +254,8 @@ struct TBridgeThreads
 	void (*iJitDelete)(TArmJit* aJit);
 	void (*iLog)(const char* aLine);
 	void (*iTrapLeave)(uint32_t aHandler, int32_t aReason);
+	uint32_t (*iSwitchAlloc)(uint32_t aAlloc);	// User::SwitchAllocator: the thread's allocator, returns the previous one (null = the guest never switches)
+	uint32_t iHostAlloc;		// the handler's own allocator, which Proteus and the translator allocate from
 	int32_t (*iTrapped)(void (*aFn)(void*), void* aArg);	// run aFn under a NATIVE TRAP: its leave code, 0 = none (null = no trapping)	// (host tests) the native TTrapHandler::Leave; null = call it through its vtable
 };
 void BridgeSetThreads(const TBridgeThreads& aThreads);
