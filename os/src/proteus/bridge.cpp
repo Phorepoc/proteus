@@ -64,9 +64,9 @@ struct TGuestHeap
 {
 	CArmCpu& iCpu;
 	bool iOn;
-	TGuestHeap(CArmCpu& aCpu, bool aWatch) : iCpu(aCpu), iOn(false)
+	TGuestHeap(CArmCpu& aCpu, bool aWatch, bool aNoHeap = false) : iCpu(aCpu), iOn(false)
 	{
-		if (!gThr.iSwitchAlloc) return;
+		if (!gThr.iSwitchAlloc || aNoHeap) return;
 		if (iCpu.iGuestAlloc) { gThr.iSwitchAlloc(iCpu.iGuestAlloc); iOn = true; }
 		else iOn = aWatch;		// a SwitchAllocator/SwitchHeap row: read back what the guest switched to
 	}
@@ -140,6 +140,7 @@ uint32_t gWatch, gWatchVal, gWatchPrev, gWatchSize; bool gWatchOn;	// `watchsize
 	// (armed when an allocation returns the cell right after the word)	// bridge.cfg `watch <hex addr>`: log every change of that word, seen at a bridged call (before = guest code wrote it)
 bool gTraceHeap;
 uint32_t gTraceDll;
+bool gProfile;		// bridge.cfg `profile`: calls + cycles per row, the top rows every 256 K bridged calls
 char gTraceOnLoad[32];		// bridge.cfg `traceonload [name]`: the full trace from a guest RLibrary::Load (of a name containing it) on
 		// bridge.cfg `trace <dll>`: a bit per gDll entry
 		// bridge.cfg `traceheap`: only the allocator rows and native virtual calls (a full trace fills the log in ~4 min)
@@ -390,7 +391,11 @@ struct TBridgeDll
 	const TBridgeTi* iTi;		// the ARM type_info objects of its _ZTI exports (KBridgeTi_<dll>)
 	int16_t* iVtRow;		// per row: its first entry there, -1 = none
 	bool* iLeaves;			// per row: the function's name says it can leave (...L) and returns with a balanced cleanup stack
+	uint8_t* iKind;			// per row: the name tests BridgeTrap needs, made once (round 19: they were a dozen strcmp/strstr per call)
+	uint32_t* iProfCount;		// bridge.cfg `profile`: calls and TSC cycles per row
+	uint64_t* iProfCycles;
 };
+enum { KRowLeave = 1, KRowLib = 2, KRowLibHandle = 4, KRowHandleCheck = 8, KRowSwitch = 16, KRowRAlloc = 32, KRowNoHeap = 64 };
 // imports that are not bridged even for a native DLL: the guest EXE's start-up and exit belong to Proteus, not to the native process
 const char* const KKeepHle[] = { "_ZN4User11InitProcessEv", "_ZN7UserSvr9DllSetTlsEiiPv", "_ZN4User4ExitEi", "_ZN6RDebug6PrintfEPKcz" };
 // euser and efsrv first (code below indexes them as 0 and 1); Open C's libc and libpthread since round 16 (no ARM C library beside a native one)
@@ -419,6 +424,48 @@ bool SameDll(const char* aImport, const char* aDll)
 }
 
 // the unqualified function name of an Itanium-mangled symbol ends in L (Symbian: the function may leave)
+static inline uint64_t Tsc() { uint32_t lo, hi; __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi)); return (uint64_t)hi << 32 | lo; }
+static bool IsLeaveRow(const char* n);
+static bool IsLibraryRow(const char* n);
+static bool IsLibraryHandleRow(const char* n);
+// a row that cannot reach the heap: no TGuestHeap switch around it (two Exec::HeapSwitch kernel calls per bridged call, round 19). By name:
+// string/memory/character functions and descriptor methods (no allocation), libc's character stdio (Open C's stdio buffers come from its
+// own heap, not the thread's allocator); anything named for allocation, creation or leaving is left out
+static bool NoHeapRow(int aDll, const char* n)
+{
+	static const char* const KNever[] = { "Alloc", "New", "Heap", "Free", "Create", "Leave", "dup", "Expand", "ReAlloc", "Format", "Load" };
+	for (const char* k : KNever) if (strstr(n, k)) return false;
+	if (aDll >= 2)
+	{
+		static const char* const KPre[] = { "str", "mem", "wcs", "wmem", "is", "to", "getc", "fgetc", "ungetc", "putc", "fputc", "feof", "ferror",
+			"fileno", "clearerr", "abs", "labs", "atoi", "atol", "pthread_mutex_lock", "pthread_mutex_unlock", "pthread_mutex_trylock",
+			"pthread_self", "pthread_getspecific", "pthread_equal", "__errno" };
+		for (const char* k : KPre) if (!strncmp(n, k, strlen(k))) return true;
+		return false;
+	}
+	static const char* const KEuser[] = { "_ZN3Mem", "_ZNK7TDesC8", "_ZNK7TDesC16", "_ZN6TDes8", "_ZN7TDes16", "_ZNK6TDes8", "_ZNK7TDes16",
+		"_ZN5TPtr8", "_ZN6TPtr16", "_ZN6TPtrC8", "_ZN7TPtrC16", "_ZN4TLex", "_ZNK4TLex", "_ZN5TLex8", "_ZNK5TLex8", "_ZN6TLex16", "_ZNK6TLex16",
+		"_ZNK5TChar", "_ZN5TChar", "_ZN4User12StringLength", "_ZN9RFastLock", "_ZN5TRect", "_ZNK5TRect", "_ZN6TPoint", "_ZNK6TPoint", "_ZN5TSize",
+		"_ZNK5TSize", "_ZNK4TUid", "_ZN4User9LockedInc", "_ZN4User9LockedDec", "_ZNK10RArrayBase", "_ZN4User10TickCount", "_ZN4User13NTickCount",
+		"_ZN4User11FastCounter" };
+	for (const char* k : KEuser) if (!strncmp(n, k, strlen(k))) return true;
+	return false;
+}
+static uint8_t RowKind(int aDll, const char* n)
+{
+	uint8_t k = 0;
+	if (aDll == 0)
+	{
+		if (IsLeaveRow(n)) k |= KRowLeave;
+		if (IsLibraryRow(n)) k |= KRowLib;
+		if (IsLibraryHandleRow(n)) k |= KRowLibHandle;
+		if (strstr(n, "11RHandleBase") || strstr(n, "8RLibrary")) k |= KRowHandleCheck;
+		if (!strcmp(n, "_ZN4User15SwitchAllocatorEP10RAllocator") || !strcmp(n, "_ZN4User10SwitchHeapEP10RAllocator")) k |= KRowSwitch;
+		if (!strncmp(n, "_ZN10RAllocator", 15)) k |= KRowRAlloc;
+	}
+	if (!(k & KRowSwitch) && NoHeapRow(aDll, n)) k |= KRowNoHeap;
+	return k;
+}
 static bool NameLeaves(const char* m)
 {
 	if (strncmp(m, "_Z", 2)) return false;
@@ -452,6 +499,7 @@ void BridgeConfigure(const char* aText)
 	gTraceHeap = false;
 	gTraceDll = 0;
 	gTraceOnLoad[0] = 0;
+	gProfile = false;
 	gMap = false;
 	char line[160];
 	while (aText && *aText)
@@ -473,6 +521,8 @@ void BridgeConfigure(const char* aText)
 			{ for (int i = 0; i < KBridgeDlls; ++i) if (SameDll(a, gDll[i].iName)) gTraceDll |= 1u << i; }
 		else if (!strcmp(w, "trace"))
 			gTrace = true;
+		else if (!strcmp(w, "profile"))
+			gProfile = true;
 		else if (!strcmp(w, "traceonload"))
 			snprintf(gTraceOnLoad, sizeof(gTraceOnLoad), "%s", a[0] ? a : ".");
 		else if (!strcmp(w, "traceheap"))
@@ -500,6 +550,13 @@ void BridgeConfigure(const char* aText)
 		d.iLeaves = (bool*)calloc(d.iCount, sizeof(bool));
 		for (uint32_t r = 0; d.iLeaves && r < d.iCount; ++r)
 			d.iLeaves[r] = NameLeaves(d.iRows[r].iName);
+		free(d.iKind);
+		d.iKind = (uint8_t*)calloc(d.iCount, 1);
+		for (uint32_t r = 0; d.iKind && r < d.iCount; ++r)
+			d.iKind[r] = RowKind(i, d.iRows[r].iName);
+		free(d.iProfCount); free(d.iProfCycles);
+		d.iProfCount = gProfile ? (uint32_t*)calloc(d.iCount, sizeof(uint32_t)) : 0;
+		d.iProfCycles = gProfile ? (uint64_t*)calloc(d.iCount, sizeof(uint64_t)) : 0;
 		free(d.iVtRow);
 		d.iVtRow = (int16_t*)malloc(d.iCount * sizeof(int16_t));
 		for (uint32_t r = 0; d.iVtRow && r < d.iCount; ++r)
@@ -1193,6 +1250,35 @@ static bool TypeInfoAlias(int aDll, const char* aName, const char*& aArmDll, uin
 	return false;
 }
 
+// bridge.cfg `profile`: the 12 rows with the most cycles (all DLLs), their calls and cycles per call, and the total
+static void ProfileDump(THle& aHle)
+{
+	struct TTop { int iDll; uint32_t iRow; uint64_t iCycles; } top[12] = {};
+	uint64_t all = 0; uint64_t calls = 0;
+	for (int i = 0; i < KBridgeDlls; ++i)
+		for (uint32_t r = 0; gDll[i].iProfCount && r < gDll[i].iCount; ++r)
+		{
+			const uint64_t c = gDll[i].iProfCycles[r];
+			all += c; calls += gDll[i].iProfCount[r];
+			int k = 12;
+			while (k > 0 && top[k - 1].iCycles < c) --k;
+			if (k == 12) continue;
+			for (int j = 11; j > k; --j) top[j] = top[j - 1];
+			top[k].iDll = i; top[k].iRow = r; top[k].iCycles = c;
+		}
+	char line[200];
+	snprintf(line, sizeof(line), "[proteus] profile: %llu calls, %llu M cycles in bridged rows", (unsigned long long)calls, (unsigned long long)(all / 1000000));
+	Say(aHle, "%s", line);
+	for (int k = 0; k < 12 && top[k].iCycles; ++k)
+	{
+		const TBridgeDll& d = gDll[top[k].iDll];
+		const uint32_t n = d.iProfCount[top[k].iRow];
+		snprintf(line, sizeof(line), "[proteus] profile:   %8u calls %6llu cyc/call %s%s", n, (unsigned long long)(top[k].iCycles / (n ? n : 1)),
+		         d.iRows[top[k].iRow].iName, d.iKind && (d.iKind[top[k].iRow] & KRowNoHeap) ? " (no heap switch)" : "");
+		Say(aHle, "%s", line);
+	}
+}
+
 bool BridgeTrapSlot(CArmCpu& aCpu, THle& aHle, uint32_t aSlotValue)
 {
 	const uint32_t dll = (aSlotValue >> 16) & 0x3F;
@@ -1217,11 +1303,12 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 	const uint32_t row = aOrd - 1;
 	const TBridgeExport& e = d->iRows[row];
 	RegisterPrimary(aCpu);
-	if (d == &gDll[0] && IsLeaveRow(e.iName) && LeaveOverride(aCpu, e.iName, NativeOf(d, row, aHle)))
+	const uint8_t kind = d->iKind ? d->iKind[row] : 0;
+	if ((kind & KRowLeave) && LeaveOverride(aCpu, e.iName, NativeOf(d, row, aHle)))
 		return true;
-	if (d == &gDll[0] && IsLibraryRow(e.iName) && (&aCpu == gPrimary || IsLibraryHandleRow(e.iName)) && LibraryOverride(aCpu, e.iName))
+	if ((kind & KRowLib) && (&aCpu == gPrimary || (kind & KRowLibHandle)) && LibraryOverride(aCpu, e.iName))
 		return true;
-	if (d == &gDll[0] && (strstr(e.iName, "11RHandleBase") || strstr(e.iName, "8RLibrary")) && aCpu.R[0] && aCpu.Valid(aCpu.R[0], 4) &&
+	if ((kind & KRowHandleCheck) && aCpu.R[0] && aCpu.Valid(aCpu.R[0], 4) &&
 	    (aCpu.Read32(aCpu.R[0]) & 0xFFFF0000u) == KHandleLib0 && gCurHle)
 	{	// a guest library pseudo-handle reaching a native RHandleBase/RLibrary row (the kernel would panic KERN-EXEC 0 on it): name it once
 		// (only those rows: r0 of any other row need not be an object, and Valid() accepts uncommitted window pages)
@@ -1274,8 +1361,9 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 	}
 	PatchArgVtables(aCpu, *d, row);
 	const uint32_t lr = aCpu.R[14];
-	const uint32_t argSize = !strncmp(e.iName, "_ZN10RAllocator", 15) ? aCpu.R[1] : aCpu.R[0];	// (the watch: RAllocator::AllocZ(this, size) / User::Alloc(size))
-	TGuestHeap heap(aCpu, !strcmp(e.iName, "_ZN4User15SwitchAllocatorEP10RAllocator") || !strcmp(e.iName, "_ZN4User10SwitchHeapEP10RAllocator"));
+	const uint32_t argSize = (kind & KRowRAlloc) ? aCpu.R[1] : aCpu.R[0];	// (the watch: RAllocator::AllocZ(this, size) / User::Alloc(size))
+	const uint64_t t0 = d->iProfCount ? Tsc() : 0;
+	TGuestHeap heap(aCpu, (kind & KRowSwitch) != 0, (kind & KRowNoHeap) != 0);
 	if (d->iLeaves && d->iLeaves[row] && gThr.iTrapped)
 	{	// a native ...L export: a native leave inside it must not longjmp over this frame -- run it under a native TRAP, raise the leave in the guest
 		TTrappedCall t = { &aCpu, e.iCall, d->iFn[row] };
@@ -1294,6 +1382,13 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 		snprintf(line, sizeof(line), "[proteus] watch %x: %x -> %x in %s (%x,%x,%x)", gWatch, gWatchVal, aCpu.Read32(gWatch), e.iName, aCpu.R[0], aCpu.R[1], aCpu.R[2]);
 		gWatchVal = aCpu.Read32(gWatch);
 		Say(aHle, "%s", line);
+	}
+	if (d->iProfCount)
+	{	// (the heap switch-back of TGuestHeap's destructor is not counted: about the same as its constructor's)
+		++d->iProfCount[row];
+		d->iProfCycles[row] += Tsc() - t0;
+		static uint32_t calls;
+		if (!(++calls & 0x3FFFF)) ProfileDump(aHle);
 	}
 	if (gWatchSize && strstr(e.iName, "Alloc") && (argSize == gWatchSize) && aCpu.R[0])
 	{
