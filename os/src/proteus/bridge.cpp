@@ -138,7 +138,11 @@ namespace
 bool gTrace;
 uint32_t gWatch, gWatchVal, gWatchPrev, gWatchSize; bool gWatchOn;	// `watchsize <hex>`: (re)arm on every allocation of that size
 	// (armed when an allocation returns the cell right after the word)	// bridge.cfg `watch <hex addr>`: log every change of that word, seen at a bridged call (before = guest code wrote it)
-bool gTraceHeap;		// bridge.cfg `traceheap`: only the allocator rows and native virtual calls (a full trace fills the log in ~4 min)
+bool gTraceHeap;
+uint32_t gTraceDll;
+char gTraceOnLoad[32];		// bridge.cfg `traceonload [name]`: the full trace from a guest RLibrary::Load (of a name containing it) on
+		// bridge.cfg `trace <dll>`: a bit per gDll entry
+		// bridge.cfg `traceheap`: only the allocator rows and native virtual calls (a full trace fills the log in ~4 min)
 volatile int gLockWord;
 struct TLock
 {
@@ -446,6 +450,8 @@ void BridgeConfigure(const char* aText)
 		gDll[i].iNativeOn = false;
 	gTrace = false;
 	gTraceHeap = false;
+	gTraceDll = 0;
+	gTraceOnLoad[0] = 0;
 	gMap = false;
 	char line[160];
 	while (aText && *aText)
@@ -463,8 +469,12 @@ void BridgeConfigure(const char* aText)
 		if (sscanf(line, "%31s %63s", w, a) < 1) continue;
 		if (!strcmp(w, "native"))
 			for (int i = 0; i < KBridgeDlls; ++i) { if (SameDll(a, gDll[i].iName)) gDll[i].iNativeOn = true; }
+		else if (!strcmp(w, "trace") && a[0])		// `trace <dll>`: only that DLL's rows (a full trace of libc's getc loop is too slow)
+			{ for (int i = 0; i < KBridgeDlls; ++i) if (SameDll(a, gDll[i].iName)) gTraceDll |= 1u << i; }
 		else if (!strcmp(w, "trace"))
 			gTrace = true;
+		else if (!strcmp(w, "traceonload"))
+			snprintf(gTraceOnLoad, sizeof(gTraceOnLoad), "%s", a[0] ? a : ".");
 		else if (!strcmp(w, "traceheap"))
 			gTraceHeap = true;
 		else if (!strcmp(w, "watch"))
@@ -930,6 +940,7 @@ static bool LibraryOverride(CArmCpu& aCpu, const char* aName)
 	const char* base = bs ? bs + 1 : strchr(file, ':') ? strchr(file, ':') + 1 : file;
 	char name[160];
 	snprintf(name, sizeof(name), "%s%s", base, strchr(base, '.') ? "" : ".dll");
+	if (gTraceOnLoad[0] && strstr(name, gTraceOnLoad)) gTrace = true;
 	for (int i = 0; i < KBridgeDlls; ++i)
 		if (gDll[i].iNativeOn && SameDll(name, gDll[i].iName))
 		{
@@ -1173,6 +1184,20 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 		return true;
 	if (d == &gDll[0] && IsLibraryRow(e.iName) && (&aCpu == gPrimary || IsLibraryHandleRow(e.iName)) && LibraryOverride(aCpu, e.iName))
 		return true;
+	if (d == &gDll[0] && (strstr(e.iName, "11RHandleBase") || strstr(e.iName, "8RLibrary")) && aCpu.R[0] && aCpu.Valid(aCpu.R[0], 4) &&
+	    (aCpu.Read32(aCpu.R[0]) & 0xFFFF0000u) == KHandleLib0 && gCurHle)
+	{	// a guest library pseudo-handle reaching a native RHandleBase/RLibrary row (the kernel would panic KERN-EXEC 0 on it): name it once
+		// (only those rows: r0 of any other row need not be an object, and Valid() accepts uncommitted window pages)
+		static const char* seen[16]; int k = 0;
+		for (; k < 16 && seen[k] && seen[k] != e.iName; ++k) {}
+		if (k < 16 && !seen[k])
+		{
+			seen[k] = e.iName;
+			char line[200];
+			snprintf(line, sizeof(line), "[proteus] bridge: guest library handle %x passed to native %s (lr %x)", aCpu.Read32(aCpu.R[0]), e.iName, aCpu.R[14]);
+			Say(aHle, "%s", line);
+		}
+	}
 	if (d->iKeepHle[row] && (&aCpu == gPrimary || !strcmp(e.iName, "_ZN6RDebug6PrintfEPKcz")))
 		return false;		// (a native guest thread's User::Exit etc. go to the native euser: they end that native thread)
 	char note[160];
@@ -1201,7 +1226,7 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 		gWatchVal = aCpu.Read32(gWatch);
 		Say(aHle, "%s", line);
 	}
-	const bool traceRow = gTrace || (gTraceHeap && (strstr(e.iName, "Alloc") || strstr(e.iName, "Free") || strstr(e.iName, "Heap")));
+	const bool traceRow = gTrace || (gTraceDll >> (d - gDll) & 1) || (gTraceHeap && (strstr(e.iName, "Alloc") || strstr(e.iName, "Free") || strstr(e.iName, "Heap")));
 	if (traceRow)
 	{
 		char line[200];
