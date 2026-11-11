@@ -214,6 +214,20 @@ static TInt BridgeWsConnect(TBridge& b, TInt i)
 	return KErrNone;
 	}
 
+// the native-euser path (bridge.cfg): the guest's CreateSession("!Windowserver") reaches the native euser, not the IPC bridge above, so the
+// bridge asks for gWs here (its handle goes into the guest's RSessionBase; the guest's EWservMessInit is answered with gWs's client handle)
+extern "C" TUint32 ProteusWsAdopt()
+	{
+	if (gWsIndex < 0)
+		{
+		if (gWs.Connect() != KErrNone)
+			return 0;
+		gWsIndex = KMaxBridge;		// (no bridge slot: an index no slot has)
+		}
+	return (TUint32)gWs.Handle();
+	}
+extern "C" TInt32 ProteusWsClientHandle() { return gWs.WsHandle(); }
+
 // a native RWindow over a guest window: the guest RWindow begins with its server handle (MWsClientClass::iWsHandle; no
 // virtual functions in RWindowTreeNode's chain). Never closed: the window is the guest's.
 class TGuestWindow : public RWindow

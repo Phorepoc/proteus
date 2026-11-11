@@ -187,6 +187,15 @@ static void RegisterPrimary(CArmCpu& aCpu)
 static uint32_t RunOnNewCpu(uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3)
 {
 	if (!gPrimary || !gThr.iAlloc) return 0;
+	{	// round 23 diagnostic: the host stack alignment a kernel-started guest thread arrives with (dynarmic assumes 16 bytes at calls)
+		static int seen;
+		if (seen < 8 && gThr.iLog)
+		{
+			++seen;
+			char l[96]; snprintf(l, sizeof(l), "[proteus] newcpu esp %% 16 = %u", (unsigned)((uintptr_t)__builtin_frame_address(0) & 15));
+			gThr.iLog(l);
+		}
+	}
 	const uint32_t guestAlloc = HostHeapEnter();		// the new thread's heap (the guest's): Proteus' CPU, stack and translator go elsewhere
 	if (gTrace && gThr.iLog) gThr.iLog("[proteus] newcpu enter");
 	const uint32_t stack = gThr.iAlloc(KGuestStack);
@@ -1299,6 +1308,10 @@ bool BridgeTrapSlot(CArmCpu& aCpu, THle& aHle, uint32_t aSlotValue)
 	return BridgeTrap(aCpu, aHle, gDll[dll].iName, aSlotValue & 0xFFFF);
 }
 
+extern "C" uint32_t ProteusWsAdopt();
+extern "C" int32_t ProteusWsClientHandle();
+static uint32_t gWsAdopted;
+
 // a guest TDesC16's (a8: TDesC8's) text (type in the top 4 bits of the first word: 0 TBufC, 1 TPtrC, 2 TPtr, 3 TBuf, 4 TBufCPtr), -1 if unreadable
 static int GuestDes16(CArmCpu& aCpu, uint32_t aDes, uint16_t* aOut, int aMax, bool a8)
 {
@@ -1349,6 +1362,33 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 			snprintf(line, sizeof(line), "[proteus] bridge: guest library handle %x passed to native %s (lr %x)", aCpu.Read32(aCpu.R[0]), e.iName, aCpu.R[14]);
 			Say(aHle, "%s", line);
 		}
+	}
+	if (!strncmp(e.iName, "_ZN12RSessionBase13CreateSessionERK7TDesC16", 43) && aCpu.R[0])
+	{	// the guest's window-server session = Proteus' gWs (the EGL window surfaces draw through it): adopt it as the IPC path does
+		uint16_t nm[32]; const int nl = GuestDes16(aCpu, aCpu.R[1], nm, 32, false);
+		static const char KWs[] = "!Windowserver";
+		bool ws = nl == (int)sizeof(KWs) - 1;
+		for (int i = 0; ws && i < nl; ++i) ws = nm[i] == (uint16_t)KWs[i];
+		if (ws)
+		{
+			const uint32_t h = ProteusWsAdopt();
+			if (h)
+			{
+				gWsAdopted = h;
+				aCpu.Write32(aCpu.R[0], h);
+				aCpu.R[0] = 0;
+				aCpu.SetReturn();
+				{ char l[80]; snprintf(l, sizeof(l), "[proteus] window-server session adopted (handle %x)", (unsigned)h); Say(aHle, "%s", l); }
+				return true;
+			}
+		}
+	}
+	if (gWsAdopted && aCpu.R[1] == 2 && strstr(e.iName, "12RSessionBase") && (strstr(e.iName, "SendSync") || strstr(e.iName, "SendReceive"))
+	    && aCpu.Valid(aCpu.R[0], 4) && aCpu.Read32(aCpu.R[0]) == gWsAdopted)
+	{	// EWservMessInit: gWs's Connect did it; the guest gets the same client handle
+		aCpu.R[0] = (uint32_t)ProteusWsClientHandle();
+		aCpu.SetReturn();
+		return true;
 	}
 	const bool print16 = !strcmp(e.iName, "_ZN6RDebug5PrintE11TRefByValueIK7TDesC16Ez"), print8 = !strcmp(e.iName, "_ZN6RDebug6PrintfEPKcz");
 	if (print16 || print8)
