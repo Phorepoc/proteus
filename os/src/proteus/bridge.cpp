@@ -749,8 +749,10 @@ static bool IsLeaveRow(const char* n)
 static bool IsLibraryRow(const char* n)
 {
 	return !strncmp(n, "_ZN8RLibrary4LoadE", 18) || !strcmp(n, "_ZNK8RLibrary6LookupEi") || !strcmp(n, "_ZN8RLibrary5CloseEv")
-		|| !strcmp(n, "_ZN11RHandleBase5CloseEv");
+		|| !strcmp(n, "_ZN11RHandleBase5CloseEv") || !strcmp(n, "_ZN11RHandleBase9DuplicateERK7RThread10TOwnerType");
 }
+// the rows that only look at the handle (any guest thread may close or duplicate a library handle; Load/Lookup need the primary's process)
+static bool IsLibraryHandleRow(const char* n) { return !strncmp(n, "_ZN11RHandleBase", 16) || !strcmp(n, "_ZN8RLibrary5CloseEv"); }
 static bool LibraryOverride(CArmCpu& aCpu, const char* aName)
 {
 	TProcess* p = gCurHle ? gCurHle->iProcess : 0;
@@ -759,6 +761,13 @@ static bool LibraryOverride(CArmCpu& aCpu, const char* aName)
 	{
 		if (!lib) return false;					// any other handle: the native Close
 		aCpu.Write32(aCpu.R[0], 0);
+		aCpu.SetReturn();
+		return true;
+	}
+	if (!strcmp(aName, "_ZN11RHandleBase9DuplicateERK7RThread10TOwnerType"))
+	{	// a guest library handle stays what it is: the module is loaded for the whole process (libdl's dlopen duplicates it, round 14)
+		if (!lib) return false;
+		aCpu.R[0] = 0;
 		aCpu.SetReturn();
 		return true;
 	}
@@ -1010,7 +1019,7 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 	RegisterPrimary(aCpu);
 	if (d == &gDll[0] && IsLeaveRow(e.iName) && LeaveOverride(aCpu, e.iName, NativeOf(d, row, aHle)))
 		return true;
-	if (d == &gDll[0] && &aCpu == gPrimary && IsLibraryRow(e.iName) && LibraryOverride(aCpu, e.iName))
+	if (d == &gDll[0] && IsLibraryRow(e.iName) && (&aCpu == gPrimary || IsLibraryHandleRow(e.iName)) && LibraryOverride(aCpu, e.iName))
 		return true;
 	if (d->iKeepHle[row] && (&aCpu == gPrimary || !strcmp(e.iName, "_ZN6RDebug6PrintfEPKcz")))
 		return false;		// (a native guest thread's User::Exit etc. go to the native euser: they end that native thread)
