@@ -1632,6 +1632,8 @@ void HostFree(TAny* aPtr);
 void HostHeapInit();
 TUint32 HostAllocator();
 TUint32 HostSwitchAllocator(TUint32 aAlloc);
+TUint32 HostCodeAlloc(TUint32 aBytes);
+static uintptr_t BridgeCodeAlloc(uint32_t aBytes) { return HostCodeAlloc(aBytes); }
 static uint32_t BridgeGuestAlloc(uint32_t aSize) { return (uint32_t)HostAlloc((TInt)aSize); }
 static void BridgeGuestFree(uint32_t aAddr) { HostFree((TAny*)aAddr); }
 static void BridgeThreadLog(const char* aLine) { RDebug::Printf("PH: %s", aLine); }
@@ -1760,6 +1762,7 @@ static TInt MainL()
 	thr.iTrapped = BridgeTrapped;
 	thr.iSwitchAlloc = HostSwitchAllocator;	// the guest's allocator switches stay off Proteus' own allocations (bridge.cpp TGuestHeap)
 	thr.iHostAlloc = HostAllocator();
+	thr.iCodeAlloc = BridgeCodeAlloc;
 	proteus::BridgeSetThreads(thr);
 	}
 	const TBool nativeEuser = proteus::BridgeNative("euser.dll");

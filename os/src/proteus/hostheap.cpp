@@ -35,3 +35,12 @@ void HostFree(TAny* aPtr)
 TUint32 HostAllocator() { return (TUint32)gHostHeap; }
 TUint32 HostSwitchAllocator(TUint32 aAlloc) { return (TUint32)User::SwitchAllocator((RAllocator*)aAlloc); }
 
+// zeroed read/write/execute memory (the bridge's reverse stubs): a local code chunk each, kept for the life of the process
+TUint32 HostCodeAlloc(TUint32 aBytes)
+	{
+	const TInt size = (TInt)((aBytes + 0xFFF) & ~0xFFFu);
+	RChunk c;
+	if (c.CreateLocalCode(size, size) != KErrNone) return 0;
+	Mem::FillZ(c.Base(), size);
+	return (TUint32)c.Base();
+	}

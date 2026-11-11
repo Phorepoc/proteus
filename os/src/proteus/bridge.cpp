@@ -16,6 +16,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__linux__) && !defined(__SYMBIAN32__)
+#include <sys/mman.h>
+#endif
 
 namespace proteus
 {
@@ -224,71 +227,103 @@ static uint32_t RunOnNewCpu(uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2,
 
 namespace
 {
-enum { KMaxStubs = 4096 };		// (512 ran out in the ARM Calculator's start-up on the native euser, round 13)
+// Reverse stubs are made at run time: each is a 32-byte piece of x86-64 code in an executable block from the embedder (TBridgeThreads::
+// iCodeAlloc; a host test maps its own) that loads its index into the 5th argument register (r8d) and jumps to the dispatcher of its kind,
+// which finds the guest function by that index. Blocks of 256 stubs come as needed (round 14; the fixed template table of round 13 held
+// 4096 per kind and cost the handler 2 MB of code). The index of a (guest function, kind) pair is kept in an open-addressing hash.
+enum { KStubsPerBlock = 256, KStubBytes = 32, KMaxBlocks = 128, KMaxStubs = KStubsPerBlock * KMaxBlocks, KStubHash = 2 * KMaxStubs };
 // the kinds of reverse stub, by how the function returns (gen_bridge.py slot_kinds): plain (a word, a 64-bit value or a struct of up to 4
 // bytes: the same registers on both sides); `r` a struct of 5-16 bytes the native caller expects in rax:rdx while the ARM function writes it
 // through a hidden pointer in r0 ahead of `this`; `m` a struct both sides return through a hidden pointer first (passed on and returned)
 enum TStubKind { EStubPlain, EStubRegs, EStubMem, EStubKinds };
 struct TRevStub { uint32_t iFn; int iKind; };
-TRevStub gStub[KMaxStubs];
+struct TStubBlock { uint8_t iCode[KStubsPerBlock * KStubBytes]; TRevStub iStub[KStubsPerBlock]; };
+TStubBlock* gStubBlk[KMaxBlocks];
+int32_t* gStubHash;		// KStubHash slots: stub index + 1, 0 = empty
 int gStubCount;
+inline TRevStub& Stub(uint32_t k) { return gStubBlk[k / KStubsPerBlock]->iStub[k % KStubsPerBlock]; }
 struct TRet16 { uint32_t iW[4]; };		// an INTEGER-class 16-byte aggregate: rax:rdx (a 8- or 12-byte caller reads the leading words)
-template <int K> uint32_t RevStub(uint32_t a, uint32_t b, uint32_t c, uint32_t d)
+uint32_t RevStub(uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t k)
 {
 	CArmCpu* cpu = CpuOfThisThread();
-	return cpu ? BridgeCallGuest(*cpu, gStub[K].iFn, a, b, c, d) : RunOnNewCpu(gStub[K].iFn, a, b, c, d);
+	const uint32_t fn = Stub(k).iFn;
+	return cpu ? BridgeCallGuest(*cpu, fn, a, b, c, d) : RunOnNewCpu(fn, a, b, c, d);
 }
-template <int K> TRet16 RevStubR(uint32_t aThis, uint32_t b, uint32_t c, uint32_t)
+TRet16 RevStubR(uint32_t aThis, uint32_t b, uint32_t c, uint32_t, uint32_t k)
 {
 	TRet16 r;
 	memset(&r, 0, sizeof(r));
 	CArmCpu* cpu = CpuOfThisThread();
+	const uint32_t fn = Stub(k).iFn;
 	if (cpu)
 	{	// the result buffer below the guest's sp, above the frame BridgeCallGuest starts at (sp - 64)
 		const uint32_t buf = (cpu->R[13] - 32) & ~7u;
 		if (cpu->Valid(buf, 16))
 		{
-			BridgeCallGuest(*cpu, gStub[K].iFn, buf, aThis, b, c);
+			BridgeCallGuest(*cpu, fn, buf, aThis, b, c);
 			for (int i = 0; i < 4; ++i) r.iW[i] = cpu->Read32(buf + 4 * i);
 		}
 	}
 	else if (sizeof(void*) == 4)		// a new CPU maps native memory: the native local is the buffer
-		RunOnNewCpu(gStub[K].iFn, (uint32_t)(uintptr_t)&r, aThis, b, c);
+		RunOnNewCpu(fn, (uint32_t)(uintptr_t)&r, aThis, b, c);
 	return r;
 }
-template <int K> uint32_t RevStubM(uint32_t aRet, uint32_t aThis, uint32_t b, uint32_t c)
+uint32_t RevStubM(uint32_t aRet, uint32_t aThis, uint32_t b, uint32_t c, uint32_t k)
 {
-	RevStub<K>(aRet, aThis, b, c);
+	RevStub(aRet, aThis, b, c, k);
 	return aRet;					// (SysV: rax = the hidden result pointer; the AAPCS does not promise r0)
 }
-template <int Lo, int N> struct TStubTable		// fills [Lo, Lo + N): halves, so the template depth is log2(KMaxStubs)
+const uintptr_t KStubDispatch[EStubKinds] = { (uintptr_t)&RevStub, (uintptr_t)&RevStubR, (uintptr_t)&RevStubM };
+
+// executable memory for a block: the embedder's, or (a host test without one) an anonymous mapping
+uint8_t* StubMemory(uint32_t aBytes)
 {
-	static void Fill(uintptr_t (*t)[KMaxStubs])
-	{
-		TStubTable<Lo, N / 2>::Fill(t);
-		TStubTable<Lo + N / 2, N - N / 2>::Fill(t);
-	}
-};
-template <int K> struct TStubTable<K, 1>
+	if (gThr.iCodeAlloc) return (uint8_t*)gThr.iCodeAlloc(aBytes);
+#if defined(__linux__) && !defined(__SYMBIAN32__)
+	void* p = mmap(0, aBytes, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	return p == MAP_FAILED ? 0 : (uint8_t*)p;
+#else
+	return 0;
+#endif
+}
+// stub k's code: mov r8d, k; mov rax, <dispatcher>; jmp rax
+void WriteStub(uint8_t* aAt, uint32_t aK, uintptr_t aTo)
 {
-	static void Fill(uintptr_t (*t)[KMaxStubs])
-	{
-		t[EStubPlain][K] = (uintptr_t)&RevStub<K>; t[EStubRegs][K] = (uintptr_t)&RevStubR<K>; t[EStubMem][K] = (uintptr_t)&RevStubM<K>;
-	}
-};
-uintptr_t gStubFn[EStubKinds][KMaxStubs];
+	uint8_t* p = aAt;
+	*p++ = 0x41; *p++ = 0xB8; memcpy(p, &aK, 4); p += 4;
+	if (sizeof(void*) == 4) { const uint32_t to = (uint32_t)aTo; *p++ = 0xB8; memcpy(p, &to, 4); p += 4; }		// mov eax, imm32 (zero-extends)
+	else { const uint64_t to = (uint64_t)aTo; *p++ = 0x48; *p++ = 0xB8; memcpy(p, &to, 8); p += 8; }		// movabs rax, imm64
+	*p++ = 0xFF; *p++ = 0xE0;
+	while (p < aAt + KStubBytes) *p++ = 0xCC;
+}
+uintptr_t StubCode(uint32_t k) { return (uintptr_t)&gStubBlk[k / KStubsPerBlock]->iCode[(k % KStubsPerBlock) * KStubBytes]; }
 }
 
-// the native address of stub k: on x32 the function itself; on an LP64 host test a token BridgeStubFn turns back into the function
-static uint32_t StubAddress(int k) { return sizeof(void*) == 4 ? (uint32_t)gStubFn[gStub[k].iKind][k] : 0xE0000000u | (uint32_t)k; }
-uintptr_t BridgeStubFn(uint32_t aAddr) { return (aAddr & 0xFF000000u) == 0xE0000000u ? gStubFn[gStub[aAddr & 0xFFFFFF].iKind][aAddr & 0xFFFFFF] : (uintptr_t)aAddr; }
+// the native address of stub k: on x32 its code; on an LP64 host test a token BridgeStubFn turns back into the code
+static uint32_t StubAddress(int k) { return sizeof(void*) == 4 ? (uint32_t)StubCode((uint32_t)k) : 0xE0000000u | (uint32_t)k; }
+uintptr_t BridgeStubFn(uint32_t aAddr)
+{
+	if ((aAddr & 0xFF000000u) != 0xE0000000u) return (uintptr_t)aAddr;
+	const uint32_t k = aAddr & 0xFFFFFF;
+	return k < (uint32_t)__atomic_load_n(&gStubCount, __ATOMIC_ACQUIRE) ? StubCode(k) : 0;
+}
 
 // the guest function behind a reverse stub address (0 = not a stub): guest code reached a stub through a patched vtable slot (see PatchVtable)
 uint32_t BridgeStubTarget(uint32_t aPc)
 {
-	const int n = __atomic_load_n(&gStubCount, __ATOMIC_ACQUIRE);
-	for (int k = 0; k < n; ++k)
-		if (StubAddress(k) == (aPc & ~1u)) return gStub[k].iFn;
+	const uint32_t n = (uint32_t)__atomic_load_n(&gStubCount, __ATOMIC_ACQUIRE);
+	const uint32_t pc = aPc & ~1u;
+	if (sizeof(void*) != 4)
+		return (pc & 0xFF000000u) == 0xE0000000u && (pc & 0xFFFFFF) < n ? Stub(pc & 0xFFFFFF).iFn : 0;
+	for (uint32_t b = 0; b * KStubsPerBlock < n; ++b)
+	{
+		const uintptr_t at = (uintptr_t)gStubBlk[b]->iCode;
+		if (pc >= at && pc < at + sizeof(gStubBlk[b]->iCode) && (pc - at) % KStubBytes == 0)
+		{
+			const uint32_t k = b * KStubsPerBlock + (uint32_t)(pc - at) / KStubBytes;
+			return k < n ? Stub(k).iFn : 0;
+		}
+	}
 	return 0;
 }
 
@@ -296,15 +331,29 @@ static uint32_t BrCb(CArmCpu& aCpu, uint32_t aGuestFn, int aKind = EStubPlain)
 {
 	if (!aGuestFn || !aCpu.InRegion(aGuestFn & ~1u, 2))
 		return aGuestFn;
-	if (!gStubFn[0][0]) TStubTable<0, KMaxStubs>::Fill(gStubFn);
 	TLock lock;
-	for (int k = 0; k < gStubCount; ++k)
-		if (gStub[k].iFn == aGuestFn && gStub[k].iKind == aKind) return StubAddress(k);
-	if (gStubCount == KMaxStubs) { aCpu.Halt(EHleStop); strncpy(aCpu.iNote, "bridge: out of callback stubs", sizeof(aCpu.iNote) - 1); return 0; }
-	gStub[gStubCount].iFn = aGuestFn;
-	gStub[gStubCount].iKind = aKind;
-	__atomic_store_n(&gStubCount, gStubCount + 1, __ATOMIC_RELEASE);
-	return StubAddress(gStubCount - 1);
+	if (!gStubHash) gStubHash = (int32_t*)StubMemory(KStubHash * sizeof(int32_t));		// (zeroed: fresh code-chunk pages / mmap)
+	const char* full = !gStubHash ? "bridge: no memory for callback stubs" : 0;
+	uint32_t h = (aGuestFn * 2654435761u ^ (uint32_t)aKind) & (KStubHash - 1);
+	for (; !full && gStubHash[h]; h = (h + 1) & (KStubHash - 1))
+	{
+		const TRevStub& s = Stub((uint32_t)gStubHash[h] - 1);
+		if (s.iFn == aGuestFn && s.iKind == aKind) return StubAddress(gStubHash[h] - 1);
+	}
+	const uint32_t k = (uint32_t)gStubCount;
+	if (!full && k == KMaxStubs) full = "bridge: out of callback stubs";
+	if (!full && k % KStubsPerBlock == 0 && !gStubBlk[k / KStubsPerBlock])
+	{
+		gStubBlk[k / KStubsPerBlock] = (TStubBlock*)StubMemory(sizeof(TStubBlock));
+		if (!gStubBlk[k / KStubsPerBlock]) full = "bridge: no memory for callback stubs";
+	}
+	if (full) { aCpu.Halt(EHleStop); strncpy(aCpu.iNote, full, sizeof(aCpu.iNote) - 1); return 0; }
+	Stub(k).iFn = aGuestFn;
+	Stub(k).iKind = aKind;
+	WriteStub((uint8_t*)StubCode(k), k, KStubDispatch[aKind]);
+	gStubHash[h] = (int32_t)k + 1;
+	__atomic_store_n(&gStubCount, (int)k + 1, __ATOMIC_RELEASE);
+	return StubAddress((int)k);
 }
 static void BrCbField(CArmCpu& aCpu, uint8_t* aField)
 {
