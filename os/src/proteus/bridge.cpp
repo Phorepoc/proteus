@@ -183,7 +183,7 @@ static uint32_t RunOnNewCpu(uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2,
 
 namespace
 {
-enum { KMaxStubs = 512 };
+enum { KMaxStubs = 4096 };		// (512 ran out in the ARM Calculator's start-up on the native euser, round 13)
 // the kinds of reverse stub, by how the function returns (gen_bridge.py slot_kinds): plain (a word, a 64-bit value or a struct of up to 4
 // bytes: the same registers on both sides); `r` a struct of 5-16 bytes the native caller expects in rax:rdx while the ARM function writes it
 // through a hidden pointer in r0 ahead of `this`; `m` a struct both sides return through a hidden pointer first (passed on and returned)
@@ -220,15 +220,21 @@ template <int K> uint32_t RevStubM(uint32_t aRet, uint32_t aThis, uint32_t b, ui
 	RevStub<K>(aRet, aThis, b, c);
 	return aRet;					// (SysV: rax = the hidden result pointer; the AAPCS does not promise r0)
 }
-template <int K> struct TStubTable
+template <int Lo, int N> struct TStubTable		// fills [Lo, Lo + N): halves, so the template depth is log2(KMaxStubs)
+{
+	static void Fill(uintptr_t (*t)[KMaxStubs])
+	{
+		TStubTable<Lo, N / 2>::Fill(t);
+		TStubTable<Lo + N / 2, N - N / 2>::Fill(t);
+	}
+};
+template <int K> struct TStubTable<K, 1>
 {
 	static void Fill(uintptr_t (*t)[KMaxStubs])
 	{
 		t[EStubPlain][K] = (uintptr_t)&RevStub<K>; t[EStubRegs][K] = (uintptr_t)&RevStubR<K>; t[EStubMem][K] = (uintptr_t)&RevStubM<K>;
-		TStubTable<K - 1>::Fill(t);
 	}
 };
-template <> struct TStubTable<-1> { static void Fill(uintptr_t (*)[KMaxStubs]) {} };
 uintptr_t gStubFn[EStubKinds][KMaxStubs];
 }
 
@@ -249,7 +255,7 @@ static uint32_t BrCb(CArmCpu& aCpu, uint32_t aGuestFn, int aKind = EStubPlain)
 {
 	if (!aGuestFn || !aCpu.InRegion(aGuestFn & ~1u, 2))
 		return aGuestFn;
-	if (!gStubFn[0][0]) TStubTable<KMaxStubs - 1>::Fill(gStubFn);
+	if (!gStubFn[0][0]) TStubTable<0, KMaxStubs>::Fill(gStubFn);
 	TLock lock;
 	for (int k = 0; k < gStubCount; ++k)
 		if (gStub[k].iFn == aGuestFn && gStub[k].iKind == aKind) return StubAddress(k);
