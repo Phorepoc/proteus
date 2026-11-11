@@ -1308,7 +1308,9 @@ bool BridgeTrapSlot(CArmCpu& aCpu, THle& aHle, uint32_t aSlotValue)
 	return BridgeTrap(aCpu, aHle, gDll[dll].iName, aSlotValue & 0xFFFF);
 }
 
+uint32_t BridgeStubTarget(uint32_t aPc);
 extern "C" uint32_t ProteusWsAdopt();
+extern "C" uint32_t ProteusGuestToNative(CArmCpu& aCpu, THle& aHle, uint32_t aFn);
 extern "C" int32_t ProteusWsClientHandle();
 static uint32_t gWsAdopted;
 
@@ -1488,11 +1490,15 @@ bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd)
 			{
 				for (int i = 0; i < 16; ++i) attr[i] = aCpu.Read32(aCpu.R[1] + 4 * i);
 				if ((int32_t)attr[3] < KHostThreadStack) attr[3] = KHostThreadStack;
+				if (const uint32_t nat = ProteusGuestToNative(aCpu, aHle, BridgeStubTarget(attr[2]) ? BridgeStubTarget(attr[2]) : attr[2])) attr[2] = nat;	// (the bridged TThreadCreateInfo constructor already made the entry a reverse stub)
 				aCpu.R[1] = (uint32_t)(uintptr_t)attr;
 			}
 		}
-		else if ((int32_t)aCpu.R[3] < KHostThreadStack)
-			aCpu.R[3] = KHostThreadStack;		// RThread::Create(name, fn, stack, ...)
+		else
+		{	// RThread::Create(name, fn, stack, ...)
+			if ((int32_t)aCpu.R[3] < KHostThreadStack) aCpu.R[3] = KHostThreadStack;
+			if (const uint32_t nat = ProteusGuestToNative(aCpu, aHle, BridgeStubTarget(aCpu.R[2]) ? BridgeStubTarget(aCpu.R[2]) : aCpu.R[2])) aCpu.R[2] = nat;
+		}
 	}
 	const uint32_t lr = aCpu.R[14];
 	const uint32_t argSize = (kind & KRowRAlloc) ? aCpu.R[1] : aCpu.R[0];	// (the watch: RAllocator::AllocZ(this, size) / User::Alloc(size))

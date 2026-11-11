@@ -228,6 +228,36 @@ extern "C" TUint32 ProteusWsAdopt()
 	}
 extern "C" TInt32 ProteusWsClientHandle() { return gWs.WsHandle(); }
 
+// the native-euser path: a guest thread whose entry is an exported function of the guest's mmfcontrollerframework.dll
+// (CMMFControllerProxyServer::StartThread) runs the NATIVE export of the same ordinal instead -- the controller chain is the native one (as
+// the IPC-path hosting above), and the guest's proxy then talks to that native server over ordinary native sessions. Logs every guest
+// thread entry (round 24: the controller thread had run the ARM framework and died KERN-EXEC 3). 0 = keep the guest entry.
+extern "C" TUint32 ProteusGuestToNative(proteus::CArmCpu& aCpu, proteus::THle& aHle, TUint32 aFn)
+	{
+	char w[120] = "";
+	if (!aHle.iProcess)
+		return 0;
+	proteus::TProcess& p = *aHle.iProcess;
+	proteus::Where(p, aCpu, aFn, w, sizeof(w));
+	TUint32 to = 0;
+	const TUint32 a = aFn & ~1u;
+	for (int m = 1; m < p.iCount && !to; ++m)
+		{
+		const proteus::TLoaded& l = p.iMod[m];
+		if (a < l.iLoadAddr || a >= l.iEnd || strcmp(l.iName, "mmfcontrollerframework.dll"))
+			continue;
+		for (TUint32 i = 0; i < l.iExportCount && !to; ++i)
+			if ((aCpu.Read32(l.iExportDir + 4 * i) & ~1u) == a)
+				{
+				RLibrary lib;
+				if (lib.Load(_L("mmfcontrollerframework.dll")) == KErrNone)
+					to = (TUint32)lib.Lookup((TInt)(i + 1));		// (never closed: the native framework stays loaded for the thread)
+				}
+		}
+	RDebug::Printf("PH: proteus guest thread entry %s -> %s %x", w, to ? "native" : "guest", (TUint)(to ? to : aFn));
+	return to;
+	}
+
 // a native RWindow over a guest window: the guest RWindow begins with its server handle (MWsClientClass::iWsHandle; no
 // virtual functions in RWindowTreeNode's chain). Never closed: the window is the guest's.
 class TGuestWindow : public RWindow
