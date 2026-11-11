@@ -8,10 +8,14 @@ void BrOvr_AppendFormatList16(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (to
 void BrOvr_AppendFormatList8(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
 void BrOvr_AppendFormatOvf16(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
 void BrOvr_AppendFormatOvf8(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
+void BrOvr_CommandLine(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
+void BrOvr_CommandLineLength(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
 void BrOvr_Format16(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
 void BrOvr_Format8(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
 void BrOvr_FormatList16(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
 void BrOvr_FormatList8(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
+void BrOvr_ProcessFileName(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
+void BrOvr_ProcessType(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
 static const TBridgeExport KBridge_euser[] =
 {
 	{ 1, "_Z16PanicTFixedArrayv", BrShape_0, 0, -1, 1 },
@@ -596,7 +600,7 @@ static const TBridgeExport KBridge_euser[] =
 	{ 580, "_ZN4Time9NullTTimeEv", BrShape_41, 0, -1, 580 },
 	{ 581, "_ZN4User10JustInTimeEv", BrShape_34, 0, -1, 581 },
 	{ 582, "_ZN4User10LockPeriodEv", BrShape_34, 0, -1, 582 },
-	{ 583, "_ZN4User11CommandLineER6TDes16", BrShape_4, 0, -1, 583 },
+	{ 583, "_ZN4User11CommandLineER6TDes16", BrOvr_CommandLine, 8192, -1, 583 },
 	{ 584, "_ZN4User11FastCounterEv", BrShape_34, 0, -1, 584 },
 	{ 585, "_ZN4User11InitProcessEv", BrShape_0, 0, -1, 585 },
 	{ 586, "_ZN4User11LeaveIfNullEPv", BrShape_5, 0, -1, 586 },
@@ -635,7 +639,7 @@ static const TBridgeExport KBridge_euser[] =
 	{ 619, "_ZN4User16CompressAllHeapsEv", BrShape_34, 0, -1, 619 },
 	{ 620, "_ZN4User16ExceptionHandlerEv", BrShape_9, 0, -1, 620 },
 	{ 621, "_ZN4User16GetTIntParameterEiRi", BrShape_2, 0, -1, 621 },
-	{ 622, "_ZN4User17CommandLineLengthEv", BrShape_34, 0, -1, 622 },
+	{ 622, "_ZN4User17CommandLineLengthEv", BrOvr_CommandLineLength, 8192, -1, 622 },
 	{ 623, "_ZN4User17FreeLogicalDeviceERK7TDesC16", BrShape_1, 0, -1, 623 },
 	{ 624, "_ZN4User17LoadLogicalDeviceERK7TDesC16", BrShape_1, 0, -1, 624 },
 	{ 625, "_ZN4User17SetCurrencySymbolERK7TDesC16", BrShape_1, 0, -1, 625 },
@@ -1863,10 +1867,10 @@ static const TBridgeExport KBridge_euser[] =
 	{ 1847, "_ZNK8RProcess13SetJustInTimeEi", BrShape_8, 0, -1, 1847 },
 	{ 1848, "_ZNK8RProcess16RendezvousCancelER14TRequestStatus", BrShape_2, 0, -1, 1848 },
 	{ 1849, "_ZNK8RProcess2IdEv", BrShape_105, 0, -1, 1849 },
-	{ 1850, "_ZNK8RProcess4TypeEv", BrShape_54, 0, -1, 1850 },
+	{ 1850, "_ZNK8RProcess4TypeEv", BrOvr_ProcessType, 8192, -1, 1850 },
 	{ 1851, "_ZNK8RProcess5LogonER14TRequestStatus", BrShape_8, 0, -1, 1851 },
 	{ 1852, "_ZNK8RProcess8ExitTypeEv", BrShape_1, 0, -1, 1852 },
-	{ 1853, "_ZNK8RProcess8FileNameEv", BrShape_96, 0, -1, 1853 },
+	{ 1853, "_ZNK8RProcess8FileNameEv", BrOvr_ProcessFileName, 8192, -1, 1853 },
 	{ 1854, "_ZNK8RProcess8SecureIdEv", BrShape_55, 0, -1, 1854 },
 	{ 1855, "_ZNK8RProcess8PriorityEv", BrShape_1, 0, -1, 1855 },
 	{ 1856, "_ZNK8TUidType11MostDerivedEv", BrShape_55, 0, -1, 1856 },

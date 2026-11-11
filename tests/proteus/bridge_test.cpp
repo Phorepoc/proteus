@@ -232,6 +232,11 @@ static TPtr8V Fk_BufFlat_Ptr(U self, U pos) { TPtr8V v = { (2u << 28) | (8 - pos
 static U gBufVt;
 static U Fk_BufFlat_NewL(U) { U o = Alloc(128); W32(o, gBufVt + 8); W32(o + 4, 8); return o; }
 
+// the native command line: the loader puts the program's path in front (the bridge removes it again)
+static const char KFakeCmd[] = "C:\\sys\\bin\\proteusbridge.exe -xy";
+static U Fk_CommandLineLength() { return (U)strlen(KFakeCmd); }
+static U Fk_CommandLine(U d) { const U n = (U)strlen(KFakeCmd); for (U i = 0; i < n; ++i) gCpu->Write16(Ptr16(d) + 2 * i, (uint16_t)KFakeCmd[i]); SetLen(d, n); return 0; }
+
 struct TFake { const char* iName; void* iFn; };
 static const TFake KFakes[] = {
 	{ "_ZN10TBufBase16C2Ei", (void*)Fk_TBufBase16_C2 }, { "_ZN9TBufBase8C2Ei", (void*)Fk_TBufBase8_C2 },
@@ -268,6 +273,8 @@ static const TFake KFakes[] = {
 	{ "_ZN12CleanupStack5PushLE12TCleanupItem", (void*)Fk_PushL_item }, { "_ZN12CleanupStack13PopAndDestroyEi", (void*)Fk_PopAndDestroyN }, { "_ZN12CleanupStack13PopAndDestroyEv", (void*)Fk_PopAndDestroy1 }, { "_ZN12CleanupStack13PopAndDestroyEPv", (void*)Fk_PopAndDestroyPtr }, { "_ZN6HBufC85NewLCEi", (void*)Fk_HBufC8_NewLC }, { "_ZNK15XLeaveException9GetReasonEv", (void*)Fk_nop }, { "_ZN4User5LeaveEi", (void*)Fk_Leave }, { "_ZN12CTrapCleanup3NewEv", (void*)Fk_TrapCleanupNew }, { "_ZN4User6AllocLEi", (void*)Fk_User_AllocL },
 	{ "_ZNK7TDesC163MidEii", (void*)Fk_TDesC16_Mid2 }, { "_ZNK7TDesC163AtCEi", (void*)Fk_TDesC16_AtC }, { "_ZNK6TDesC83PtrEv", (void*)Fk_TDesC8_Ptr }, { "_ZN7TRegionC2Ei", (void*)Fk_TRegion_C2 }, { "_ZNK7TRegion12BoundingRectEv", (void*)Fk_BoundingRect },
 	{ "__e32_atomic_add_ord64", (void*)Fk_AtomicAdd64 }, { "_ZNK11RHandleBase4NameEv", (void*)Fk_HandleName }, { "_ZN8CBufFlat4NewLEi", (void*)Fk_BufFlat_NewL },
+	{ "_ZN4User17CommandLineLengthEv", (void*)Fk_CommandLineLength }, { "_ZN4User11CommandLineER6TDes16", (void*)Fk_CommandLine }, { "_ZNK8RProcess8FileNameEv", (void*)Fk_nop },
+	{ "_ZNK7TDesC168CompareFERKS_", (void*)Fk_TDesC16_Compare },
 	{ "_ZN4User12LeaveIfErrorEi", (void*)Fk_nop }, { "_ZN7UserSvr6DllTlsEii", (void*)Fk_nop }, { "_ZN7UserSvr9DllSetTlsEiiPv", (void*)Fk_nop },
 	{ "_ZN7UserSvr19ExceptionDescriptorEm", (void*)Fk_nop }, { "_ZN7UserSvr6DllTlsEi", (void*)Fk_nop }, { "_ZN7UserSvr9DllSetTlsEiPv", (void*)Fk_nop }, { "_ZN4User15HandleExceptionEPv", (void*)Fk_nop }, { "_ZN4User9InvariantEv", (void*)Fk_nop },
 };
@@ -333,6 +340,7 @@ int main(int argc, char** argv)
 	TIpcBridge ipc; memset(&ipc, 0, sizeof ipc); ipc.iNativeExport = NativeExport;
 	THle hle = { &proc.iMod[0], &proc, Log, 0, 0 };
 	hle.iIpc = &ipc;
+	hle.iExePath = "c:\\sys\\bin\\proteusbridge.exe";	// the guest's own name (RProcess::FileName, the command-line prefix)
 	hle.iFind = FindDll;			// the guest's RLibrary::Load (bridge LibraryOverride) finds ARM DLLs as LoadProcess does
 	{	// R1 threads: host thread ids, guest stacks from the fake heap, the interpreter on every CPU
 		TBridgeThreads thr; memset(&thr, 0, sizeof thr);

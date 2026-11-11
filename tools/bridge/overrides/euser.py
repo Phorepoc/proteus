@@ -39,4 +39,9 @@ OVERRIDES: dict[str, str] = {
     "_ZN5TDes812AppendFormatE11TRefByValueIK6TDesC8EP13TDes8Overflowz": "BrOvr_AppendFormatOvf8",
     "_ZN5TDes810FormatListERK6TDesC8St9__va_list": "BrOvr_FormatList8",
     "_ZN5TDes816AppendFormatListERK6TDesC8St9__va_listP13TDes8Overflow": "BrOvr_AppendFormatList8",
+    # the process asking about itself: the guest program, not the handler (bridge.cpp; apparc names the app's resource file after FileName)
+    "_ZNK8RProcess8FileNameEv": "BrOvr_ProcessFileName",
+    "_ZNK8RProcess4TypeEv": "BrOvr_ProcessType",
+    "_ZN4User11CommandLineER6TDes16": "BrOvr_CommandLine",
+    "_ZN4User17CommandLineLengthEv": "BrOvr_CommandLineLength",
 }

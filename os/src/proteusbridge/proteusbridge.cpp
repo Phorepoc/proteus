@@ -188,6 +188,19 @@ static TInt Returns()
 	return 0;
 	}
 
+// the process asking about itself: the guest program's name and command line, not the handler's (mixed mode: the native kernel answers
+// with cpuhandler_arm.exe and a command line that starts with the program's path)
+static TInt Self()
+	{
+	const TFileName f = RProcess().FileName();
+	CHECK(90, f.CompareF(_L("c:\\sys\\bin\\proteusbridge.exe")) == 0);
+	CHECK(91, User::CommandLineLength() == 3);
+	TBuf<64> cl;
+	User::CommandLine(cl);
+	CHECK(92, cl.Compare(_L("-xy")) == 0);
+	return 0;
+	}
+
 GLDEF_C TInt E32Main()
 	{
 	TInt r = Descriptors();
@@ -198,5 +211,6 @@ GLDEF_C TInt E32Main()
 	if (!r) r = ActiveObjects();
 	if (!r) r = Library();
 	if (!r) r = Returns();
+	if (!r) r = Self();
 	return r;
 	}

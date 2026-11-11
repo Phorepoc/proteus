@@ -1140,4 +1140,81 @@ void BrOvr_AppendFormat8(CArmCpu& c, uintptr_t) { FormatCall(c, false, 1); }
 void BrOvr_AppendFormatOvf8(CArmCpu& c, uintptr_t) { FormatCall(c, false, 2); }
 void BrOvr_FormatList8(CArmCpu& c, uintptr_t) { FormatCall(c, false, 3); }
 void BrOvr_AppendFormatList8(CArmCpu& c, uintptr_t) { FormatCall(c, false, 4); }
+
+// ---- the process asking about itself (mixed mode). The native kernel's answers are the HANDLER's: RProcess::FileName is
+// z:\sys\bin\cpuhandler_arm.exe, Type its UIDs, User::CommandLine starts with the ARM program's path (the loader puts it in front).
+// apparc names the app's resource file after FileName (CEikApplication::ResourceFileName): with the handler's name no resource file is
+// found and the first resource read lands in another file (PyS60: USER 23 in TDes8::Copy under bafl). The guest's own answers, as the
+// HLE executive gives them in pure ARM mode (proteusexec.cpp EExecProcessFileName / EExecProcessType); another process's handle stays native.
+namespace
+{
+const uint32_t KCurrentProcess = 0xFFFF8000u;
+void WriteBuf16(CArmCpu& aCpu, uint32_t aDes, uint32_t aMax, const char* aText)
+{
+	uint32_t n = 0;
+	for (; aText[n] && n < aMax; ++n) aCpu.Write16(aDes + 8 + 2 * n, (uint8_t)aText[n]);
+	aCpu.Write32(aDes, (3u << 28) | n);		// EBuf
+	aCpu.Write32(aDes + 4, aMax);
+}
+uint32_t ExePrefix()		// the length of "<exe path> " the native command line starts with (0 = none)
+{
+	return gCurHle && gCurHle->iExePath ? (uint32_t)strlen(gCurHle->iExePath) + 1 : 0;
+}
+}
+
+void BrOvr_ProcessFileName(CArmCpu& aCpu, uintptr_t aFn)		// TFileName RProcess::FileName() const: r0 = result, r1 = this
+{
+	const uint32_t ret = aCpu.R[0], self = aCpu.R[1];
+	if (gCurHle && gCurHle->iExePath && aCpu.Read32(self) == KCurrentProcess)
+		WriteBuf16(aCpu, ret, 256, gCurHle->iExePath);
+	else
+	{
+		typedef void (*F)(void*, uint32_t);
+		((F)aFn)(aCpu.HostPtr(ret), self);
+	}
+}
+
+void BrOvr_ProcessType(CArmCpu& aCpu, uintptr_t aFn)		// TUidType RProcess::Type() const: r0 = result, r1 = this
+{
+	const uint32_t ret = aCpu.R[0], self = aCpu.R[1];
+	const TLoaded* m = gCurHle ? gCurHle->iImage : 0;
+	if (m && aCpu.Read32(self) == KCurrentProcess)
+	{
+		aCpu.Write32(ret, m->iUid1); aCpu.Write32(ret + 4, 0x100039ce); aCpu.Write32(ret + 8, m->iUid3);
+		return;
+	}
+	struct TUid3 { uint32_t iU[3]; };
+	typedef TUid3 (*F)(uint32_t);
+	const TUid3 t = ((F)aFn)(self);
+	for (int i = 0; i < 3; ++i) aCpu.Write32(ret + 4 * i, t.iU[i]);
+}
+
+void BrOvr_CommandLineLength(CArmCpu& aCpu, uintptr_t aFn)		// TInt User::CommandLineLength(): without the program path in front
+{
+	typedef uint32_t (*F)();
+	const uint32_t n = ((F)aFn)(), p = ExePrefix();
+	aCpu.R[0] = p && n >= p ? n - p : (p && n + 1 == p ? 0 : n);
+}
+
+void BrOvr_CommandLine(CArmCpu& aCpu, uintptr_t aFn)		// void User::CommandLine(TDes16&): the native line, the program path removed
+{
+	const uint32_t des = aCpu.R[0];
+	typedef void (*F)(uint32_t);
+	((F)aFn)(des);
+	const uint32_t p = ExePrefix();
+	if (!p || !des) return;
+	const uint32_t w0 = aCpu.Read32(des), type = w0 >> 28, len = w0 & 0x0FFFFFFF;
+	const uint32_t buf = type == 2 ? aCpu.Read32(des + 8) : type == 3 ? des + 8 : 0;		// a TPtr / TBuf (TDes16 only)
+	if (!buf || len + 1 < p) return;
+	for (uint32_t i = 0; i + 1 < p; ++i)		// only when the line really starts with the path
+	{
+		uint32_t c = aCpu.Read16(buf + 2 * i), e = (uint8_t)gCurHle->iExePath[i];
+		if (c >= 'A' && c <= 'Z') c += 32;
+		if (e >= 'A' && e <= 'Z') e += 32;
+		if (c != e) return;
+	}
+	const uint32_t rest = len >= p ? len - p : 0;
+	for (uint32_t i = 0; i < rest; ++i) aCpu.Write16(buf + 2 * i, (uint16_t)aCpu.Read16(buf + 2 * (p + i)));
+	aCpu.Write32(des, (w0 & 0xF0000000u) | rest);
+}
 }
