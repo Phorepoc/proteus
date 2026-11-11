@@ -206,7 +206,10 @@ def vret_rows(abi, shapes):
 
 
 def vt_args(abi, abis):
-    """(export name, AAPCS word index, slots) for every pointer/reference argument (not `this`) of a class with a vtable."""
+    """(export name, AAPCS word index, slots) for every pointer/reference argument of a class with a vtable, and for `this` of every
+    member of such a class but its constructors (a native member called on an ARM-derived object -- CBufBase::InsertL on an ARM CBufSeg
+    subclass -- makes virtual calls through the object's ARM vtable; a constructor stores the native vtable, the ARM one comes after it).
+    A member returning a struct through the hidden pointer has `this` in r1: it is left out (none of the polymorphic classes' members)."""
     classes = {}
     for a in abis.values():
         for c, r in a["classes"].items():
@@ -224,6 +227,9 @@ def vt_args(abi, abis):
                 continue
             if c == "S":
                 break                                   # (a by-value struct: its size is not here; later arguments are not tracked)
+            if c == "p" and t == "this" and e.get("kind") not in ("ctor", "static") and e.get("cls") in classes \
+                    and (e.get("ret") or {}).get("c") not in ("S", "m"):
+                out.append((e["name"], word) + classes[e["cls"]])
             if c == "p" and t != "this":
                 base = re.sub(r"^const ", "", t).strip()
                 if re.fullmatch(r"[A-Za-z_][\w:]* *[*&]", base):

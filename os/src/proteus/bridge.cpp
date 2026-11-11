@@ -600,12 +600,19 @@ static void PatchVtable(CArmCpu& aCpu, uint32_t aObj, int aSlots, const char* aK
 	if (!aObj || !aCpu.Valid(aObj, 4)) return;			// (the object may be on the native heap: a window, not the region)
 	const uint32_t vt = aCpu.Read32(aObj);
 	if (!aCpu.InRegion(vt, 4u * aSlots)) return;			// a native vtable (a native-created object): nothing to do
+	// patched once per (vtable, slot count): `this` of every member of a polymorphic class is checked (round 18), so the common case is a
+	// vtable seen before. A larger slot count (a derived class's own record) patches again
+	enum { KVtCache = 512 };
+	static uint32_t cacheVt[KVtCache]; static int cacheSlots[KVtCache];
+	const uint32_t h = (vt >> 2) * 2654435761u >> 23 & (KVtCache - 1);
+	if (cacheVt[h] == vt && cacheSlots[h] >= aSlots) return;
 	for (int k = 0; k < aSlots; ++k)
 	{
 		const uint32_t f = aCpu.Read32(vt + 4 * k);
 		if (f && aCpu.InRegion(f & ~1u, 2))
 			aCpu.Write32(vt + 4 * k, BrCb(aCpu, f, !aKinds || !aKinds[k] || aKinds[k] == '.' ? EStubPlain : aKinds[k] == 'r' ? EStubRegs : EStubMem));
 	}
+	cacheSlots[h] = aSlots; cacheVt[h] = vt;			// (after the patch: another thread finds it only when done)
 }
 
 static void PatchArgVtables(CArmCpu& aCpu, const TBridgeDll& aDll, uint32_t aRow)

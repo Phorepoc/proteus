@@ -61,6 +61,23 @@ int main()
 			if (!tabs[t][i].iCall && !(tabs[t][i].iFlags & (BR_DATA | BR_VTABLE | BR_TYPEINFO | BR_ABSENT | BR_VARIADIC | BR_STRUCTFP | BR_UNRESOLVED | BR_PMF | BR_OVERRIDE)))
 				return 2;
 		}
+	// round 18: `this` of a polymorphic class's members (not its constructors) is a vtable argument at word 0, so a native member called on an
+	// ARM-derived object (CBufBase::InsertL on a guest CBufSeg subclass) gets the object's ARM vtable patched to reverse stubs first
+	struct { const char* iName; bool iWant; } vt[] = {
+		{ "_ZN8CBufBase7InsertLEiPKvi", true }, { "_ZN8CBufBase7InsertLEiRK6TDesC8", true }, { "_ZN8CBufBase7ExpandLEii", true },
+		{ "_ZN8CBufBase5ResetEv", true }, { "_ZN7CBufSeg9DoInsertLEiPKvi", true }, { "_ZN8CBufFlat11SetReserveLEi", true },
+		{ "_ZN7CBufSegC2Ei", false }, { "_ZN8CBufFlatC2Ei", false }, { "_ZN8CBufBaseC2Ei", false } };
+	for (const auto& w : vt)
+	{
+		bool found = false;
+		for (const TBridgeVtArg* a = KBridgeVt_euser; a->iName; ++a)
+			if (!__builtin_strcmp(a->iName, w.iName) && a->iWord == 0)
+			{
+				found = true;
+				if (a->iSlots != 8) return 4;				// CBufBase: ~D1 ~D0 Extension_ Compress Delete Ptr BackPtr DoInsertL
+			}
+		if (found != w.iWant) return 5;
+	}
 	(void)Add3;
 	return KBridgeShapeCount > 0 ? 0 : 3;
 }
