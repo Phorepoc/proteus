@@ -923,7 +923,7 @@ static bool LibraryOverride(CArmCpu& aCpu, const char* aName)
 		const bool native = mod >= (int)KNativeLib && mod - (int)KNativeLib < KBridgeDlls;
 		const TLoaded* m = !native && mod > 0 && mod < p->iCount ? &p->iMod[mod] : 0;
 		const uint32_t out = aCpu.R[0];
-		if (aName[12] == 'F')
+		if (strstr(aName, "FileName"))
 		{	// a TFileName (TBuf<256>: length|EBuf, max length, the text): "<drive>:\\sys\\bin\\<name>", empty for a bad handle
 			char f[64] = "";
 			if (native) snprintf(f, sizeof(f), "Z:\\sys\\bin\\%s", gDll[mod - KNativeLib].iName);
