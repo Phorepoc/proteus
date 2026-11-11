@@ -101,7 +101,11 @@ struct TClean { U iFn, iPtr; bool iMark; };
 static std::vector<TClean> gClean;
 struct TItem { U fn, ptr; };
 static U Fk_PushL_item(TItem i) { gClean.push_back({ i.fn, i.ptr, false }); return 0; }
-static void DestroyTop() { TClean c = gClean.back(); gClean.pop_back(); typedef U (*F)(U, U, U, U); ((F)BridgeStubFn(c.iFn))(c.iPtr, 0, 0, 0); }
+static void DestroyTop() { TClean c = gClean.back(); gClean.pop_back(); if (!c.iFn) return;	// (fn 0: a buffer of the fake heap, never freed)
+	typedef U (*F)(U, U, U, U); ((F)BridgeStubFn(c.iFn))(c.iPtr, 0, 0, 0); }
+// HBufC8::NewLC: the buffer on the fake heap, pushed as a plain item (the TTrap gate, proteustrap.exe)
+static U Fk_HBufC8_NewLC(U n) { U b = Alloc(8 + n); W32(b, 0); gClean.push_back({ 0, b, false }); return b; }
+static U Fk_PopAndDestroyPtr(U) { DestroyTop(); return 0; }
 static U Fk_PopAndDestroyN(U n) { while (n--) DestroyTop(); return 0; }
 static U Fk_PopAndDestroy1() { DestroyTop(); return 0; }
 static U Fk_Mark() { gClean.push_back({ 0, 0, true }); return 1; }
@@ -242,7 +246,7 @@ static const TFake KFakes[] = {
 	{ "_ZN4User15RequestCompleteERP14TRequestStatusi", (void*)Fk_RequestComplete }, { "_ZN4User6AllocZEi", (void*)Fk_User_AllocZ },
 	{ "memset", (void*)Fk_memset }, { "memcpy", (void*)Fk_memcpy }, { "memmove", (void*)Fk_memmove }, { "memcmp", (void*)Fk_memcmp }, { "strlen", (void*)Fk_strlen }, { "strcmp", (void*)Fk_strcmp }, { "_ZN7UserSvr16RomHeaderAddressEv", (void*)Fk_RomHeader },
 	{ "_ZN4User16MarkCleanupStackEv", (void*)Fk_Mark }, { "_ZN4User18UnMarkCleanupStackEP12TTrapHandler", (void*)Fk_UnMark },
-	{ "_ZN12CleanupStack5PushLE12TCleanupItem", (void*)Fk_PushL_item }, { "_ZN12CleanupStack13PopAndDestroyEi", (void*)Fk_PopAndDestroyN }, { "_ZN12CleanupStack13PopAndDestroyEv", (void*)Fk_PopAndDestroy1 }, { "_ZNK15XLeaveException9GetReasonEv", (void*)Fk_nop }, { "_ZN4User5LeaveEi", (void*)Fk_Leave }, { "_ZN12CTrapCleanup3NewEv", (void*)Fk_TrapCleanupNew }, { "_ZN4User6AllocLEi", (void*)Fk_User_AllocL },
+	{ "_ZN12CleanupStack5PushLE12TCleanupItem", (void*)Fk_PushL_item }, { "_ZN12CleanupStack13PopAndDestroyEi", (void*)Fk_PopAndDestroyN }, { "_ZN12CleanupStack13PopAndDestroyEv", (void*)Fk_PopAndDestroy1 }, { "_ZN12CleanupStack13PopAndDestroyEPv", (void*)Fk_PopAndDestroyPtr }, { "_ZN6HBufC85NewLCEi", (void*)Fk_HBufC8_NewLC }, { "_ZNK15XLeaveException9GetReasonEv", (void*)Fk_nop }, { "_ZN4User5LeaveEi", (void*)Fk_Leave }, { "_ZN12CTrapCleanup3NewEv", (void*)Fk_TrapCleanupNew }, { "_ZN4User6AllocLEi", (void*)Fk_User_AllocL },
 	{ "_ZN4User12LeaveIfErrorEi", (void*)Fk_nop }, { "_ZN7UserSvr6DllTlsEii", (void*)Fk_nop }, { "_ZN7UserSvr9DllSetTlsEiiPv", (void*)Fk_nop },
 	{ "_ZN7UserSvr19ExceptionDescriptorEm", (void*)Fk_nop }, { "_ZN7UserSvr6DllTlsEi", (void*)Fk_nop }, { "_ZN7UserSvr9DllSetTlsEiPv", (void*)Fk_nop }, { "_ZN4User15HandleExceptionEPv", (void*)Fk_nop }, { "_ZN4User9InvariantEv", (void*)Fk_nop },
 };
@@ -258,7 +262,8 @@ static uint32_t NativeExport(void*, const char* aDll, int aOrd)
 }
 static uintptr_t Resolve(uint32_t t) { if (t >= 0x200000u && t < 0x300000u) t = (t - 0x200000u) >> 1;	// an even token (a vtable slot the guest branches to: bit 0 would be Thumb)
 	if (!t || t > gFnTable.size()) { printf("  foreign pc %x is no native function\n", t); return 0; } return (uintptr_t)gFnTable[t - 1]; }
-static void Log(const char* l, void*) { printf("  | %s\n", l); }
+static bool gGuestOk;		// a gate EXE that checks itself says "... test ok" (proteustrap.exe: TTrap::Trap/UnTrap, our ARM euser's ordinals 2548/2549)
+static void Log(const char* l, void*) { printf("  | %s\n", l); if (strstr(l, " test ok")) gGuestOk = true; }
 // the ARM runtime DLLs of a device-model EXE (drtaeabi.dll ...) from the EXE's own directory
 static std::string gExeDir;
 static std::vector<std::vector<uint8_t>> gDllImages;
@@ -326,7 +331,7 @@ int main(int argc, char** argv)
 	RunExe(cpu, hle, 50000000);
 	printf("native destructor calls from ARM code: %u%c", gNativeDtorCalls, 10);
 	printf("halt %d exit %d steps %llu note '%s' natives bound %u\n", (int)cpu.iHalt, cpu.iExitCode, (unsigned long long)cpu.iSteps, cpu.iNote, gCalls);
-	const bool ok = cpu.iHalt == EExited && cpu.iExitCode == 0 && gCalls >= 20 && gNativeDtorCalls >= 1;
+	const bool ok = cpu.iHalt == EExited && cpu.iExitCode == 0 && ((gCalls >= 20 && gNativeDtorCalls >= 1) || gGuestOk);
 	printf("bridge: %s\n", ok ? "PASS" : "FAIL");
 	return ok ? 0 : 1;
 }

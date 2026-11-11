@@ -717,8 +717,10 @@ static bool TTrapOverride(CArmCpu& aCpu, uint32_t aOrd)
 	TLeaveState* s = LeaveState(aCpu);
 	if (aOrd == KOrdTTrapTrap)
 	{
-		const uint32_t h = th ? ((F)th)() : 0;
-		if (h && sizeof(void*) == 4) ((void (*)(uint32_t))(uintptr_t)((const uint32_t*)(uintptr_t)*(const uint32_t*)(uintptr_t)h)[0])(h);
+		// (a host test's native euser is the Mark model, gThr.iTrapLeave set: the level opens through its MarkCleanupStack instead)
+		const uintptr_t mark = gThr.iTrapLeave ? NativeByName("_ZN4User16MarkCleanupStackEv") : 0;
+		const uint32_t h = mark ? ((F)mark)() : th ? ((F)th)() : 0;
+		if (h && !mark && sizeof(void*) == 4) ((void (*)(uint32_t))(uintptr_t)((const uint32_t*)(uintptr_t)*(const uint32_t*)(uintptr_t)h)[0])(h);
 		aCpu.Write32(aCpu.R[1], 0);					// aResult = KErrNone
 		if (s && s->iMarks < KMaxMarks)
 		{
@@ -733,7 +735,9 @@ static bool TTrapOverride(CArmCpu& aCpu, uint32_t aOrd)
 	{
 		uint32_t h = 0;
 		if (s && s->iMarks) h = s->iMark[--s->iMarks].iHandler;
-		if (h && sizeof(void*) == 4) ((void (*)(uint32_t))(uintptr_t)((const uint32_t*)(uintptr_t)*(const uint32_t*)(uintptr_t)h)[1])(h);
+		const uintptr_t unmark = gThr.iTrapLeave ? NativeByName("_ZN4User18UnMarkCleanupStackEP12TTrapHandler") : 0;
+		if (unmark) ((void (*)(uint32_t))unmark)(h);
+		else if (h && sizeof(void*) == 4) ((void (*)(uint32_t))(uintptr_t)((const uint32_t*)(uintptr_t)*(const uint32_t*)(uintptr_t)h)[1])(h);
 	}
 	aCpu.SetReturn();
 	return true;
