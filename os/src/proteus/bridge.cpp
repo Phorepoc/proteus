@@ -713,6 +713,7 @@ uint32_t BridgeNativeCall(CArmCpu& aCpu, uint32_t aPc)
 	return r;
 }
 
+static bool MayBeObject(CArmCpu& aCpu, uint32_t a) { return a >= 0x00100000u && !(a & 3) && aCpu.Valid(a, 4); }
 static uint32_t BridgeNativeCallBody(CArmCpu& aCpu, uint32_t aPc)
 {
 	if (!gDll[0].iNativeOn) return 0;
@@ -733,8 +734,10 @@ static uint32_t BridgeNativeCallBody(CArmCpu& aCpu, uint32_t aPc)
 		// a candidate vtable is read only when it lies in the image of aPc (a native virtual's vtable is in the DLL that holds the function):
 		// Valid() is true for any address of the native window, committed or not, and r1 is often no object at all -- Free(heap, cell) passed
 		// a freed stdio buffer whose first word (file text) was probed as a vtable and faulted on an uncommitted page (round 16)
-		uint32_t vt = self && aCpu.Valid(self, 4) ? aCpu.Read32(self) : 0;
-		uint32_t vt0 = res && aCpu.Valid(res, 4) ? aCpu.Read32(res) : 0;
+		// r0/r1 are read as objects only when they can be one: word-aligned and above the first MB (an integer argument -- ~CPeriodic's
+		// 0x40000, round 19 -- lies in the window but on no committed page)
+		uint32_t vt = MayBeObject(aCpu, self) ? aCpu.Read32(self) : 0;
+		uint32_t vt0 = MayBeObject(aCpu, res) ? aCpu.Read32(res) : 0;
 		if (!NearImage(vt, aPc)) vt = 0;
 		if (!NearImage(vt0, aPc)) vt0 = 0;
 		const TBridgeVret* const tabs[] = { KBridgeVret_euser, KBridgeVret_efsrv, KBridgeVret_libc, KBridgeVret_libpthread };
