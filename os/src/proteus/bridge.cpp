@@ -1217,4 +1217,13 @@ void BrOvr_CommandLine(CArmCpu& aCpu, uintptr_t aFn)		// void User::CommandLine(
 	for (uint32_t i = 0; i < rest; ++i) aCpu.Write16(buf + 2 * i, (uint16_t)aCpu.Read16(buf + 2 * (p + i)));
 	aCpu.Write32(des, (w0 & 0xF0000000u) | rest);
 }
+
+void BrOvr_ExeExportData(CArmCpu& aCpu, uintptr_t)		// TAny* RProcess::ExeExportData(): the EXE's named-symbol export data, ordinal 0
+{
+	// the kernel answers from the process' code segment (DCodeSeg::Lookup(0)) = the handler's image; the program's is the guest EXE's:
+	// the word before its export directory when the header declares KImageNmdExpData (f32image.h 0x400), else NULL (not a STDEXE)
+	const TLoaded* m = gCurHle ? gCurHle->iImage : 0;
+	aCpu.R[0] = m && (m->iFlags & 0x400u) && m->iExportDir ? aCpu.Read32(m->iExportDir - 4) : 0;
+}
+
 }

@@ -275,6 +275,18 @@ def ti_table(abi):
     return out
 
 
+def self_audit(d: str, abi: dict, om) -> None:
+    """the process/thread self-queries (overrides/<dll>.py SELF): every such export is classified, an "override" has a handler"""
+    table, prefixes = getattr(om, "SELF", None), getattr(om, "SELF_QUERY_PREFIXES", ())
+    if table is None:
+        return
+    unlisted = [e["name"] for e in abi["exports"] if e.get("status") == "matched" and (e.get("decl") or "").startswith(prefixes)
+                and e["name"] not in table]
+    unhandled = [m for m, v in table.items() if v == "override" and m not in om.OVERRIDES]
+    if unlisted or unhandled:
+        raise SystemExit(f"{d}: self-query audit: unlisted {unlisted}, override without a handler {unhandled}")
+
+
 def main():
     dlls = sys.argv[1:] or ["euser", "efsrv"]
     abis = {d: json.load(open(os.path.join(ABI, d + ".json"))) for d in dlls}
@@ -286,7 +298,9 @@ def main():
     rows: dict[str, list] = {}
     stats: dict[str, dict] = {}
     for d, abi in abis.items():
-        ov = importlib.import_module("overrides." + d).OVERRIDES
+        om = importlib.import_module("overrides." + d)
+        ov = om.OVERRIDES
+        self_audit(d, abi, om)
         rows[d] = []
         st = stats[d] = {"ordinals": 0, "absent": 0, "shaped": 0, "data": 0, "override": 0, "variadic": 0, "structfp": 0,
                          "unresolved": 0, "callback": 0, "manual": 0, "ptr_statics": 0}

@@ -235,6 +235,8 @@ static U Fk_BufFlat_NewL(U) { U o = Alloc(128); W32(o, gBufVt + 8); W32(o + 4, 8
 // the native command line: the loader puts the program's path in front (the bridge removes it again)
 static const char KFakeCmd[] = "C:\\sys\\bin\\proteusbridge.exe -xy";
 static U Fk_CommandLineLength() { return (U)strlen(KFakeCmd); }
+static U Fk_ExeExportData() { return 0x5E1Fu; }		// the handler's export data: the bridge must not pass it on
+static U Fk_SecureId(U) { return 0xE70157F3u; }		// the loader's role: the process has the program's SecureId (sf_lepoc ForeignCpuRedirect)
 static U Fk_CommandLine(U d) { const U n = (U)strlen(KFakeCmd); for (U i = 0; i < n; ++i) gCpu->Write16(Ptr16(d) + 2 * i, (uint16_t)KFakeCmd[i]); SetLen(d, n); return 0; }
 
 struct TFake { const char* iName; void* iFn; };
@@ -274,7 +276,8 @@ static const TFake KFakes[] = {
 	{ "_ZNK7TDesC163MidEii", (void*)Fk_TDesC16_Mid2 }, { "_ZNK7TDesC163AtCEi", (void*)Fk_TDesC16_AtC }, { "_ZNK6TDesC83PtrEv", (void*)Fk_TDesC8_Ptr }, { "_ZN7TRegionC2Ei", (void*)Fk_TRegion_C2 }, { "_ZNK7TRegion12BoundingRectEv", (void*)Fk_BoundingRect },
 	{ "__e32_atomic_add_ord64", (void*)Fk_AtomicAdd64 }, { "_ZNK11RHandleBase4NameEv", (void*)Fk_HandleName }, { "_ZN8CBufFlat4NewLEi", (void*)Fk_BufFlat_NewL },
 	{ "_ZN4User17CommandLineLengthEv", (void*)Fk_CommandLineLength }, { "_ZN4User11CommandLineER6TDes16", (void*)Fk_CommandLine }, { "_ZNK8RProcess8FileNameEv", (void*)Fk_nop },
-	{ "_ZNK7TDesC168CompareFERKS_", (void*)Fk_TDesC16_Compare },
+	{ "_ZNK7TDesC168CompareFERKS_", (void*)Fk_TDesC16_Compare }, { "_ZN8RProcess13ExeExportDataEv", (void*)Fk_ExeExportData },
+	{ "_ZNK8RProcess8SecureIdEv", (void*)Fk_SecureId },
 	{ "_ZN4User12LeaveIfErrorEi", (void*)Fk_nop }, { "_ZN7UserSvr6DllTlsEii", (void*)Fk_nop }, { "_ZN7UserSvr9DllSetTlsEiiPv", (void*)Fk_nop },
 	{ "_ZN7UserSvr19ExceptionDescriptorEm", (void*)Fk_nop }, { "_ZN7UserSvr6DllTlsEi", (void*)Fk_nop }, { "_ZN7UserSvr9DllSetTlsEiPv", (void*)Fk_nop }, { "_ZN4User15HandleExceptionEPv", (void*)Fk_nop }, { "_ZN4User9InvariantEv", (void*)Fk_nop },
 };

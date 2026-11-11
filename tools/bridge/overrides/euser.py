@@ -44,4 +44,56 @@ OVERRIDES: dict[str, str] = {
     "_ZNK8RProcess4TypeEv": "BrOvr_ProcessType",
     "_ZN4User11CommandLineER6TDes16": "BrOvr_CommandLine",
     "_ZN4User17CommandLineLengthEv": "BrOvr_CommandLineLength",
+    "_ZN8RProcess13ExeExportDataEv": "BrOvr_ExeExportData",
+}
+
+# The process/thread asking about itself, audited (mixed mode: the ARM program runs in the handler's process on the native euser).
+# Every self-query export of RProcess/RThread/RHandleBase/User is listed with who answers it; gen_bridge.py fails on an unlisted one
+# (SELF_QUERY_CLASSES / SELF_QUERY_PREFIXES) or on an "override" without a handler. Native answers are right because the process IS the
+# program's: the loader gives it the program's SecureId/VendorId/capabilities (sf_lepoc ForeignCpuRedirect), proteus renames it after the
+# program (User::RenameProcess: Name/FullName of the process and of its threads, and what other processes see), Id/priority/exit/handles
+# are the process's own. Only what the kernel takes from the handler's IMAGE is wrong natively: those have handlers.
+NAT_LOADER, NAT_RENAME, NAT_SAME = "native: loader (program identity)", "native: renamed process", "native: the same process"
+NAT_OTHER = "native: acts on a handle / another object"
+SELF_QUERY_PREFIXES = ("RProcess::", "RThread::", "RHandleBase::Name", "RHandleBase::FullName", "User::CommandLine",
+                       "User::ParameterLength", "User::GetDesParameter", "User::GetTIntParameter", "User::Creator", "User::Rename")
+SELF: dict[str, str] = {
+    # from the handler's image: answered from the guest image (bridge.cpp, the current-process handle only)
+    "_ZNK8RProcess8FileNameEv": "override", "_ZNK8RProcess4TypeEv": "override", "_ZN8RProcess13ExeExportDataEv": "override",
+    "_ZN4User11CommandLineER6TDes16": "override", "_ZN4User17CommandLineLengthEv": "override",
+    # OPEN: the handler's code/data layout (TProcessMemoryInfo); no app is known to read it
+    "_ZNK8RProcess13GetMemoryInfoER18TProcessMemoryInfo": "native: handler image (OPEN)",
+    **{m: NAT_RENAME for m in ("_ZNK11RHandleBase4NameEv", "_ZNK11RHandleBase8FullNameEv", "_ZNK11RHandleBase8FullNameER6TDes16",
+                               "_ZN4User13RenameProcessERK7TDesC16", "_ZN4User12RenameThreadERK7TDesC16")},
+    **{m: NAT_LOADER for m in ("_ZNK8RProcess8SecureIdEv", "_ZNK8RProcess8VendorIdEv", "_ZNK7RThread8SecureIdEv", "_ZNK7RThread8VendorIdEv",
+                               "_ZNK7RThread15DoHasCapabilityE11TCapabilityPKc", "_ZNK7RThread15DoHasCapabilityE11TCapabilityS0_PKc",
+                               "_ZNK8RProcess15DoHasCapabilityE11TCapabilityPKc", "_ZNK8RProcess15DoHasCapabilityE11TCapabilityS0_PKc",
+                               "_ZNK7RThread15DoHasCapabilityE11TCapability", "_ZNK7RThread15DoHasCapabilityE11TCapabilityS0_",
+                               "_ZNK8RProcess15DoHasCapabilityE11TCapability", "_ZNK8RProcess15DoHasCapabilityE11TCapabilityS0_",
+                               "_ZN4User15CreatorSecureIdEv", "_ZN4User15CreatorVendorIdEv", "_ZNK8RProcess16DefaultDataPagedEv")},
+    **{m: NAT_SAME for m in (
+        "_ZNK8RProcess2IdEv", "_ZNK7RThread2IdEv", "_ZNK8RProcess8PriorityEv", "_ZNK7RThread8PriorityEv", "_ZNK7RThread15ProcessPriorityEv",
+        "_ZNK8RProcess11SetPriorityE16TProcessPriority", "_ZNK7RThread11SetPriorityE15TThreadPriority",
+        "_ZNK7RThread18SetProcessPriorityE16TProcessPriority", "_ZNK8RProcess10ExitReasonEv", "_ZNK8RProcess12ExitCategoryEv",
+        "_ZNK8RProcess8ExitTypeEv", "_ZNK7RThread10ExitReasonEv", "_ZNK7RThread12ExitCategoryEv", "_ZNK7RThread8ExitTypeEv",
+        "_ZNK8RProcess10JustInTimeEv", "_ZNK8RProcess13SetJustInTimeEi", "_ZN8RProcess10DataCagingEi", "_ZN8RProcess9SecureApiEi",
+        "_ZNK7RThread10GetCpuTimeER25TTimeIntervalMicroSeconds", "_ZNK7RThread11HandleCountERiS0_", "_ZNK7RThread12RequestCountEv",
+        "_ZNK7RThread9StackInfoER16TThreadStackInfo", "_ZNK7RThread7ContextER5TDes8", "_ZNK7RThread7ProcessER8RProcess",
+        "_ZN4User15ParameterLengthEi", "_ZN4User15GetDesParameterEiR5TDes8", "_ZN4User15GetDesParameterEiR6TDes16",
+        "_ZN4User16GetTIntParameterEiRi")},
+    **{m: NAT_OTHER for m in (
+        "_ZN7RThread10RendezvousEi", "_ZN7RThread4KillEi", "_ZN7RThread4OpenE9TThreadId10TOwnerType", "_ZN7RThread4OpenERK7TDesC1610TOwnerType",
+        "_ZN7RThread5PanicERK7TDesC16i", "_ZN7RThread6CreateERK7TDesC16PFiPvEiP10RAllocatorS3_10TOwnerType",
+        "_ZN7RThread6CreateERK7TDesC16PFiPvEiiiS3_10TOwnerType", "_ZN7RThread9TerminateEi", "_ZN7RThread6CreateERK17TThreadCreateInfo",
+        "_ZN8RProcess10RendezvousEi", "_ZN8RProcess12SetParameterEi11RHandleBase", "_ZN8RProcess12SetParameterEiRK15RSubSessionBase",
+        "_ZN8RProcess12SetParameterEiRK6TDesC8", "_ZN8RProcess12SetParameterEiRK7TDesC16", "_ZN8RProcess12SetParameterEii",
+        "_ZN8RProcess4KillEi", "_ZN8RProcess4OpenE10TProcessId10TOwnerType", "_ZN8RProcess4OpenERK7TDesC1610TOwnerType",
+        "_ZN8RProcess5PanicERK7TDesC16i", "_ZN8RProcess6CreateERK7TDesC16S2_10TOwnerType",
+        "_ZN8RProcess6CreateERK7TDesC16S2_RK8TUidType10TOwnerType", "_ZN8RProcess6ResumeEv", "_ZN8RProcess9TerminateEi",
+        "_ZN8RProcess23CreateWithStackOverrideERK7TDesC16S2_RK8TUidTypei10TOwnerType",
+        "_ZNK7RThread10RendezvousER14TRequestStatus", "_ZNK7RThread11LogonCancelER14TRequestStatus",
+        "_ZNK7RThread15RequestCompleteERP14TRequestStatusi", "_ZNK7RThread16RendezvousCancelER14TRequestStatus", "_ZNK7RThread5LogonER14TRequestStatus",
+        "_ZNK7RThread6ResumeEv", "_ZNK7RThread7SuspendEv", "_ZNK7RThread13RequestSignalEv",
+        "_ZNK8RProcess10RendezvousER14TRequestStatus", "_ZNK8RProcess11LogonCancelER14TRequestStatus",
+        "_ZNK8RProcess16RendezvousCancelER14TRequestStatus", "_ZNK8RProcess5LogonER14TRequestStatus")},
 }

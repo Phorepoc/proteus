@@ -10,6 +10,7 @@ void BrOvr_AppendFormatOvf16(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (too
 void BrOvr_AppendFormatOvf8(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
 void BrOvr_CommandLine(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
 void BrOvr_CommandLineLength(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
+void BrOvr_ExeExportData(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
 void BrOvr_Format16(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
 void BrOvr_Format8(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
 void BrOvr_FormatList16(CArmCpu& aCpu, uintptr_t aFn);	// hand-written (tools/bridge/overrides/euser.py)
@@ -2235,7 +2236,7 @@ static const TBridgeExport KBridge_euser[] =
 	{ 2215, "_ZN15TExtendedLocale21GetLongDateFormatSpecEv", BrShape_57, 0, -1, 2215 },
 	{ 2216, "_ZN15TExtendedLocale22GetShortDateFormatSpecEv", BrShape_57, 0, -1, 2216 },
 	{ 2217, "_ZN8RProcess23CreateWithStackOverrideERK7TDesC16S2_RK8TUidTypei10TOwnerType", BrShape_35, 0, -1, 2217 },
-	{ 2218, "_ZN8RProcess13ExeExportDataEv", BrShape_9, 0, -1, 2218 },
+	{ 2218, "_ZN8RProcess13ExeExportDataEv", BrOvr_ExeExportData, 8192, -1, 2218 },
 	{ 2219, "_ZNK7TDesC166MatchCERKS_PK16TCollationMethodiiii", BrShape_32, 0, -1, 2219 },
 	{ 2220, "_ZN9E32Loader12PagingPolicyEv", BrShape_34, 0, -1, 2220 },
 	{ 2221, "_ZN9E32Loader24NotifyIfCodeSegDestroyedER14TRequestStatus", BrShape_1, 0, -1, 2221 },
