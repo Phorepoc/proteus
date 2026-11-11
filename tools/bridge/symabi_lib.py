@@ -20,10 +20,15 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 EKA = "baseline/kernelhwsrv/kernel/eka"
 FS = "baseline/kernelhwsrv/userlibandfileserver/fileserver"
+OEC = "baseline/symbian-2010/oss.FCL.sf.os.ossrv/genericopenlibs/openenvcore"
 DEFS = {
     "euser": f"{EKA}/eabi/euseru.def",
     "efsrv": f"{FS}/eabi/efsrvu.def",
+    "libc": f"{OEC}/libc/eabi/libcu.def",
+    "libpthread": f"{OEC}/libpthread/eabi/libpthreadu.def",
 }
+# Open C (rung R1 round 16): the exported stdapis tree (the build's .epoc32/include: the headers include <stdapis/...>)
+OPENC = ["-D__SOFTFP=", "-DSYMBIAN_OE_POSIX_SIGNALS", "-I", ".epoc32/include/stdapis", "-I", ".epoc32/include"]
 COMMON = ["-fsyntax-only", "-ffreestanding", "-nostdinc", "-nostdinc++", "-std=gnu++03", "-fno-exceptions", "-fno-rtti",
           "-fpermissive", "-w", "-fshort-wchar", "-fno-short-enums", "-fno-access-control", "-ferror-limit=20",
           "-D__EPOC32__", "-D__SYMBIAN32__", "-D_UNICODE", "-D__DLL__", "-DSYMBIAN_DISTINCT_LOCALE_MODEL",
@@ -48,7 +53,7 @@ def clang(repo: str, target: str, dll: str, extra: list[str], src: str | None = 
           allow_fail: bool = False) -> str:
     """run clang++ for `target` over the umbrella (or `src`); returns stderr (and writes stdout to `out`)"""
     src = src or os.path.join(HERE, f"umbrella_{dll}.cpp")
-    cmd = ["clang++"] + COMMON + TARGETS[target] + ["-I", HERE] + extra + [src]
+    cmd = ["clang++"] + COMMON + TARGETS[target] + ["-I", HERE] + (OPENC if dll in ("libc", "libpthread") else []) + extra + [src]
     with open(out or os.devnull, "wb") as o:
         p = subprocess.run(cmd, cwd=repo, stdout=o, stderr=subprocess.PIPE)
     if p.returncode and not allow_fail:
