@@ -554,6 +554,16 @@ static uintptr_t NativeOf(TBridgeDll* d, uint32_t aRow, THle& aHle)
 		d->iFn[aRow] = aHle.iIpc->iNativeExport(aHle.iIpc->iCtx, d->iName, e.iNative);
 		if (d->iFn[aRow] && gResolve)
 			d->iFn[aRow] = gResolve((uint32_t)d->iFn[aRow]);
+		static bool once[KBridgeDlls];
+		const int di = (int)(d - gDll);
+		if (d->iFn[aRow] && di >= 0 && di < KBridgeDlls && !once[di])
+		{	// one line per DLL: where its code and the handler's are (maps an EUSRNIMP reason / a fault eip to a module)
+			once[di] = true;
+			char line[160];
+			snprintf(line, sizeof(line), "[proteus] native %s first row %s at %x (handler BridgeTrap at %x)", d->iName, e.iName,
+			         (unsigned)d->iFn[aRow], (unsigned)(uintptr_t)&BridgeTrap);
+			Say(aHle, "%s", line);
+		}
 	}
 	return d->iFn[aRow];
 }
@@ -1379,8 +1389,6 @@ void BrOvr_AppendFormatList8(CArmCpu& c, uintptr_t) { FormatCall(c, false, 4); }
 // `...` (or an ARM va_list = a pointer into the guest stack) conversion by conversion into 8-byte slots and call the native v-function with a
 // SysV va_list over them (as FormatCall above). setjmp / longjmp save and restore the GUEST's registers (a native setjmp would save the
 // handler's); exit flushes the native stdio and ends the guest the way User::Exit does.
-namespace proteus
-{
 namespace
 {
 uintptr_t NativeLibc(const char* aName)
@@ -1568,7 +1576,6 @@ void BrOvr_libc_longjmp(CArmCpu& c, uintptr_t)
 	c.R[13] = c.Read32(b + 32);
 	c.iJmpPc = c.Read32(b + 36);
 	c.R[0] = v ? v : 1;
-}
 }
 
 // ---- the process asking about itself (mixed mode). The native kernel's answers are the HANDLER's: RProcess::FileName is
