@@ -1916,8 +1916,15 @@ static TInt MainL()
 		cpu->AddWindow((TUint32)rom->iRomBase, rom->iRomSize);
 		RDebug::Printf("PH: proteus ROM window %x + %x", (TUint)rom->iRomBase, rom->iRomSize);
 		}
+	TTrapHandler* const ownHandler = User::TrapHandler();	// a native euser (bridge.cfg): the guest's CTrapCleanup::New installs ITS handler on this thread
 	proteus::RunExe(*cpu, hle, ~0ull);		// no instruction budget for a real app (it was 50 M: about.exe hit it while drawing text; 4 G: Sparkle hit that on the x32 PC VM)
 	RDebug::Printf("PH: proteus guest halted: %d exit %d after %d instructions, fault %x '%s'", (TInt)cpu->iHalt, cpu->iExitCode, (TInt)cpu->iSteps, cpu->iFaultAddr, cpu->iNote);
+	if (nativeEuser && User::TrapHandler() != ownHandler)
+		{	// a guest stopped before it deleted its CTrapCleanup: our PopAndDestroy below would pop the GUEST's items (ARM cleanup functions
+		// behind reverse stubs of a CPU about to go) -- the KERN-EXEC 3 after a halted PyS60
+		User::SetTrapHandler(ownHandler);
+		RDebug::Printf("PH: proteus trap handler restored (the guest's cleanup stack was still installed)");
+		}
 	if (cpu->iHalt == proteus::EUndefined)
 		for (TInt m = 0; m < proc->iCount; ++m)
 			{
@@ -1935,6 +1942,13 @@ static TInt MainL()
 		RDebug::Printf("PH: proteus   pc -> %s", w[1]);
 		RDebug::Printf("PH: proteus   lr = %s", w[2]);
 		proteus::Backtrace(*cpu, hle);
+		if (nativeEuser)
+			{	// the native euser holds objects the halted guest made (its scheduler, active objects with patched ARM vtables, threads on
+			// other CPUs): no teardown of them or of the guest memory under them; the process ends here, with a reason
+			const TInt reason = cpu->iHalt == proteus::EHleStop || cpu->iHalt == proteus::ESvcUnhandled ? KErrNotSupported : KErrGeneral;
+			RDebug::Printf("PH: proteus exit %d: guest halt %d '%s' (native euser: no teardown)", reason, (TInt)cpu->iHalt, cpu->iNote);
+			User::Exit(reason);
+			}
 		}
 	const TBool ok = cpu->iHalt == proteus::EExited && cpu->iExitCode == 0;
 	for (TInt i = 0; i < KMaxBridge; ++i)
