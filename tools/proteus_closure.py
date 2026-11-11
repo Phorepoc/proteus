@@ -81,7 +81,7 @@ APP_EXTRAS = {
     "letsgolf2": ["akninit.dll", "2001e2b1.dll", "eikcdlg.dll", "bitmaptransformsrefplugin.dll", "avkonfep.dll", "aknfepuiavkonplugin.dll",
                   "bmpcodec.dll", "gifcodec.dll", "icocodec.dll", "jpegcodec.dll", "mbmcodec.dll", "pngcodec.dll", "wbmpcodec.dll",
                   "imageconversionresolver.dll", "f32agent.dll", "f32agentui.dll"],
-    "pys60": ["iaupdateapi.dll", "drtrvct2_2.dll"],
+    "pys60": ["iaupdateapi.dll", "drtrvct2_2.dll", "libdl.dll"],   # libdl: loaded at run time by the Python core (`libdl.dll: no ARM file`, then ordinal 3 not emulated)
     "calculator": [],
 }
 # euser/efsrv/hal come with the ROM (proteus/arm: the device builds P2c/P2d run), never from the run disk
