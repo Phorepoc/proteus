@@ -76,7 +76,10 @@ APP_EXTRAS = {
     # scdv: the ARM screen driver the window server loads (the OMAP draw devices; the generic one refuses the rotation). The Avkon UI's
     # own run-time loads (every Avkon app: akninit at CEikonEnv construction, the CDL/FEP plug-ins): before 2026-11-10 a run disk often
     # had them from an earlier staging; a plain disk does not (PyS60: `RLibrary::Load Z:\sysinkninit.dll -> -1`, User::Exit(-1))
-    "common": ["scdv.dll", "akninit.dll", "2001e2b1.dll", "eikcdlg.dll", "avkonfep.dll", "aknfepuiavkonplugin.dll"],
+    # The compiler run-time DLLs: a module loaded at run time (a PyS60 .pyd from its SIS) may import them while nothing staged does -- with
+    # the native libc (round 19) the ARM libc no longer pulled dfpaeabi in (`dfpaeabi.dll: no ARM file`, then __aeabi_ui2d not emulated)
+    "common": ["scdv.dll", "akninit.dll", "2001e2b1.dll", "eikcdlg.dll", "avkonfep.dll", "aknfepuiavkonplugin.dll",
+               "dfpaeabi.dll", "drtaeabi.dll", "drtrvct2_2.dll", "scppnwdl.dll"],
     "sparkle": ["f32agent.dll", "f32agentui.dll"],
     "letsgolf2": ["akninit.dll", "2001e2b1.dll", "eikcdlg.dll", "bitmaptransformsrefplugin.dll", "avkonfep.dll", "aknfepuiavkonplugin.dll",
                   "bmpcodec.dll", "gifcodec.dll", "icocodec.dll", "jpegcodec.dll", "mbmcodec.dll", "pngcodec.dll", "wbmpcodec.dll",
