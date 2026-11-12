@@ -17,7 +17,7 @@ struct TCodeChunk
 	TInt iSize;
 	RChunk iChunk;
 	};
-const TInt KMaxCodeChunks = 8;
+const TInt KMaxCodeChunks = 64;		// one per guest CPU (the code cache) + the spin lock's: allocated under RunOnNewCpu's JIT lock
 TCodeChunk gCode[KMaxCodeChunks];
 
 TCodeChunk* Find(const void* aP)

@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sched.h>
 #if defined(__linux__) && !defined(__SYMBIAN32__)
 #include <sys/mman.h>
 #endif
@@ -210,7 +211,13 @@ static uint32_t RunOnNewCpu(uint32_t aFn, uint32_t a0, uint32_t a1, uint32_t a2,
 	c->iStatSlow = c->iStatSvc = c->iStatTrap = c->iStatMem = 0;
 	c->iNote[0] = 0;
 	c->iGuestAlloc = guestAlloc;
-	c->iJit = gThr.iJitNew ? gThr.iJitNew(*c) : 0;
+	{	// one translator at a time: four guest threads constructing A32::Jit at once took 24 s each (alone: under 1 s), and the code
+		// chunk table of armjitmem.cpp (dynarmic_code_alloc) is not safe to fill from two threads at once
+		static int jitLock;
+		while (__atomic_exchange_n(&jitLock, 1, __ATOMIC_ACQUIRE)) sched_yield();		// a waiter yields: the builder must keep its CPU
+		c->iJit = gThr.iJitNew ? gThr.iJitNew(*c) : 0;
+		__atomic_store_n(&jitLock, 0, __ATOMIC_RELEASE);
+	}
 	if (!SetCpuOfThisThread(c, 0)) { if (c->iJit && gThr.iJitDelete) gThr.iJitDelete(c->iJit); delete c; if (gThr.iFree) gThr.iFree(stack); if (guestAlloc) gThr.iSwitchAlloc(guestAlloc); return 0; }
 	c->R[0] = a0; c->R[1] = a1; c->R[2] = a2; c->R[3] = a3;
 	c->R[13] = (stack + KGuestStack) & ~7u;
