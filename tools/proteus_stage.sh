@@ -23,6 +23,8 @@ docker create --name "$C" -e MODE="$MODE" -e ARG="$ARG" -e APP="$APP" -e NAME="$
 set -e; export MTOOLS_SKIP_CHECK=1; P=1048576; D=/b/compat-$NAME.img; cp /b/${BASE:-sparkle-inst.img} $D; I=$D@@$P
 mmd -i $I ::sis ::sys ::sys/bin ::sys/bin/arm 2>/dev/null || true
 for f in $(mdir -b -i $I ::sis | grep -i "\.sis$"); do mdel -i $I "$f"; done
+# the SWI ROM SID cache of the ROM the base disk was made under: SIDs of another ROM refuse proteus.sis (KErrAlreadyExists)
+mdel -i $I ::private/101f7295/sidcache.cache 2>/dev/null || true
 rm -rf /tmp/cl
 if [ "$MODE" = sis ] || [ "$MODE" = installed ]; then
   if [ "$MODE" = sis ]; then for f in /in/$ARG/*.sis; do mcopy -o -i $I $f ::sis/; done; fi
