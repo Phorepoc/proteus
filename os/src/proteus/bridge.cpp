@@ -955,14 +955,20 @@ static bool IsLibraryRow(const char* n)
 		|| !strcmp(n, "_ZN11RHandleBase5CloseEv") || !strcmp(n, "_ZN11RHandleBase9DuplicateERK7RThread10TOwnerType")
 		|| !strcmp(n, "_ZNK8RLibrary8FileNameEv") || !strcmp(n, "_ZNK8RLibrary4TypeEv");
 }
-// the rows that only look at the handle (any guest thread may close or duplicate a library handle; Load/Lookup need the primary's process)
-static bool IsLibraryHandleRow(const char* n) { return !strncmp(n, "_ZN11RHandleBase", 16) || !strcmp(n, "_ZN8RLibrary5CloseEv"); }
+// the rows that only look at the handle (any guest thread may close or duplicate a library handle, or Lookup in it: Lookup only reads the
+// process' module table -- a PyS60 script's thread looked up an export of a guest library and the native Lookup got the pseudo-handle:
+// KERN-EXEC 0, round 25); Load needs the primary's process
+static bool IsLibraryHandleRow(const char* n)
+{
+	return !strncmp(n, "_ZN11RHandleBase", 16) || !strcmp(n, "_ZN8RLibrary5CloseEv") || !strcmp(n, "_ZNK8RLibrary6LookupEi");
+}
 // a guest RLibrary of a DLL that runs natively (round 16: dlopen("libc.dll") with no ARM libc left): the handle names the bridge table
 // (KHandleLib0 + KNativeLib + its index) and Lookup(ord) hands out an import slot of module KBridgeModule, trapped like a linked import
 static const uint32_t KNativeLib = 0x8000, KBridgeModule = 0x3FE;
 static uint32_t* gLookupSlot[KBridgeDlls];		// per DLL and ordinal: the slot address handed out (0 = none yet)
 static uint32_t NativeLookupSlot(TProcess& aProc, int aDll, uint32_t aOrd)
 {
+	TLock lock;		// (Lookup is reachable from any guest thread)
 	TBridgeDll& d = gDll[aDll];
 	if (aOrd < 1 || aOrd > d.iCount) return 0;
 	if (!gLookupSlot[aDll]) gLookupSlot[aDll] = (uint32_t*)calloc(d.iCount, sizeof(uint32_t));
