@@ -40,6 +40,8 @@ COMPONENTS = {
     "cpuhandler_arm": dict(mmp=os.path.join(OS_ROOT, "src/proteus/proteus.mmp"), cdriver=False, rom="cpuhandler_arm.exe", sis=True, **_JIT),
     # the image broker: ARM images under \sys\bin\ for a handler holding the program's capabilities (no AllFiles)
     "proteusimg": dict(mmp=os.path.join(OS_ROOT, "src/proteusimg/proteusimg.mmp"), cdriver=False, sis=True),
+    # the Proteus settings app ("Proteus" in the launcher): per-app CPU / libraries / trace / profile, c:\proteus\apps\<exe>.cfg
+    "pheproteus": dict(mmp=os.path.join(OS_ROOT, "src/pheproteus/pheproteus.mmp"), rom="pheproteus.exe", sis=True),
     # the ARM test programs (ARM builds only)
     "proteushello": dict(mmp=os.path.join(OS_ROOT, "src/proteushello/proteushello.mmp"), test=True),
     "proteusdll": dict(mmp=os.path.join(OS_ROOT, "src/proteusdll/proteusdll.mmp"), test=True,

@@ -1,0 +1,20 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
+
+// pheproteus.hrh -- ids of the Proteus settings app
+#ifndef PHEPROTEUS_HRH
+#define PHEPROTEUS_HRH
+enum TPheProteusItems
+	{
+	EPheProtItemCpu = 1,
+	EPheProtItemLibs,
+	EPheProtItemTrace,
+	EPheProtItemProfile
+	};
+enum TPheProteusCommands
+	{
+	EPheProtCmdOpen = 0x6300,
+	EPheProtCmdChange,
+	EPheProtCmdReset
+	};
+#endif

@@ -1,0 +1,232 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
+
+// pheproteus.rss -- the Proteus settings app's resources (pheproteus.cpp)
+NAME PHPR
+
+#include <eikon.rh>
+#include <avkon.rh>
+#include <avkon.rsg>
+#include <appinfo.rh>
+#include "pheproteus.hrh"
+
+RESOURCE RSS_SIGNATURE { }
+RESOURCE TBUF r_default_document_name { buf = ""; }
+
+RESOURCE EIK_APP_INFO
+	{
+	menubar = r_pheproteus_menubar;
+	cba = R_AVKON_SOFTKEYS_OPTIONS_EXIT;
+	status_pane = r_pheproteus_status_pane;
+	}
+
+RESOURCE STATUS_PANE_APP_MODEL r_pheproteus_status_pane
+	{
+	panes =
+		{
+		SPANE_PANE
+			{
+			id = EEikStatusPaneUidTitle;
+			type = EAknCtTitlePane;
+			resource = r_pheproteus_title_pane;
+			}
+		};
+	}
+
+RESOURCE TITLE_PANE r_pheproteus_title_pane
+	{
+	txt = "Proteus";
+	}
+
+RESOURCE LOCALISABLE_APP_INFO r_pheproteus_localisable_app_info
+	{
+	short_caption = "Proteus";
+	caption_and_icon = CAPTION_AND_ICON_INFO { caption = "Proteus"; };
+	}
+
+// the app list: Open on the left
+RESOURCE MENU_BAR r_pheproteus_menubar
+	{
+	titles = { MENU_TITLE { menu_pane = r_pheproteus_menu; } };
+	}
+
+RESOURCE MENU_PANE r_pheproteus_menu
+	{
+	items =
+		{
+		MENU_ITEM { command = EPheProtCmdOpen; txt = "Open"; },
+		MENU_ITEM { command = EAknSoftkeyExit; txt = "Exit"; }
+		};
+	}
+
+// one app's settings: Options (Change, Reset) on the left, Back on the right
+RESOURCE CBA r_pheproteus_cba_app
+	{
+	buttons =
+		{
+		CBA_BUTTON { id = EAknSoftkeyOptions; txt = "Options"; },
+		CBA_BUTTON { id = EAknSoftkeyBack; txt = "Back"; }
+		};
+	}
+
+RESOURCE MENU_BAR r_pheproteus_app_menubar
+	{
+	titles = { MENU_TITLE { menu_pane = r_pheproteus_app_menu; } };
+	}
+
+RESOURCE MENU_PANE r_pheproteus_app_menu
+	{
+	items =
+		{
+		MENU_ITEM { command = EPheProtCmdChange; txt = "Change"; },
+		MENU_ITEM { command = EPheProtCmdReset; txt = "Reset to defaults"; },
+		MENU_ITEM { command = EAknSoftkeyExit; txt = "Exit"; }
+		};
+	}
+
+RESOURCE AVKON_SETTING_ITEM_LIST r_pheproteus_items
+	{
+	items =
+		{
+		AVKON_SETTING_ITEM
+			{
+			identifier = EPheProtItemCpu;
+			setting_page_resource = r_pheproteus_cpu_page;
+			associated_resource = r_pheproteus_cpu_texts;
+			name = "CPU";
+			},
+		AVKON_SETTING_ITEM
+			{
+			identifier = EPheProtItemLibs;
+			setting_page_resource = r_pheproteus_libs_page;
+			associated_resource = r_pheproteus_libs_texts;
+			name = "Libraries";
+			},
+		AVKON_SETTING_ITEM
+			{
+			identifier = EPheProtItemTrace;
+			setting_page_resource = r_pheproteus_trace_page;
+			associated_resource = r_pheproteus_trace_texts;
+			name = "Trace";
+			},
+		AVKON_SETTING_ITEM
+			{
+			identifier = EPheProtItemProfile;
+			setting_page_resource = r_pheproteus_profile_page;
+			associated_resource = r_pheproteus_profile_texts;
+			name = "Profile";
+			}
+		};
+	}
+
+RESOURCE POPUP_SETTING_LIST r_pheproteus_popup_list { }
+
+// CPU
+RESOURCE AVKON_SETTING_PAGE r_pheproteus_cpu_page
+	{
+	label = "CPU";
+	hint_text = "The translator (JIT) is fast. The interpreter is slow, for finding faults.";
+	type = EAknCtPopupSettingList;
+	editor_resource_id = r_pheproteus_popup_list;
+	}
+RESOURCE AVKON_POPUP_SETTING_TEXTS r_pheproteus_cpu_texts
+	{
+	setting_texts_resource = r_pheproteus_cpu_values;
+	popped_up_texts_resource = r_pheproteus_cpu_popup;
+	}
+RESOURCE ARRAY r_pheproteus_cpu_values
+	{
+	items =
+		{
+		AVKON_ENUMERATED_TEXT { value = 0; text = "Translator (JIT)"; },
+		AVKON_ENUMERATED_TEXT { value = 1; text = "Interpreter"; }
+		};
+	}
+RESOURCE ARRAY r_pheproteus_cpu_popup
+	{
+	items = { LBUF { txt = "Translator (JIT)"; }, LBUF { txt = "Interpreter"; } };
+	}
+
+// Libraries
+RESOURCE AVKON_SETTING_PAGE r_pheproteus_libs_page
+	{
+	label = "Libraries";
+	hint_text = "Native runs the system libraries at full speed. The ARM choices need the app's ARM copies installed.";
+	type = EAknCtPopupSettingList;
+	editor_resource_id = r_pheproteus_popup_list;
+	}
+RESOURCE AVKON_POPUP_SETTING_TEXTS r_pheproteus_libs_texts
+	{
+	setting_texts_resource = r_pheproteus_libs_values;
+	popped_up_texts_resource = r_pheproteus_libs_popup;
+	}
+RESOURCE ARRAY r_pheproteus_libs_values
+	{
+	items =
+		{
+		AVKON_ENUMERATED_TEXT { value = 0; text = "Native"; },
+		AVKON_ENUMERATED_TEXT { value = 1; text = "ARM euser"; },
+		AVKON_ENUMERATED_TEXT { value = 2; text = "ARM (all)"; }
+		};
+	}
+RESOURCE ARRAY r_pheproteus_libs_popup
+	{
+	items = { LBUF { txt = "Native"; }, LBUF { txt = "ARM euser"; }, LBUF { txt = "ARM (all)"; } };
+	}
+
+// Trace
+RESOURCE AVKON_SETTING_PAGE r_pheproteus_trace_page
+	{
+	label = "Trace";
+	hint_text = "Logs the calls into the native libraries. Slow; one library is faster than all.";
+	type = EAknCtPopupSettingList;
+	editor_resource_id = r_pheproteus_popup_list;
+	}
+RESOURCE AVKON_POPUP_SETTING_TEXTS r_pheproteus_trace_texts
+	{
+	setting_texts_resource = r_pheproteus_trace_values;
+	popped_up_texts_resource = r_pheproteus_trace_popup;
+	}
+RESOURCE ARRAY r_pheproteus_trace_values
+	{
+	items =
+		{
+		AVKON_ENUMERATED_TEXT { value = 0; text = "Off"; },
+		AVKON_ENUMERATED_TEXT { value = 1; text = "All libraries"; },
+		AVKON_ENUMERATED_TEXT { value = 2; text = "euser"; },
+		AVKON_ENUMERATED_TEXT { value = 3; text = "efsrv"; },
+		AVKON_ENUMERATED_TEXT { value = 4; text = "libc"; },
+		AVKON_ENUMERATED_TEXT { value = 5; text = "libpthread"; }
+		};
+	}
+RESOURCE ARRAY r_pheproteus_trace_popup
+	{
+	items = { LBUF { txt = "Off"; }, LBUF { txt = "All libraries"; }, LBUF { txt = "euser"; }, LBUF { txt = "efsrv"; },
+		LBUF { txt = "libc"; }, LBUF { txt = "libpthread"; } };
+	}
+
+// Profile
+RESOURCE AVKON_SETTING_PAGE r_pheproteus_profile_page
+	{
+	label = "Profile";
+	hint_text = "Counts the calls into the native libraries and logs the busiest.";
+	type = EAknCtPopupSettingList;
+	editor_resource_id = r_pheproteus_popup_list;
+	}
+RESOURCE AVKON_POPUP_SETTING_TEXTS r_pheproteus_profile_texts
+	{
+	setting_texts_resource = r_pheproteus_profile_values;
+	popped_up_texts_resource = r_pheproteus_profile_popup;
+	}
+RESOURCE ARRAY r_pheproteus_profile_values
+	{
+	items =
+		{
+		AVKON_ENUMERATED_TEXT { value = 0; text = "Off"; },
+		AVKON_ENUMERATED_TEXT { value = 1; text = "On"; }
+		};
+	}
+RESOURCE ARRAY r_pheproteus_profile_popup
+	{
+	items = { LBUF { txt = "Off"; }, LBUF { txt = "On"; } };
+	}

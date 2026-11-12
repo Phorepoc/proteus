@@ -1774,11 +1774,19 @@ static TInt MainL()
 	{
 	proteus::BridgeConfigure("");
 	// then c:\proteus\bridge.local.cfg, appended: the installed bridge.cfg belongs to proteus.sis; local options (profile, trace ...) go there
+	// and last c:\proteus\apps\<program name, lower case, no extension>.cfg: this program's own settings (written by the Proteus
+	// settings app, pheproteus); its lines come last, so they win
+	TFileName appCfg(_L("c:\\proteus\\apps\\"));
+	appCfg.Append(TParsePtrC(path).Name());
+	appCfg.Append(_L(".cfg"));
+	appCfg.LowerCase();
 	TBuf8<4096> cfg;
 	RFile bf;
-	for (TInt k = 0; k < 2; ++k)
+	for (TInt k = 0; k < 3; ++k)
 		{
-		TInt r = k == 0 ? bf.Open(fs, _L("c:\\proteus\\bridge.cfg"), EFileRead) : bf.Open(fs, _L("c:\\proteus\\bridge.local.cfg"), EFileRead);
+		TInt r = k == 0 ? bf.Open(fs, _L("c:\\proteus\\bridge.cfg"), EFileRead) : bf.Open(fs, k == 1 ? TPtrC(_L("c:\\proteus\\bridge.local.cfg")) : TPtrC(appCfg), EFileRead);
+		if (k == 2 && r == KErrNone)
+			RDebug::Printf("PH: proteus app config %S", TLog8(appCfg).P());
 		if (k == 0 && r != KErrNone) r = bf.Open(fs, _L("z:\\proteus\\bridge.cfg"), EFileRead);
 		if (r != KErrNone) continue;
 		TInt bsz = 0;
@@ -1802,7 +1810,7 @@ static TInt MainL()
 	thr.iAlloc = BridgeGuestAlloc;
 	thr.iFree = BridgeGuestFree;
 #ifdef PROTEUS_JIT
-	thr.iJitNew = interpOnly ? NULL : proteus::JitNew;
+	thr.iJitNew = interpOnly || proteus::BridgeCpuInterp() ? NULL : proteus::JitNew;
 #else
 	thr.iJitNew = NULL;
 #endif
@@ -1859,7 +1867,7 @@ static TInt MainL()
 	// the loader's redirect, whose command line has no room for "-i")
 	TEntry interpEntry;
 	const TBool interpDisk = fs.Entry(_L("c:\\proteus\\interp.txt"), interpEntry) == KErrNone;
-	cpu->iJit = interpOnly || interpDisk ? NULL : proteus::JitNew(*cpu);
+	cpu->iJit = interpOnly || interpDisk || proteus::BridgeCpuInterp() ? NULL : proteus::JitNew(*cpu);
 	RDebug::Printf("PH: proteus cpu: %s", cpu->iJit ? "jit" : "interpreter");
 #endif
 	{

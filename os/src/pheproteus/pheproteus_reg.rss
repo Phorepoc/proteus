@@ -1,0 +1,16 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
+
+// pheproteus_reg.rss -- the Proteus settings app's registration ("Proteus" in the launcher)
+#include <appinfo.rh>
+#include <pheproteus.rsg>
+
+UID2 KUidAppRegistrationResourceFile
+UID3 0xE7015F00
+
+RESOURCE APP_REGISTRATION_INFO
+	{
+	app_file = "pheproteus";
+	localisable_resource_file = "\\resource\\apps\\pheproteus";
+	localisable_resource_id = R_PHEPROTEUS_LOCALISABLE_APP_INFO;
+	}

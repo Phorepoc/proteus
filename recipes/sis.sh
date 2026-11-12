@@ -23,5 +23,5 @@ for e in fmt mcl zydis zycore xbyak robin-map; do     # the externals linked or 
   f=$(ls "$SRC"/externals/$e/LICENSE* "$SRC"/externals/$e/COPYRIGHT 2>/dev/null | head -n 1 || true)
   [ -n "$f" ] && add "$f" "$e-LICENSE.txt"
 done
-python3 "$PHOREPOC_PDK/tools/make_sis.py" cpuhandler_arm proteusimg --unsigned --version "${PHOREPOC_PACKAGE_VERSION:-1.0.0}" \
+python3 "$PHOREPOC_PDK/tools/make_sis.py" cpuhandler_arm proteusimg pheproteus --unsigned --version "${PHOREPOC_PACKAGE_VERSION:-1.0.0}" \
   --name "Proteus" --vendor Phorepoc $LIC --out "$PHOREPOC_BUILD/sis/proteus.sis"

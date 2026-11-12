@@ -1,0 +1,34 @@
+// Copyright The Phorepoc Authors
+// SPDX-License-Identifier: Apache-2.0
+
+// pheproteus.mmp -- the Proteus settings app (pheproteus.cpp): per-app settings of the ARM apps Proteus runs
+#include <platform_paths.hrh>
+
+TARGET			pheproteus.exe
+TARGETTYPE		exe
+UID				0x100039CE 0xE7015F00
+
+// AllFiles: reads the header of each app's EXE in \sys\bin\ (its CPU field: is it an ARM app?)
+CAPABILITY		AllFiles
+VENDORID		0
+
+SOURCEPATH		.
+SOURCE			pheproteus.cpp
+
+START RESOURCE	pheproteus.rss
+HEADER
+TARGETPATH		/resource/apps
+END
+
+START RESOURCE	pheproteus_reg.rss
+TARGETPATH		/private/10003a3f/apps
+END
+
+USERINCLUDE		.
+APP_LAYER_SYSTEMINCLUDE
+OS_LAYER_SYSTEMINCLUDE
+MW_LAYER_SYSTEMINCLUDE
+
+LIBRARY			euser.lib apparc.lib apgrfx.lib cone.lib eikcore.lib eikcoctl.lib avkon.lib aknskins.lib efsrv.lib bafl.lib
+
+EPOCSTACKSIZE	0x5000

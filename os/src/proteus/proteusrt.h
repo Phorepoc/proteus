@@ -236,6 +236,8 @@ bool BridgeTrapSlot(CArmCpu& aCpu, THle& aHle, uint32_t aSlotValue);	// bridge.c
 // BridgeMapWanted = the host range to make guest memory as it is (the "map" line; false = off)
 void BridgeConfigure(const char* aText);
 bool BridgeNative(const char* aImport);
+// `cpu interp|jit` (last line wins): true = run the guest on the interpreter
+bool BridgeCpuInterp();
 bool BridgeTrap(CArmCpu& aCpu, THle& aHle, const char* aDll, uint32_t aOrd);
 void BridgeSetLookup(uint32_t (*aFn)(void* aCtx, const char* aDll, int aOrdinal), void* aCtx);	// before LoadProcess: where native DATA imports are looked up
 bool BridgeDataImport(const char* aDll, uint32_t aOrd, uint32_t& aAddr);

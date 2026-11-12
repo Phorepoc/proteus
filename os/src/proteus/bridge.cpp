@@ -141,6 +141,7 @@ uint32_t gWatch, gWatchVal, gWatchPrev, gWatchSize; bool gWatchOn;	// `watchsize
 	// (armed when an allocation returns the cell right after the word)	// bridge.cfg `watch <hex addr>`: log every change of that word, seen at a bridged call (before = guest code wrote it)
 bool gTraceHeap;
 uint32_t gTraceDll;
+bool gCpuInterp;	// `cpu interp` (a per-app config, c:\proteus\apps\<name>.cfg): the interpreter instead of the translator
 bool gProfile;		// bridge.cfg `profile`: calls + cycles per row, the top rows every 256 K bridged calls
 char gTraceOnLoad[32];		// bridge.cfg `traceonload [name]`: the full trace from a guest RLibrary::Load (of a name containing it) on
 		// bridge.cfg `trace <dll>`: a bit per gDll entry
@@ -351,9 +352,14 @@ uint32_t BridgeStubTarget(uint32_t aPc)
 	return 0;
 }
 
+// an import slot (KTrapBase..KTrapEnd) is guest code too: an import the loader resolved, in code or in data (a vtable slot of an inherited
+// virtual the ARM image imports). Native code that jumps to one faults (KERN-EXEC 3); the stub's nested run enters the trap, which emulates
+// or bridges the import and returns.
+static inline bool IsTrapAddr(uint32_t aAddr) { return (aAddr & ~1u) >= KTrapBase && (aAddr & ~1u) < KTrapEnd; }
+
 static uint32_t BrCb(CArmCpu& aCpu, uint32_t aGuestFn, int aKind = EStubPlain)
 {
-	if (!aGuestFn || !aCpu.InRegion(aGuestFn & ~1u, 2))
+	if (!aGuestFn || (!IsTrapAddr(aGuestFn) && !aCpu.InRegion(aGuestFn & ~1u, 2)))
 		return aGuestFn;
 	TLock lock;
 	if (!gStubHash) gStubHash = (int32_t*)StubMemory(KStubHash * sizeof(int32_t));		// (zeroed: fresh code-chunk pages / mmap)
@@ -521,6 +527,7 @@ void BridgeConfigure(const char* aText)
 	gTraceDll = 0;
 	gTraceOnLoad[0] = 0;
 	gProfile = false;
+	gCpuInterp = false;
 	gMap = false;
 	char line[160];
 	while (aText && *aText)
@@ -549,6 +556,10 @@ void BridgeConfigure(const char* aText)
 			gTrace = true;
 		else if (!strcmp(w, "profile"))
 			gProfile = true;
+		else if (!strcmp(w, "cpu") && !strcmp(a, "interp"))
+			gCpuInterp = true;
+		else if (!strcmp(w, "cpu") && !strcmp(a, "jit"))
+			gCpuInterp = false;
 		else if (!strcmp(w, "traceonload"))
 			snprintf(gTraceOnLoad, sizeof(gTraceOnLoad), "%s", a[0] ? a : ".");
 		else if (!strcmp(w, "traceheap"))
@@ -599,6 +610,8 @@ void BridgeConfigure(const char* aText)
 			if (!strncmp(d.iRows[r].iName, "_ZN8UserHeap15SetupThreadHeap", 29)) d.iKeepHle[r] = true;
 	}
 }
+
+bool BridgeCpuInterp() { return gCpuInterp; }
 
 void BridgeSetResolver(uintptr_t (*aFn)(uint32_t)) { gResolve = aFn; }
 
@@ -692,7 +705,7 @@ static void PatchVtable(CArmCpu& aCpu, uint32_t aObj, int aSlots, const char* aK
 	for (int k = 0; k < aSlots; ++k)
 	{
 		const uint32_t f = aCpu.Read32(vt + 4 * k);
-		if (f && aCpu.InRegion(f & ~1u, 2))
+		if (f && (aCpu.InRegion(f & ~1u, 2) || IsTrapAddr(f)))		// (an import slot: an inherited virtual the ARM image imports)
 			aCpu.Write32(vt + 4 * k, BrCb(aCpu, f, !aKinds || !aKinds[k] || aKinds[k] == '.' ? EStubPlain : aKinds[k] == 'r' ? EStubRegs : EStubMem));
 	}
 	cacheSlots[h] = aSlots; cacheVt[h] = vt;			// (after the patch: another thread finds it only when done)
