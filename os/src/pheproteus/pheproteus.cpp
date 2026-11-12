@@ -134,7 +134,7 @@ static TInt SaveCfg(RFs& aFs, const TDesC& aName, const TPheProtCfg& aCfg)
 // an installed app: its caption and its EXE's name (lower case, no extension: the config file's name)
 struct TPheProtApp
 	{
-	TApaAppCaption iCaption;
+	TBuf<64> iCaption;		// (an RArray entry is at most 640 bytes: TApaAppCaption alone is 512 -- USER 129)
 	TBuf<64> iName;
 	};
 
@@ -170,11 +170,16 @@ static void ListArmAppsL(RFs& aFs, RArray<TPheProtApp>& aApps)
 		}
 	for (; r == KErrNone; r = ls.GetNextApp(info))
 		{
+		// the EXE the loader would start: the first \sys\bin\ match in its drive order (an ARM copy on C: wins over a ROM one;
+		// the registration may name Z:)
 		TFileName exe(info.iFullName);
+		TFindFile ff(aFs);
+		if (ff.FindByDir(TParsePtrC(exe).NameAndExt(), _L("\\sys\\bin\\")) == KErrNone)
+			exe = ff.File();
 		if (!IsArmExe(aFs, exe))
 			continue;
 		TPheProtApp a;
-		a.iCaption = info.iCaption;
+		a.iCaption = info.iCaption.Left(a.iCaption.MaxLength());
 		TParsePtrC pp(exe);
 		a.iName = pp.Name().Left(a.iName.MaxLength());
 		a.iName.LowerCase();
