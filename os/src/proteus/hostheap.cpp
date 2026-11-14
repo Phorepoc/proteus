@@ -7,6 +7,7 @@
 // from then on. The process' first heap is kept here (HostHeapInit, at E32Main): the bridge (TBridgeThreads::iHostAlloc) puts the
 // thread back on it whenever Proteus runs, and guest stacks / bridge buffers come from it directly (HostAlloc, HostFree).
 #include <e32std.h>
+#include <e32debug.h>
 
 static RHeap* gHostHeap;
 static TUint8* gHostLo;
@@ -43,4 +44,18 @@ TUint32 HostCodeAlloc(TUint32 aBytes)
 	if (c.CreateLocalCode(size, size) != KErrNone) return 0;
 	Mem::FillZ(c.Base(), size);
 	return (TUint32)c.Base();
+	}
+
+// The C++ runtime archives (libgcc_eh, libphcompat) name three weak glibc/engine hooks no provider exports; each would be a link
+// stub (a call panics EUSRNIMP; the pdk's package stub audit refuses it), so the handler answers them itself.
+// libgcc_eh's unwinder asks glibc's _dl_find_object for a pc's frame tables: "not found" (-1) is the answer for an E32 image
+// (x32 unwinding is unfinished, a throw ends the process)
+extern "C" int _dl_find_object(void*, void*) { return -1; }
+// libgcc's gthr "is libpthread linked" probe (a weak glibc symbol): present, it forwards to Open C's pthread_key_create
+extern "C" int pthread_key_create(unsigned*, void (*)(void*));
+extern "C" int __pthread_key_create(unsigned* aKey, void (*aDtor)(void*)) { return pthread_key_create(aKey, aDtor); }
+// libphcompat's allocator calls this when malloc fails: the log names the request (the process then ends on its own)
+extern "C" void ph_oom_report(unsigned aSize)
+	{
+	RDebug::Printf("PH: [proteus] OOM: malloc(%u) failed", aSize);
 	}
