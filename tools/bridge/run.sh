@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 # Run a tools/bridge python tool in the clang container.  usage: tools/bridge/run.sh <core checkout> <script.py> [args...]
 # Image: docker build -t proteus-bridge-tools -f tools/bridge/Dockerfile.tools tools/bridge   (debian:trixie + clang + python3)
 set -euo pipefail

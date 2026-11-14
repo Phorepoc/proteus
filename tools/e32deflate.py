@@ -1,5 +1,5 @@
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """Symbian DEFLATE (KUidCompressionDeflate 0x101F7AFC) decoder -- NOT zlib.
 
 Faithful port of e32tools/e32image/deflate/{decode,inflate}.cpp: MSB-first bit

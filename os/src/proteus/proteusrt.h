@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // proteusrt.h -- OURS (Proteus P0): the portable runtime around the interpreter: an E32Image loader for ARM EXEs (uncompressed, ARMv5/v6 ARM-mode) into the guest region,
 // and the "native system" the program calls into -- for P0 a tiny HLE of euser (RDebug::Printf, User::Exit, process/heap init) bound by ORDINAL through the ARM EABI
 // euser export table. The same boundary becomes the executive-call table (SVC) and the real ARM euser in P1/P2.

@@ -1,5 +1,5 @@
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """Hand-written declarations and handlers for Open C's libc (rung R1 round 16; see euser.py).
 
 The printf / scanf families (`...` and the v-functions taking an ARM va_list) go through one format walker (bridge.cpp LibcFormatCall); the

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """namecheck -- the bridge binds an ARM ordinal to the native export by NAME, never by native ordinal. Report the EABI .def
 names (not ABSENT) that our native x32 euser/efsrv do not export. The native spelling differs from the EABI one in one
 place: va_list (ARM `St9__va_list`, x32 `P13__va_list_tag`), compared after that rewrite. Exit 1 if any name is missing.

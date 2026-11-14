@@ -1,5 +1,5 @@
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """sis_extract -- the files a SIS (v9) installs, laid out for Proteus: executables under <out>/sys/bin/arm/ (where the
 handler looks for ARM code before \\sys\\bin\\, so they never eclipse the native ones), every other file at its own path.
 

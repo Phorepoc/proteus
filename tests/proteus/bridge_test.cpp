@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // tests/proteus/bridge_test.cpp -- host test of the native-library bridge (rung R1, os/src/proteus/bridge.cpp). The ARM EXE proteusbridge.exe
 // (euser only: descriptors, RArray without a comparator, User::Alloc/ReAlloc/Free) runs with bridge.cfg "native euser.dll": its euser
 // imports do NOT run the HLE or an ARM euser but the "native" table below. On the host that table is a small fake euser written against the

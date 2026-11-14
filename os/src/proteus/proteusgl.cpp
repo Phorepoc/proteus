@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // proteusgl.cpp -- an ARM app's OpenGL ES / EGL calls run on the NATIVE Khronos DLLs (libEGL, libGLESv2, libGLESv1_CM,
 // libGLES_CM): no ARM GL is staged, the imports of those DLLs stay with Proteus and each import slot calls the native
 // export of the same ordinal (the frozen .def tables; gen/glthunks.inc, made by tools/gen_gl_thunks.py, has one entry

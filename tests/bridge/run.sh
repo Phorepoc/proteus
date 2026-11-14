@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 # Rung R0 checks, in the clang container (tools/bridge/Dockerfile.tools):  bash tests/bridge/run.sh <core checkout>
 #  1. the generated tables compile and are complete  2. layoutcheck: ARM vs x32 layouts  3. the layout static_asserts hold
 set -eu

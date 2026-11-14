@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // proteusimg.h -- OURS: the image broker's protocol (proteusimg.cpp) and its client (proteus.cpp ProteusImgOpen).
 #ifndef PROTEUSIMG_H
 #define PROTEUSIMG_H

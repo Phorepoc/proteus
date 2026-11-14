@@ -1,5 +1,5 @@
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """proteus_closure -- Proteus: collect an ARM app's DLL closure from our ARM builds and report its Thumb content.
 
 Walks the imports of <exe> transitively, resolving each DLL in --dirs (default: the EXE's own directory, then emitter/; euser/efsrv/hal map

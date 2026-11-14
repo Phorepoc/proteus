@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // proteus.cpp -- OURS (Proteus P0, docs/phorepoc/research/proteus-x86.md): proteus.exe, the first Proteus component on the x86/x32 board: a USER-SIDE loader + ARM interpreter that
 // runs a real ARM Symbian EXE (an E32Image with CPU id ARMv5) inside one x32 process. proteus.exe [<arm exe>] (default z:\sys\bin\arm\proteushello.exe: the ARM files live in the
 // per-arch directory \sys\bin\arm\ of the design). The guest's memory is one block of this process's heap (guest address == host address under ILP32); the ARM code's euser imports are

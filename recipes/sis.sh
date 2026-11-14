@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 #
 # sis.sh -- the pdk's package.yml runs it after the components: proteus.sis ($PHOREPOC_BUILD/sis/proteus.sis) for a PC image
 # built without this layer. It carries the handler core's loader hands an ARM EXE to (\sys\bin\cpuhandler_arm.exe, All -TCB;
@@ -14,7 +14,7 @@ W=${PROTEUS_JIT_WORK:-$PHOREPOC_BUILD/proteus-jit}
 SRC=$(ls -d "$W"/src/dynarmic-* | head -n 1)
 LIC=
 add() { LIC="$LIC --file $1=!:/resource/proteus/$2"; }
-add "$HERE/LICENSES/Apache-2.0.txt" Apache-2.0.txt
+add "$HERE/LICENSE" LICENSE.txt
 add "$HERE/NOTICE" NOTICE.txt
 LIC="$LIC --file $HERE/os/src/proteus/bridge.cfg=c:/proteus/bridge.cfg"   # the native-library default (euser efsrv libc libpthread)
 add "$HERE/SOURCE-OFFER.txt" SOURCE-OFFER.txt

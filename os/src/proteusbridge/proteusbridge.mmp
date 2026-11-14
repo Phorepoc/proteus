@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // proteusbridge.mmp -- a tiny ARM console EXE for the native system-library bridge (rung R1): it calls euser for descriptors,
 // RArray without a comparator and the heap, and reports the number of the first failing check as its exit code (0 = all pass).
 TARGET			proteusbridge.exe

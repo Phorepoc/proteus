@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // armjitmem.cpp -- OURS (Proteus P1): the translator's executable memory (patches/dynarmic/0005, DYNARMIC_EXTERNAL_CODE_MEMORY).
 // Each allocation is a local code chunk (RChunk::CreateLocalCode: user read/write/execute, the kernel's memory for JITs), reserved at
 // its full size and committed from the bottom as dynarmic fills it (dynarmic_code_commit, the counterpart of VirtualAlloc(MEM_COMMIT)).

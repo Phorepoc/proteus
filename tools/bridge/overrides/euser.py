@@ -1,5 +1,5 @@
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """Hand-written declarations for euser exports the 2010 headers do not (or no longer) declare, and bridge overrides.
 
 MANUAL: mangled name -> record fields (kind, cls, ret, params as AAPCS classes; `alias` = the descriptor of another

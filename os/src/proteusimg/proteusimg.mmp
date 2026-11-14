@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // proteusimg.mmp -- OURS (Proteus): the image broker (proteusimg.cpp). x32 Phorepoc EXE, started by cpuhandler_arm.exe on demand.
 TARGET			proteusimg.exe
 TARGETTYPE		exe

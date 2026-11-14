@@ -1,5 +1,5 @@
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """Hand-written declarations for efsrv exports the 2010 headers do not declare (see euser.py)."""
 W, P, V, C = {"c": "w"}, {"c": "p"}, {"c": "v"}, {"c": "c"}
 THIS = {"c": "p", "t": "this"}

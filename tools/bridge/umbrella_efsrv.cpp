@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // The declarations behind efsrvu.def.
 #include "umbrella_euser.cpp"
 #include <f32file.h>

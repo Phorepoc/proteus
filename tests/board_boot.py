@@ -1,5 +1,5 @@
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """board_boot -- the Proteus board test on the PC image in QEMU (in the toolchain container).
 
 Boots the ISO of a ROM built with SSM_TEST=proteus on a fresh blank C: and waits for proteus.exe's results on the

@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // proteus.mmp -- OURS (Proteus P0): proteus.exe = user-side ARM loader + interpreter (see proteus.cpp). x32 Phorepoc EXE; SSM_TEST=proteus runs it at boot.
 // proteus_interp.mmp -- the interpreter-only proteus.exe (no dynarmic): the board test of the native bridge builds this one (core: components "proteus").
 TARGETTYPE		exe

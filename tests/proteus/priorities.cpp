@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // tests/proteus/priorities.cpp -- self-checking test of the guest thread priorities of the Proteus scheduler (os/src/proteus/proteusexec.cpp).
 // Like guest_servers.cpp it includes the executive source itself and drives the executive calls the way ARM code does, as several guest threads.
 // What the 2010 kernel does (kernel/eka/kernel/sthread.cpp, sprocess.cpp, sexec.cpp) is checked:

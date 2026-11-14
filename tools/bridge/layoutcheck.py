@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """layoutcheck -- dump every class with exported members twice (ARM EABI: armv5te, aapcs, 4-byte enums; and x32) and diff
 sizeof, alignof, base offsets, field offsets and vtable slot order. An ARM app was compiled against the first, the
 native library against the second: any difference is a bug the bridge cannot paper over. Exit status 1 on a difference.

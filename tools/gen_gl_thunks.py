@@ -1,5 +1,5 @@
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """gen_gl_thunks -- the ARM -> native calls for the Khronos DLLs (libEGL, libGLESv2, libGLESv1_CM, libGLES_CM).
 
 An ARM app's GL imports stay with Proteus (no ARM GL DLL is staged): each import slot of those DLLs calls the NATIVE

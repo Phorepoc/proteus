@@ -1,5 +1,5 @@
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """symabi_lib -- shared by symabi_dump.py and layoutcheck.py: run clang over the 2010 Symbian headers for one target,
 read the AST (clang -ast-dump=json) and the record layouts (-fdump-record-layouts), compute vtable slot order.
 

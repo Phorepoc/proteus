@@ -3,5 +3,11 @@ Copyright The Phorepoc Authors (see AUTHORS)
 
 Phorepoc was founded by Kyriakos Bompotis.
 
-All code in this repository is our own, under Apache-2.0 (LICENSE, LICENSES/Apache-2.0.txt). os/src/proteus/euser_ordinals.inc
+All code in this repository is our own, licensed under the GNU Affero General Public License, version 3 only (AGPL-3.0-only, LICENSE), with the additional terms in ADDITIONAL-TERMS.md (section 7(b) attributions, section 7(e) names and logos). os/src/proteus/euser_ordinals.inc
 lists the export names and ordinals of euser.dll, generated from the Symbian platform's definition file (EPL-1.0).
+
+Licensing. The Phorepoc code is AGPL-3.0-only with additional terms under its section 7 (ADDITIONAL-TERMS.md):
+the attribution "Phorepoc, founded by Kyriakos Bompotis" and these notices must be kept, also where a work based on
+it shows legal notices; no rights are granted to the Phorepoc names and logos (TRADEMARKS.md). It is dual-licensed:
+commercial licences are available from the founder (see README.md, "Licensing"). Third-party code keeps its own
+licence and header.

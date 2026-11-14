@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // armjitnone.cpp -- the translator's entry points for the interpreter-only build (proteus_interp.mmp): no translator, the interpreter runs the guest.
 #include "armjit.h"
 namespace proteus

@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // Compiles the generated bridge tables (os/src/proteus/gen/bridge_*.inc) against a stand-in CPU and AAPCS argument cursor
 // and calls a few trampolines. Nothing in Proteus includes the tables yet (rung R0). Build: tests/bridge/run.sh
 #include <stdint.h>

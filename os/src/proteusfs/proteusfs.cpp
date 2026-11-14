@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // proteusfs.cpp -- OURS (Proteus P2, docs/phorepoc/proteus-p2.md): ARM code -> ARM efsrv -> (IPC bridge) -> the NATIVE x86 file server.
 // Connects, reads the drive list, writes a file into its private directory and reads it back.
 #include <e32std.h>

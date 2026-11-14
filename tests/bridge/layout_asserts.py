@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """Compile the generated static_asserts (bridge_<dll>.inc, BRIDGE_LAYOUT_ASSERTS) against the 2010 headers on the x32
 target: the native layout of every class with exported members equals the ARM one an app compiled in.
 In the clang container:  tools/bridge/run.sh <core checkout> ../../tests/bridge/layout_asserts.py"""

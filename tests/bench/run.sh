@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 # run.sh -- the interpreter host benchmark (toolchain container: arm-none-eabi-gcc + g++). bash tests/bench/run.sh [work dir] [reps]
 #   env: OPT (default -O2), PROF=gprof|perf (profile build), CXXFLAGS_EXTRA
 set -eu

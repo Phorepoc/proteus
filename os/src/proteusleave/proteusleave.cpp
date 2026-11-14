@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // proteusleave.cpp -- rung R1 leave gate: ARM TRAP / Leave / cleanup stack over the NATIVE euser through the bridge. Built in the device model
 // (TRAP = MarkCleanupStack + try/catch, the throw and the unwinder in the guest's drtaeabi.dll). Covers: a plain leave, cleanup items destroyed
 // by the native cleanup stack, nested TRAPs, LeaveIfError, an ARM RunL that leaves into the NATIVE scheduler's TRAP (RunError), and a TRAP on a

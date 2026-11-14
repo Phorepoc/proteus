@@ -37,3 +37,13 @@ DLLs ship in it: see `docs/compat.md` "Installing Proteus" for what an app still
 
 The release Action (`.github/workflows/release.yml`) builds the SIS with the pdk's `package.yml` (`package.conf`,
 `recipes/prebuild.sh` for cxxrt + dynarmic, `recipes/sis.sh`) and attaches it to a release.
+
+## Licensing
+
+This is Phorepoc code, licensed under the [GNU Affero General Public License, version 3 only](LICENSE) (`AGPL-3.0-only`), with the [additional terms](ADDITIONAL-TERMS.md) its section 7 allows: keep the attribution "Phorepoc, founded by Kyriakos Bompotis" and the legal notices (also where your version shows notices, such as an About screen), and no rights to the Phorepoc names and logos ([TRADEMARKS.md](TRADEMARKS.md)). If you run a modified version for users over a network, AGPL section 13 asks you to offer them its source.
+
+All code here is our own. The third-party components fetched at build time keep their own licences (`NOTICE`, `SOURCE-OFFER.txt`).
+
+Phorepoc is dual-licensed. Commercial licences or licence exceptions (for example to ship it inside a closed product without the AGPL obligations) are available on request from the founder, Kyriakos Bompotis.
+
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the licence grant they need.

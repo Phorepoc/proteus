@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // The declarations behind euseru.def: every public and internal header euser exports a class or function from.
 #include <e32std.h>
 #include <e32base.h>

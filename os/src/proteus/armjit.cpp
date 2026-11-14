@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // armjit.cpp -- OURS (Proteus P1): see armjit.h. The seams to dynarmic:
 //   memory     a page table over the guest region's committed pages and the windows (guest address -> host page); everything else (an
 //              uncommitted page, a stray pointer) takes the callbacks, i.e. CArmCpu::Read32/Write32 and their faults

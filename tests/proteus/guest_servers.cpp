@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // tests/proteus/guest_servers.cpp -- self-checking test of the guest-side servers of the Proteus executive (os/src/proteus/proteusexec.cpp).
 // It includes the executive source itself and drives its executive-call handlers the way ARM code does (the same names, the same argument
 // registers, guest memory for descriptors / TIpcArgs / TRequestStatus), as several guest threads: a client, servers, a bystander. Each exec the

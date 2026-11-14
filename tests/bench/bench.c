@@ -1,5 +1,5 @@
 /* Copyright The Phorepoc Authors
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: AGPL-3.0-only
  * bench.c -- a freestanding ARM guest that exercises the code paths a Qt/Symbian start-up spends its instructions in (measured pc samples of the
  * Sparkle load: euser atomic LDREX/STREX loops, RFastLock, memset/memcpy, RHeap free-list walks, soft-float (libgcc dfpaeabi), qtcore
  * reference counting, virtual calls, string compares). Run by bench.cpp on the interpreter; the printed checksum must not change with the interpreter. */

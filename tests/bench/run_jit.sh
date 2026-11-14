@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 # run_jit.sh -- the benchmark on the interpreter and on dynarmic (P1), same guest, same checksum. Needs the host dynarmic of
 # recipes/build_dynarmic.sh in $DYN (default /w/out/host) and arm-none-eabi-gcc + g++ (ghcr.io/phorepoc/base with the volume at /w).
 #   bash tests/bench/run_jit.sh [work dir] [reps]

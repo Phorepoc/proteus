@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // proteusbridge.cpp -- rung R1 gates: ARM code calling the NATIVE euser through the bridge (descriptors, arrays with a comparator, the heap,
 // varargs Format, a guest thread as a native thread, an ARM CActive under the native active scheduler).
 // Exit code = the number of the first failing check, 0 = all pass. Run: bash tests/proteus/run.sh --bridge (host, fake natives) or on the board.

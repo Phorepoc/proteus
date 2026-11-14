@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 /* thumb.c -- the Proteus Thumb-1 differential test (run.sh: qemu-arm vs armcpu.cpp). Every Thumb format (the fast loop in armfast.inc and
  * ThumbStep in thumb.cpp implement the same ISA) runs on random inputs with random flags going in; the result registers, the NZCV flags (captured
  * with flag-free hi-register adds and branches, as ARMv5 Thumb has no MRS) and a hash of memory come out. Each snippet is entered from ARM state by

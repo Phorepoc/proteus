@@ -1,5 +1,5 @@
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 
 # release.yml -- the Proteus SIS (x32), built by the pdk's package.yml on every push to main. When the
 # commits since the last release ask for one (Conventional Commits: feat = minor, fix/perf = patch, breaking = major;

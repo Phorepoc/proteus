@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // proteusleave.mmp -- rung R1 leave gate: ARM TRAP/Leave over the NATIVE euser (device model: TRAP = try/catch, the
 // unwinder in drtaeabi.dll). Exit code = the number of the first failing check, 0 = all pass.
 TARGET			proteusleave.exe

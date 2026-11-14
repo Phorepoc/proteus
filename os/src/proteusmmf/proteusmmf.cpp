@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // proteusmmf.cpp -- OURS (Proteus): ARM code -> ARM mediaclientaudio -> (bridge) -> the NATIVE MMF controller (mmfcontrollerframework thread, MP3
 // controller, DevSound). Plays two MP3 files (Sparkle's music, staged in this program's private directory) one after the other through CMdaAudioPlayerUtility (open, volume, play, position, stop,
 // close; the second open reuses the machinery) and reports each step. Quiet: a quarter of the maximum volume.

@@ -1,5 +1,5 @@
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """e32image -- expand a compressed E32Image (byte-pair or Symbian deflate) to its raw form, for the closure tool."""
 import struct
 

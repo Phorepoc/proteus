@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 /* base.c -- the second Proteus instruction differential test (run.sh: qemu-arm vs armcpu.cpp, identical output = PASS). isa.c covers what ARMv6/v7
  * added; this covers the base ARM instruction classes the table-driven fast path (armfast.inc) executes: all 16 data-processing operations x S x
  * 17 operand forms with the flags going in and out, LDR/STR/LDRB/STRB in every addressing mode (immediate, register + shift, offset / pre / post

@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 
 // pheproteus.cpp -- the Proteus settings app ("Proteus" in the launcher).
 // Main view: the installed ARM apps (RApaLsSession's apps whose EXE header names an ARM CPU, the test the loader's ARM redirect

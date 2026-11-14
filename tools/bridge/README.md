@@ -1,5 +1,5 @@
 <!-- Copyright The Phorepoc Authors -->
-<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # tools/bridge -- the signature and layout tooling of the native system-library bridge (rung R0)
 
 Plan: the private repo's `docs/phorepoc/research/proteus-native-bridge.md`. Everything runs in the clang container

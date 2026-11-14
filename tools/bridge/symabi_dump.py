@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """symabi_dump -- match every mangled name of an EABI .def file to its declaration in the 2010 headers and write the
 signature and class records the native-bridge generator needs (docs: proteus-native-bridge.md "Generation").
 

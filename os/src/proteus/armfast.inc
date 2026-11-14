@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // armfast.inc -- OURS (Proteus speed work, docs/sparkle-gl-run.md "Interpreter speed"): the fast ARM-mode execution loop, #included at the end of armcpu.cpp.
 //
 // Step() decodes every instruction with a chain of mask compares and keeps all state (registers, flags, pc, step counter) in the object, so a guest

@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 /* vfpvec.c -- VFPv2 short vectors (FPSCR.LEN / FPSCR.STRIDE) on armcpu.cpp. Self-checking: qemu-arm's Cortex-A15 has no short vectors (ARMv8 and
  * VFPv4 made LEN/STRIDE RES0), so there is no reference to diff against; the expectations are the ARM ARM (VFPv2) rules worked out by hand:
  * a destination outside the first bank (s0-s7, d0-d3) makes the operation a vector of LEN elements stepping STRIDE inside the bank (wrapping),

@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // hostheap.cpp -- OURS (Proteus): the handler's own memory stays on the handler's heap.
 // With a native euser the guest calls User::SwitchAllocator natively, so the thread's current allocator becomes the guest's heap
 // (PyS60: a 1 MB UserHeap::ChunkHeap). Everything Proteus and the translator allocate through operator new or User::Alloc would

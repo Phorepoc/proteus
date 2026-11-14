@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 # host tests of os/src/proteus (the P0 ARM interpreter + executive) in the phorepoc-x86 container (g++, LP64 host: guest addresses are offsets):
 #   run_proteus.cpp   -- loads a real ARM EXE and runs it (args: exe, expected log line); --thumb = the Thumb-1 decoder snippet
 #   guest_servers.cpp -- self-checking test of the guest-side servers / sessions / messages (includes proteusexec.cpp itself)

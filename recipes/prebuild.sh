@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 #
 # prebuild.sh -- the pdk's package.yml runs it in the toolchain container before the components: cxxrt's x32 archives, then
 # dynarmic + the JIT glue for x32 (build_dynarmic.sh), which cpuhandler_arm links ($PHOREPOC_BUILD/thirdparty/x86/dynarmic/).

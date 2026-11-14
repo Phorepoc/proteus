@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // proteusimg.cpp -- OURS (Proteus, docs/phorepoc/proteus-p3.md): the image broker. The loader starts an ARM program as a
 // cpuhandler_arm.exe process with the PROGRAM's identity and capabilities (core sf_lepoc.cpp ForeignCpuRedirect), so the handler
 // usually lacks AllFiles -- and reading \sys\ needs it (KCapFsSysFileOpenRd). This server holds AllFiles and opens, read-only,

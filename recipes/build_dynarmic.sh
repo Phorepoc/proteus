@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 # build_dynarmic.sh -- dynarmic (0BSD), the ARM-to-x86-64 translator Proteus P1 runs guest code with, as a static library.
 #   ARCH=host  the build machine (LP64): the host tests and the benchmark (tests/bench)
 #   ARCH=x32   the Phorepoc PC image (-mx32 on cxxrt's libstdc++), linked into proteus.exe

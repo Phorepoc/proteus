@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // proteusheap.cpp -- OURS (Proteus P2, docs/phorepoc/proteus-p2.md): RHeap stress on the real ARM euser -- every live block is filled
 // with its own tag; any overlap (the heap handing out memory twice) or a lost tag is reported. Last line "PH: proteus heap test ok".
 #include <e32std.h>

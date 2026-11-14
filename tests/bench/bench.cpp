@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // bench.cpp -- host benchmark of the Proteus interpreter: loads bench.elf (bench.c) like tests/isa/harness.cpp, runs it REPS times, prints MIPS.
 //   bench <bench.elf> [reps]      stdout = the guest's checksum line (must be identical across interpreter changes), stderr = the speed
 #include "armcpu.h"

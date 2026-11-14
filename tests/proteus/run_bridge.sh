@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 # host test of the native-library bridge (rung R1): the ARM console EXE proteusbridge.exe with bridge.cfg "native euser.dll" against a fake
 # native euser (tests/proteus/bridge_test.cpp). The EXE is built by core: ./ph arm proteusbridge (emitter/proteusbridge.exe).
 #   bash tests/proteus/run_bridge.sh <path of proteusbridge.exe>

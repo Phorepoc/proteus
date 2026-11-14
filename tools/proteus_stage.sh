@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 # proteus_stage.sh -- build a Proteus run disk (P3) for one app: sparkle-inst.img (a prepared C: in the protgl-pc2 volume) with the app's
 # packages / EXE and its complete ARM closure in \sys\bin\arm. The closure comes from tools/proteus_closure.py with the app's APP_EXTRAS
 # (run-time loads no import names) and --cdl --strict: an unresolved DLL fails the staging instead of failing the app at run time.

@@ -1,5 +1,5 @@
 # Copyright The Phorepoc Authors
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: AGPL-3.0-only
 """components_proteus -- Proteus (private until finished: docs/public/README.md "Proteus" in the private repo).
 
 Proteus runs ARM32 Symbian binaries on x32 Phorepoc OS: proteus.exe is an x32 user-side ARM loader + interpreter.

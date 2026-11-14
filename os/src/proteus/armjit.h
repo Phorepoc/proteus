@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // armjit.h -- OURS (Proteus P1, docs/phorepoc/research/proteus-x86.md section 4): CArmCpu's guest code run by dynarmic (0BSD, recipes/build_dynarmic.sh)
 // instead of the interpreter. Built only with PROTEUS_JIT. The guest state stays in CArmCpu between runs and at every hook (SVC, trap, foreign pc,
 // slice), so the embedder, the executive's thread switches and the interpreter all see one state; the JIT holds it only while guest code runs.

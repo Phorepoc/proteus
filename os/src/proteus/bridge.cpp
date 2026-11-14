@@ -1,5 +1,5 @@
 // Copyright The Phorepoc Authors
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: AGPL-3.0-only
 // bridge.cpp -- OURS (Proteus R1, docs: proteus-native-bridge.md): the ARM -> native system-library bridge. An import of a DLL that bridge.cfg
 // lists as native does not run the ARM DLL (or the HLE): the import slot's trap calls the NATIVE x32 export of the same NAME. The arguments
 // are read the way the AAPCS (soft-float) passes them (BrArgs: r0-r3, then the stack; a 64-bit value takes an even register pair or an
